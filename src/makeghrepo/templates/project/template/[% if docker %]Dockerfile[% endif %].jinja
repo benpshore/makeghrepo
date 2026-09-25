@@ -8,7 +8,7 @@ RUN uv sync --locked --no-dev
 USER nobody
 CMD ["/app/.venv/bin/[[ project_name ]]"]
 [% elif rs %]
-FROM rust:1-slim AS build
+FROM rust:1-slim-bookworm AS build
 WORKDIR /app
 COPY . .
 RUN cargo build --release

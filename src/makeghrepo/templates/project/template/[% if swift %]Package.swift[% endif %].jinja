@@ -7,10 +7,7 @@ let package = Package(
         .target(name: "[[ package_name ]]"),
         .testTarget(
             name: "[[ package_name ]]Tests",
-            dependencies: ["[[ package_name ]]"],
-[% if py %]
-            path: "SwiftTests",  // tests/ is Python's; macOS disks ignore case
-[% endif %]
-        ),
+            dependencies: ["[[ package_name ]]"][[ ',\n            path: "SwiftTests"  // tests/ is Python\'s; macOS disks ignore case' if py else '' ]]
+        )
     ]
 )

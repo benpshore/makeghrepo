@@ -172,3 +172,16 @@ def test_python_project_passes_its_own_checks(tmp_path):
 def test_rust_project_passes_clippy(tmp_path):
     dest = render(tmp_path, ["rust"])
     scaffold.smoke_test(dest, ["rust"], lambda _: None)
+
+
+@pytest.mark.parametrize(("lang", "tool"), [("python", "uv"), ("js", "npm"), ("css", "npm")])
+def test_lockfile_tools_are_required(tmp_path, monkeypatch, lang, tool):
+    monkeypatch.setattr(scaffold.shutil, "which", lambda t: None if t == tool else "/bin/x")
+    with pytest.raises(RuntimeError, match=tool):
+        scaffold.smoke_test(tmp_path, [lang], lambda _: None)
+
+
+def test_swift_manifest_has_no_trailing_commas(tmp_path):
+    for langs in (["swift"], ["swift", "python"]):
+        text = (render(tmp_path / "+".join(langs), langs) / "Package.swift").read_text()
+        assert ",\n        )" not in text and ",\n    ]" not in text

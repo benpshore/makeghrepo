@@ -51,6 +51,10 @@ CHECKS: dict[str, tuple[tuple[str, ...], ...]] = {
 }  # fmt: skip
 
 
+# These create lockfiles that CI (`--locked`, `npm ci`) and the Dockerfiles depend on.
+REQUIRED_TOOLS = {"python": "uv", "js": "npm", "css": "npm"}
+
+
 def language(word: str) -> str | None:
     word = word.lower()
     return word if word in LANGUAGES else ALIASES.get(word)
@@ -76,6 +80,9 @@ def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> 
     commands = list(dict.fromkeys(cmd for lang in languages for cmd in CHECKS.get(lang, ())))
     if "postgres" in languages and "sql" in languages:
         commands = [(*c, "db") if c[:2] == ("uvx", "sqlfluff") else c for c in commands]
+    for lang, tool in REQUIRED_TOOLS.items():
+        if lang in languages and shutil.which(tool) is None:
+            raise RuntimeError(f"{lang} needs {tool} installed locally to create its lockfile")
     for cmd in commands:
         if shutil.which(cmd[0]) is None:
             log(f"  - skip {' '.join(cmd)} ({cmd[0]} not installed; CI will run it)")

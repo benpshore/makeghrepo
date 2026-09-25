@@ -12,6 +12,7 @@ import typer
 from makeghrepo import github, gitops, names, scaffold
 
 app = typer.Typer(add_completion=True)
+CODEQL = Path(".github/workflows/codeql.yml")  # rendered for public repos only
 
 
 def fail(msg: str) -> typer.Exit:
@@ -56,9 +57,10 @@ def main(
         raise fail(str(exc)) from exc
 
     if resume:
+        # makeghrepo git-inits right after rendering, so a dir without .git isn't ours.
         if not (dest / ".git").is_dir():
             raise fail(f"{dest} exists but isn't a git repo; pick another name")
-        typer.echo(f"resuming {dest} (already exists; languages ignored)")
+        typer.echo(f"resuming {dest}")
     elif on_github:
         raise fail(f"{repo} already exists on GitHub")
     else:
@@ -73,16 +75,23 @@ def main(
             "private": private,
             "languages": langs,
         })  # fmt: skip
+        gitops.init(dest)
+
+    if not gitops.has_commits(dest):  # new, or an earlier check/commit failed
         try:
             scaffold.smoke_test(dest, langs, typer.echo)
-            gitops.init_and_commit(dest, "setup")
+            gitops.commit_all(dest, "setup")
         except (RuntimeError, git.GitCommandError) as exc:
-            raise fail(f"{exc}\nNothing was published. Fix or delete {dest}.") from exc
+            raise fail(
+                f"{exc}\nNothing was published. Fix it, then re-run the same command."
+            ) from exc
 
     try:
         if on_github:
             private = github.is_private(repo)
         else:
+            # On resume, the rendered files remember whether it was meant to be private.
+            private = private or (resume and not (dest / CODEQL).exists())
             github.create_repo(repo, dest, name, private)
     except github.GhError as exc:
         raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
