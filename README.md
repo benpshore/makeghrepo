@@ -6,5 +6,17 @@ for python:
 
 tmux:
 `tmux new-session -A -s main -n randomword-randomword -c "$HOME/code/GitHub/randomword-randomword"`
-
-gh repo create
+```sh
+gh repo create \
+  --public \
+  --description "randomword-randomword" \
+  --gitignore "Python" \
+  --license "MIT" \
+  --clone \
+  --remote "origin" \
+  --push
+  ```sh
+```sh
+gh repo edit \
+  --
+```
