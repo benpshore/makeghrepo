@@ -139,26 +139,26 @@ source = { editable = "." }
 dependencies = [
     { name = "copier" },
     { name = "gitpython" },
+    { name = "typer" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
     { name = "ruff" },
-    { name = "typer" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "copier", specifier = ">=9.18.2" },
     { name = "gitpython", specifier = ">=3.1.62" },
+    { name = "typer", specifier = ">=0.27.2" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.16.9" },
-    { name = "typer", specifier = ">=0.27.2" },
 ]
 
 [[package]]

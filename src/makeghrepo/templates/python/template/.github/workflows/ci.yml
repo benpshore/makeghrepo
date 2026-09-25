@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The job name "ci" is a required status check in the branch ruleset.
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Format
+        run: uv run ruff format --check
+      - name: Lint
+        run: uv run ruff check --output-format=github
+      - name: Test
+        run: uv run pytest
+      - name: Build
+        run: uv build
