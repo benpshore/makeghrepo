@@ -1,49 +1,73 @@
-purpose of the project is to bootstrap a new local repository with template configuration and set it up on GitHub. 
-the following is a bunch of pseudocode and snippets that are not currently configured as an actual application yet. 
-TODOS:
-```md
-[ ] copier templates for py, rust, swift, docker, shell, js, tart.vm, css, etc.
-[ ] uv path completions/cli 
-[ ] python orchestration of shell scripts and make/just files 
-[ ] creation of .gitignore (don't forget to exclude annoying DS_Store)
-[ ] creation of .github workflows and actions
-[ ] setup to configure branch protection rules for the target new repo
-[ ] setup to configure PR requirement for the target new repo and PR template
-[ ] setup to configure issue templates for the target new repo
-[ ] copier.yml file config
-[ ] import random word generator into src as module
-[ ] if `uv run /path/to/makeghrepo.py` doesn't supply a repo name, use a random word generator to create a dyad of random words for the repo name
-[ ] 
-[ ] 
+# makeghrepo
 
-```
-for python:
-`uv init "randomword-randomword" -p 3.14 --managed-python`
+One command to go from nothing to a new, fully configured GitHub repo. The generated uv Python project comes with CI, CodeQL, Dependabot, branch protection, issue/PR templates, a project board, and muted notifications.
 
-tmux:
-`tmux new-session -A -s main -n randomword-randomword -c "$HOME/code/GitHub/randomword-randomword"`
-1. Repository name - must choose
-```sh
-OWNER=""
-REPO="OWNER/REPO"
-git init -b main
+It exists to save keystrokes, and so that AI coding agents can start new repos without broad shell or GitHub admin access.
 
-
-
-```
-
+## Install
 
 ```sh
-gh repo create \
-  --public \
-  --description "randomword-randomword" \
-  --gitignore "Python" \
-  --license "MIT" \
-  --clone \
-  --remote "origin" \
-  --push
-  ```sh
-```sh
-gh repo edit \
-  --
+uv tool install git+https://github.com/benpshore/makeghrepo
+makeghrepo doctor          # checks git, uv, gh, and gh token scopes
+gh auth refresh -s project # only if doctor says the project scope is missing
 ```
+
+Upgrade with `uv tool upgrade makeghrepo`.
+
+## Use
+
+```sh
+ghnew                      # random name like quiet-otter, asks once to confirm
+ghnew my-thing -y          # named, no prompt (what an AI agent should run)
+ghnew my-thing --private -d "what it does"
+ghnew --local -y           # everything except GitHub
+ghnew --dry-run -y         # render + commit locally, print every gh call instead of running it
+makeghrepo configure OWNER/REPO   # (re)apply GitHub settings; safe to re-run after a failure
+```
+
+`ghnew` is shorthand for `makeghrepo new`. Defaults: the project goes in `~/code/GitHub/<name>` (override with `--dir` or `MAKEGHREPO_DIR`), and the owner is your gh user (override with `--owner` or `MAKEGHREPO_OWNER`).
+
+## What `new` does
+
+1. Picks a name: yours (normalized to `lower-dashes`), or a random adjective-noun pair not already used locally or on GitHub.
+2. Renders the copier template in `src/makeghrepo/templates/python/`.
+3. Smoke tests the new project: `uv lock`, `uv sync --locked`, `ruff format --check`, `ruff check`, `pytest`. If any fail, it stops and nothing is published.
+4. Runs `git init -b main`, `git add --all`, `git commit -m setup` (via GitPython).
+5. Runs `gh repo create --public --source . --push`.
+6. Configures the repo through `gh api`. Each step is idempotent and reported ✓/✗; failures don't stop the others:
+   - squash-merge only, auto-merge on, delete branches after merge, wiki off
+   - Dependabot alerts and security fixes, private vulnerability reporting
+   - secret scanning and push protection (public repos only; private repos need Advanced Security)
+   - a `protect-main` ruleset: PRs required (0 approvals, because you can't approve your own PR), the `ci` check must pass, linear history, no force-push or deletion
+   - labels: `epic`, `task`, `dependencies`, `python`, `github-actions`
+   - notifications set to **Ignore** for the repo, and no CODEOWNERS file, so nothing pings you
+   - a GitHub Project with the same name, linked to the repo (needs the `project` scope)
+
+### What's in the generated project
+
+`pyproject.toml` (uv_build, ruff, pytest), `src/` layout package with a CLI entry point, a smoke test, `.gitignore` (Python, macOS `.DS_Store`, every common database/data file, secrets, editors, caches), `.editorconfig`, MIT `LICENSE`, `SECURITY.md`, `AGENTS.md` and `CLAUDE.md`, and under `.github/`:
+
+| File | Purpose |
+|---|---|
+| `workflows/ci.yml` | `uv sync --locked`, format check, lint, test, build. The job name `ci` is the required check. |
+| `workflows/codeql.yml` | CodeQL (python + actions, security-extended queries), weekly and on every PR |
+| `dependabot.yml` | weekly grouped updates for uv and GitHub Actions, with a 7-day cooldown |
+| `pull_request_template.md` | what / how to verify / notes |
+| `ISSUE_TEMPLATE/` | bug, feature/task, epic (epics use native sub-issues) |
+
+## Develop
+
+```sh
+uv sync
+uv run ruff format && uv run ruff check
+uv run pytest              # includes a slow end-to-end test (needs network)
+uv run pytest -m "not slow"
+uv run makeghrepo new --dry-run -y --dir /tmp/x
+```
+
+## Roadmap
+
+- [ ] More copier templates: rust, swift, docker, shell, js, tart vm, css
+- [ ] Orchestrating shell scripts and make/just files from Python
+- [ ] Optional Dependabot auto-merge for patch updates
+- [ ] Optionally open a tmux window in the new project (for now `new` prints the command)

@@ -1,0 +1,6 @@
+# {{ project_name }}
+
+- Package manager: **uv** only (`uv add`, `uv run`). Never pip.
+- Before committing: `uv run ruff format && uv run ruff check && uv run pytest`.
+- `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); CI (`ci` job) must pass.
+- Never commit secrets, `.env` files, or databases (see `.gitignore`).
