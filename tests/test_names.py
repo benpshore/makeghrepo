@@ -60,15 +60,3 @@ def test_validate_owner_rejects(bad):
 @pytest.mark.parametrize("good", ["benpshore", "Some-Org", "a1"])
 def test_validate_owner_accepts(good):
     assert names.validate_owner(good) == good
-
-
-@pytest.mark.parametrize("bad", ["3", "3.14; rm", ">=3.14", "4.0\n", "abc"])
-def test_validate_python_rejects(bad):
-    with pytest.raises(ValueError):
-        names.validate_python_version(bad)
-
-
-@pytest.mark.parametrize("bad", ["line1\nline2", "tab\there", "x" * 351, "nul\x00"])
-def test_validate_description_rejects(bad):
-    with pytest.raises(ValueError):
-        names.validate_description(bad)

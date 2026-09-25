@@ -1,0 +1,56 @@
+# One template for every stack. Each language's files sit behind a flag below.
+# Custom delimiters keep GitHub Actions' ${{ }} expressions literal.
+_subdirectory: template
+_templates_suffix: .jinja
+_envops:
+  block_start_string: "[%"
+  block_end_string: "%]"
+  variable_start_string: "[["
+  variable_end_string: "]]"
+  comment_start_string: "[#"
+  comment_end_string: "#]"
+  keep_trailing_newline: true
+  trim_blocks: true
+  lstrip_blocks: true
+
+project_name:
+  type: str
+  validator: "[% if not (project_name | regex_search('^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$')) %]lowercase letters, digits and dashes only[% endif %]"
+package_name:
+  type: str
+  default: "[[ project_name | replace('-', '_') ]]"
+description:
+  type: str
+  default: "[[ project_name ]]"
+github_owner:
+  type: str
+  default: ""
+author_name:
+  type: str
+  default: ""
+year:
+  type: str
+  default: "2026"
+private:
+  type: bool
+  default: false
+languages:
+  type: yaml
+  default: "[]"
+
+# Derived flags (not asked).
+py: {type: bool, when: false, default: "[[ 'python' in languages ]]"}
+rs: {type: bool, when: false, default: "[[ 'rust' in languages ]]"}
+swift: {type: bool, when: false, default: "[[ 'swift' in languages ]]"}
+js: {type: bool, when: false, default: "[[ 'js' in languages ]]"}
+css: {type: bool, when: false, default: "[[ 'css' in languages ]]"}
+c: {type: bool, when: false, default: "[[ 'c' in languages ]]"}
+cpp: {type: bool, when: false, default: "[[ 'cpp' in languages ]]"}
+objc: {type: bool, when: false, default: "[[ 'objc' in languages ]]"}
+objcpp: {type: bool, when: false, default: "[[ 'objcpp' in languages ]]"}
+cmake: {type: bool, when: false, default: "[[ c or cpp or objc or objcpp ]]"}
+api: {type: bool, when: false, default: "[[ 'api' in languages ]]"}
+pg: {type: bool, when: false, default: "[[ 'postgres' in languages ]]"}
+sql: {type: bool, when: false, default: "[[ 'sql' in languages ]]"}
+docker: {type: bool, when: false, default: "[[ 'docker' in languages ]]"}
+sh: {type: bool, when: false, default: "[[ 'shell' in languages ]]"}

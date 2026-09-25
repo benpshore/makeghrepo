@@ -1,0 +1,12 @@
+# [[ project_name ]]
+
+- `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
+- Never commit secrets, `.env` files, databases or `.DS_Store` (see `.gitignore`; CI rejects them).
+[% if py %]
+- Python: use **uv** only (`uv add`, `uv run`). Never pip.
+[% endif %]
+- Before committing, run:
+
+```sh
+[% include '_checks.jinja' %]
+```

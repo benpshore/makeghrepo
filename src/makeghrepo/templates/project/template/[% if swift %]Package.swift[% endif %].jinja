@@ -1,0 +1,16 @@
+// swift-tools-version: 6.0
+import PackageDescription
+
+let package = Package(
+    name: "[[ package_name ]]",
+    targets: [
+        .target(name: "[[ package_name ]]"),
+        .testTarget(
+            name: "[[ package_name ]]Tests",
+            dependencies: ["[[ package_name ]]"],
+[% if py %]
+            path: "SwiftTests",  // tests/ is Python's; macOS disks ignore case
+[% endif %]
+        ),
+    ]
+)

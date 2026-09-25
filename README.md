@@ -1,6 +1,6 @@
 # makeghrepo
 
-One command to go from nothing to a new, fully configured GitHub repo. The generated uv Python project comes with CI, CodeQL, Dependabot, branch protection, issue/PR templates, a project board, and muted notifications.
+One command creates a new, fully configured GitHub repo: public by default, and ready for any language or the ones you name.
 
 It exists to save keystrokes, and so that AI coding agents can start new repos without broad shell or GitHub admin access.
 
@@ -11,71 +11,70 @@ uv tool install git+https://github.com/benpshore/makeghrepo
 gh auth refresh -s project,workflow   # once: project boards + pushing workflow files
 ```
 
-Upgrade with `uv tool upgrade makeghrepo`.
-
 ## Use
 
 ```sh
-ghnew                      # random name like quiet-otter, asks once to confirm
-ghnew my-thing -y          # named, no prompt (what an AI agent should run)
-ghnew my-thing --private -d "what it does"
-ghnew --local -y           # everything except GitHub
-makeghrepo configure OWNER/REPO   # (re)apply GitHub settings; safe to re-run after a failure
+makeghrepo                          # random name (e.g. quiet-otter), language-neutral
+makeghrepo quiet-otter              # named, language-neutral
+makeghrepo quiet-otter python       # one language
+makeghrepo quiet-otter rust docker  # several
+makeghrepo swift                    # first word is a language, so the name is random
+makeghrepo quiet-otter --private
 ```
 
-`ghnew` is shorthand for `makeghrepo new`. Defaults: the project goes in `~/code/GitHub/<name>` (override with `--dir` or `MAKEGHREPO_DIR`), and the owner is your gh user (override with `--owner` or `MAKEGHREPO_OWNER`).
+Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `postgres` `sql` `docker` `shell`. Aliases like `c++`, `objc++`, `rest` and `pg` also work.
 
-## What `new` does
+If anything fails, fix it and run the same command again. The repo already exists, so makeghrepo skips creating it and only finishes what's missing: pushing `main` and re-applying settings. Every setting is safe to re-apply.
 
-1. Picks a name: yours (normalized to `lower-dashes`), or a random adjective-noun pair not already used locally or on GitHub.
-2. Renders the copier template in `src/makeghrepo/templates/python/`.
-3. Smoke tests the new project: `uv lock`, `uv sync --locked`, `ruff format --check`, `ruff check`, `pytest`, `uv audit`, `uv build`. If any fail, it stops and nothing is published.
-4. Runs `git init -b main`, `git add --all`, `git commit -m setup` (via GitPython).
-5. Runs `gh repo create --source . --remote origin`, which creates the repo empty.
-6. Configures the repo through `gh api`. Each step is idempotent and reported ✓/✗; failures don't stop the others:
+Projects go in `~/code/GitHub/<name>`. Set `MAKEGHREPO_DIR` to use another folder.
+
+## What it does
+
+1. Renders one copier template (`src/makeghrepo/templates/project/`). The shared base is always included; each language you name adds its own files.
+2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). If a check fails, nothing is published.
+3. Runs `git init -b main`, `git add --all`, `git commit -m setup`.
+4. Creates the GitHub repo empty, then configures it:
    - squash-merge only, auto-merge on, delete branches after merge, wiki off
    - Dependabot alerts and security fixes
-   - public repos only: secret scanning and push protection, private vulnerability reporting
-   - **pushes `main`**, after push protection is on and before the ruleset
-   - public repos only: a `protect-main` ruleset. PRs are required (0 approvals, because you can't approve your own PR), the `ci` check from GitHub Actions must pass, history stays linear, and force-push and deletion are blocked.
-   - labels `epic` and `task`
-   - notifications set to **Ignore** for the repo, and no CODEOWNERS file, so nothing pings you
-   - a GitHub Project with the same name, linked to the repo (needs the `project` scope)
+   - public repos: secret scanning, push protection, private vulnerability reporting
+   - **pushes `main`**, after push protection is on
+   - public repos: a `protect-main` ruleset. PRs are required (0 approvals, because you can't approve your own PR), the `ci` check from GitHub Actions must pass, history stays linear, and force-push and deletion are blocked.
+   - labels `epic` and `task`, and a Project board linked to the repo
+   - notifications set to **Ignore**, and no CODEOWNERS file, so nothing pings you
 
-With `--private` on GitHub Free, rulesets, secret scanning and code scanning aren't available. makeghrepo skips them and leaves CodeQL out of the project. CI still runs but can't block merges, so the local smoke test is the real gate.
+**Private repos on GitHub Free** can't have rulesets, secret scanning or code scanning, so makeghrepo skips them and leaves CodeQL out. CI still runs but can't block merges; the local checks are the gate.
 
-If the push fails, run `git -C <dir> push -u origin main` and then `makeghrepo configure OWNER/REPO`.
+## What every repo gets
 
-### Releases
+- `.gitignore` covering every supported language, plus `.DS_Store`, databases and data files, secrets, and editor/cache files. A `repo` CI job fails if any of those get committed anyway.
+- `README.md` and `AGENTS.md` (plus `CLAUDE.md`), each listing that project's check commands; MIT `LICENSE`, `SECURITY.md`, `.editorconfig`.
+- Issue templates for bug, task and epic (epics use native sub-issues), and a PR template.
+- `ci.yml`: one job per language, plus a final `ci` job that passes only if all of them passed. That `ci` job is the one required check.
+- `codeql.yml` (public repos): actions, plus python, js, rust, c-cpp and swift as chosen.
+- `dependabot.yml`: GitHub Actions, plus uv, cargo, swift, npm, docker and docker-compose as chosen; weekly and grouped, with a 7-day cooldown.
+- `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python it first checks that the tag matches the version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`.
 
-Bump the version with `uv version --bump patch`, merge the PR, then run `git tag v$(uv version --short) && git push --tags`. The `release` workflow checks that the tag matches the version, tests, runs `uv audit`, runs `uv build`, and publishes a GitHub Release with the wheel and sdist.
-
-### What's in the generated project
-
-`pyproject.toml` (uv_build, ruff, pytest), `src/` layout package with a CLI entry point, a smoke test, `.gitignore` (Python, macOS `.DS_Store`, every common database/data file, secrets, editors, caches), `.editorconfig`, MIT `LICENSE`, `SECURITY.md`, `AGENTS.md` and `CLAUDE.md`, and under `.github/`:
-
-| File | Purpose |
-|---|---|
-| `workflows/ci.yml` | `uv sync --locked`, format check, lint, test, `uv audit`, build. The job name `ci` is the required check. |
-| `workflows/release.yml` | on a `v*` tag: test, audit, `uv build`, then `gh release create` with the wheel and sdist |
-| `workflows/codeql.yml` | public repos only: CodeQL (python + actions, security-extended queries), weekly and on every PR |
-| `dependabot.yml` | weekly grouped updates for uv and GitHub Actions (pinned by SHA), with a 7-day cooldown |
-| `pull_request_template.md` | what / how to verify / notes |
-| `ISSUE_TEMPLATE/` | bug, feature/task, epic (epics use native sub-issues) |
+| language | files | checks (locally and in CI) |
+|---|---|---|
+| python | `pyproject.toml`, `src/<pkg>/`, `tests/` | ruff format + check, pytest, `uv audit`, `uv build` |
+| rust | `Cargo.toml`, `src/main.rs` | `cargo fmt --check`, `clippy -D warnings` (pedantic), `cargo test` |
+| swift | `Package.swift`, `Sources/`, `Tests/` | `swift build`, `swift test` |
+| js | `package.json`, `eslint.config.js`, `src/`, `test/` | eslint, `node --test`, `npm audit` (CI) |
+| css | `styles/`, `.stylelintrc.json` | stylelint |
+| c, cpp, objc, objcpp | one `CMakeLists.txt`, `src/main.{c,cpp,m,mm}` | CMake build with `-Wall -Wextra -Werror`, ctest (macOS runner if ObjC) |
+| api | `openapi.yaml` | Spectral |
+| postgres | `compose.yaml`, `db/migrations/` | CI applies the migrations to a real Postgres 17 |
+| sql | `sql/`, `.sqlfluff` | sqlfluff (Postgres dialect with `postgres`) |
+| docker | `Dockerfile` for your language, `.dockerignore` | hadolint, `docker build` (CI) |
+| shell | `scripts/hello.sh` | shellcheck |
 
 ## Develop
 
 ```sh
 uv sync
 uv run ruff format && uv run ruff check
-uv run pytest              # includes a slow end-to-end test (needs network)
+uv run pytest              # includes slow end-to-end tests for python and rust (network)
 uv run pytest -m "not slow"
-uv run makeghrepo new --local -y --dir /tmp/x
 ```
 
-## Roadmap
-
-- [ ] More copier templates: rust, swift, docker, shell, js, tart vm, css
-- [ ] Orchestrating shell scripts and make/just files from Python
-- [ ] Optional Dependabot auto-merge for patch updates
-- [ ] Optionally open a tmux window in the new project (for now `new` prints the command)
+To add a language: add its files to `templates/project/template/` behind a `[% if flag %]` name, a flag in `copier.yml`, its jobs in `ci.yml.jinja` and `codeql`/`dependabot`, its line in `_checks.jinja`, and its entries in `LANGUAGES` and `CHECKS` in `scaffold.py`.

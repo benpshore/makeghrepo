@@ -1,0 +1,20 @@
+[% set scripts = {} %]
+[% set dev = {} %]
+[% if js %]
+[% set _ = scripts.update({"lint": "eslint .", "test": "node --test"}) %]
+[% set _ = dev.update({"@eslint/js": "^10", "eslint": "^10", "globals": "^17"}) %]
+[% endif %]
+[% if css %]
+[% set _ = scripts.update({"lint:css": "stylelint \"**/*.css\""}) %]
+[% set _ = dev.update({"stylelint": "^17", "stylelint-config-standard": "^40"}) %]
+[% endif %]
+[[ {
+  "name": project_name,
+  "version": "0.1.0",
+  "description": description,
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": scripts,
+  "devDependencies": dev,
+} | to_nice_json(indent=2, ensure_ascii=False, sort_keys=False) ]]

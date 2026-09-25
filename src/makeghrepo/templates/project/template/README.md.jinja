@@ -1,0 +1,13 @@
+# [[ project_name ]]
+
+[[ description ]]
+
+## Checks
+
+Run these before opening a PR. CI runs the same ones.
+
+```sh
+[% include '_checks.jinja' %]
+```
+
+`main` is protected: open a PR; the `ci` check must pass before merging (squash only).

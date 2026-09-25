@@ -1,7 +1,7 @@
 [project]
 name = "makeghrepo"
 version = "0.1.0"
-description = "Bootstrap a new uv project from a copier template and publish it to GitHub, fully configured."
+description = "Create a new, fully configured GitHub repo for any language in one command."
 readme = "README.md"
 license = "MIT"
 authors = [
@@ -19,7 +19,6 @@ Repository = "https://github.com/benpshore/makeghrepo"
 
 [project.scripts]
 makeghrepo = "makeghrepo:main"
-ghnew = "makeghrepo.cli:new_main"
 
 [build-system]
 requires = ["uv_build>=0.12.18,<0.13.0"]

@@ -1,0 +1,11 @@
+[package]
+name = "[[ project_name ]]"
+version = "0.1.0"
+edition = "2024"
+description = [[ description | to_json(ensure_ascii=False) ]]
+license = "MIT"
+
+[dependencies]
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

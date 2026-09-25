@@ -1,0 +1,6 @@
+[sqlfluff]
+dialect = [[ 'postgres' if pg else 'ansi' ]]
+max_line_length = 100
+
+[sqlfluff:rules:capitalisation.keywords]
+capitalisation_policy = lower
