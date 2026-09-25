@@ -9,7 +9,6 @@ updates:
     groups:
       python:
         patterns: ["*"]
-    labels: [dependencies, python]
 
   - package-ecosystem: github-actions
     directory: /
@@ -20,4 +19,3 @@ updates:
     groups:
       actions:
         patterns: ["*"]
-    labels: [dependencies, github-actions]

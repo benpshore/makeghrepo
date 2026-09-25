@@ -1,11 +1,11 @@
 [project]
 name = "{{ project_name }}"
 version = "0.1.0"
-description = "{{ description }}"
+description = {{ description | to_json(ensure_ascii=False) }}
 readme = "README.md"
 license = "MIT"
-authors = [{ name = "{{ author_name }}"{% if author_email %}, email = "{{ author_email }}"{% endif %} }]
-requires-python = ">={{ python_version }}"
+authors = [{ name = {{ author_name | to_json(ensure_ascii=False) }}{% if author_email %}, email = {{ author_email | to_json(ensure_ascii=False) }}{% endif %} }]
+requires-python = {{ (">=" ~ python_version) | to_json(ensure_ascii=False) }}
 dependencies = []
 
 [project.scripts]
