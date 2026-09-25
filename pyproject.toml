@@ -7,7 +7,9 @@ authors = [
     { name = "Ben Shore", email = "01.amusing_cozies@icloud.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "copier>=9.18.2",
+]
 
 [project.scripts]
 makeghrepo = "makeghrepo:main"
@@ -15,3 +17,10 @@ makeghrepo = "makeghrepo:main"
 [build-system]
 requires = ["uv_build>=0.12.18,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+    "typer>=0.27.2",
+]
