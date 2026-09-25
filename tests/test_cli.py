@@ -98,3 +98,32 @@ def test_failed_steps_exit_2_with_rerun_hint(tmp_path, gh):
     result = runner.invoke(app, ["partial"])
     assert result.exit_code == 2
     assert "re-run: makeghrepo partial" in result.output
+
+
+def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):
+    def broken(*a):
+        raise RuntimeError("ruff failed")
+
+    monkeypatch.setattr(scaffold, "smoke_test", broken)
+    result = runner.invoke(app, ["fixme", "python"])
+    assert result.exit_code == 1 and "re-run the same command" in result.output
+    assert gh["calls"] == []  # nothing published
+
+    monkeypatch.setattr(scaffold, "smoke_test", lambda *a: None)  # user fixed it
+    result = runner.invoke(app, ["fixme", "python"])
+    assert result.exit_code == 0, result.output
+    assert [c.message.strip() for c in git.Repo(tmp_path / "fixme").iter_commits()] == ["setup"]
+    assert gh["calls"][0][0] == "create"
+
+
+def test_rerun_after_failed_create_keeps_private(tmp_path, gh, monkeypatch):
+    def create_fails(*a):
+        raise github.GhError("network down")
+
+    monkeypatch.setattr(github, "create_repo", create_fails)
+    assert runner.invoke(app, ["hush", "--private"]).exit_code == 1
+
+    monkeypatch.setattr(github, "create_repo", lambda *a: gh["calls"].append(("create", *a)))
+    result = runner.invoke(app, ["hush"])  # --private forgotten on the re-run
+    assert result.exit_code == 0, result.output
+    assert gh["calls"][0][-1] is True
