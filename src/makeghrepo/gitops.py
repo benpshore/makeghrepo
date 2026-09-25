@@ -16,9 +16,17 @@ def author_from_git_config() -> tuple[str, str]:
     )
 
 
-def init_and_commit(path: Path, message: str = "setup") -> None:
-    """``git init -b main && git add --all && git commit -m <message>``."""
-    repo = git.Repo.init(path, initial_branch="main")
+def init(path: Path) -> None:
+    git.Repo.init(path, initial_branch="main")
+
+
+def has_commits(path: Path) -> bool:
+    return git.Repo(path).head.is_valid()
+
+
+def commit_all(path: Path, message: str = "setup") -> None:
+    """``git add --all && git commit -m <message>``."""
+    repo = git.Repo(path)
     repo.git.add(all=True)
     # Use the git CLI (not index.commit) so hooks and commit signing are honored.
     repo.git.commit("-m", message)
