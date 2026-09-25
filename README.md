@@ -10,6 +10,7 @@ TODOS:
 [ ] setup to configure branch protection rules for the target new repo
 [ ] setup to configure PR requirement for the target new repo and PR template
 [ ] setup to configure issue templates for the target new repo
+[ ] copier.yml file config
 ```
 for python:
 `uv init "randomword-randomword" -p 3.14 --managed-python`
