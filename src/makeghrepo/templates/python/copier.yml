@@ -39,3 +39,8 @@ year:
   help: Copyright year (makeghrepo passes the current year)
   default: "2026"
   when: false
+
+private:
+  type: bool
+  help: Private repo (GitHub Free has no code scanning there, so CodeQL is left out)
+  default: false

@@ -42,23 +42,45 @@ def test_declining_confirmation_does_nothing(tmp_path):
     assert not (tmp_path / "x").exists()
 
 
-def test_dry_run_prints_github_plan(tmp_path, monkeypatch):
-    real_run = github.subprocess.run
+def test_github_flow_order(tmp_path, monkeypatch):
+    """new: render, commit, create repo (no push), then configure_all with a push step."""
+    seen = []
+    monkeypatch.setattr(github, "current_user", lambda: "me")
+    monkeypatch.setattr(github, "repo_exists", lambda r: False)
+    monkeypatch.setattr(github, "create_repo", lambda *a: seen.append(("create", a)))
 
-    def guard(cmd, *a, **k):
-        assert cmd[0] != "gh", f"gh must not run in dry-run: {cmd}"
-        return real_run(cmd, *a, **k)
+    def fake_configure_all(repo, *, private, project, push, log):
+        seen.append(("configure", repo, private))
+        return []
 
-    monkeypatch.setattr(github.subprocess, "run", guard)
+    monkeypatch.setattr(github, "configure_all", fake_configure_all)
     result = runner.invoke(
-        app,
-        ["new", "dry", "--dry-run", "--owner", "me", "--skip-checks", "-y", "--dir", str(tmp_path)],
+        app, ["new", "gh-flow", "--private", "--skip-checks", "-y", "--dir", str(tmp_path)]
     )
     assert result.exit_code == 0, result.output
-    assert "gh repo create me/dry --public" in result.output
-    assert "repos/me/dry/subscription" in result.output
+    assert seen[0][0] == "create" and seen[0][1][0] == "me/gh-flow"
+    assert seen[1] == ("configure", "me/gh-flow", True)
+    ls = git.Repo(tmp_path / "gh-flow").git.ls_files()
+    assert "codeql.yml" not in ls  # no code scanning on GitHub Free private repos
 
 
 def test_configure_requires_owner_repo():
-    result = runner.invoke(app, ["configure", "nope"])
+    assert runner.invoke(app, ["configure", "nope"]).exit_code == 1
+
+
+def test_rejects_flag_like_owner(tmp_path):
+    result = runner.invoke(app, ["new", "x", "--owner=-evil", "-y", "--dir", str(tmp_path)])
     assert result.exit_code == 1
+    assert not (tmp_path / "x").exists()
+
+
+def test_rejects_multiline_description(tmp_path):
+    result = runner.invoke(
+        app, ["new", "x", "--local", "-y", "-d", 'a"\n[tool.uv]', "--dir", str(tmp_path)]
+    )
+    assert result.exit_code == 1
+    assert not (tmp_path / "x").exists()
+
+
+def test_configure_rejects_traversal():
+    assert runner.invoke(app, ["configure", "../user"]).exit_code == 1

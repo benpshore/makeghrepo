@@ -1,7 +1,7 @@
 """GitHub setup via the ``gh`` CLI (which owns auth; we never touch tokens).
 
-Every ``configure_*`` step is idempotent so ``makeghrepo configure OWNER/REPO``
-can be re-run safely after a partial failure.
+Every step is idempotent, so ``makeghrepo configure OWNER/REPO`` can be re-run
+after a partial failure.
 """
 
 from __future__ import annotations
@@ -9,168 +9,67 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 RULESET_NAME = "protect-main"
 REQUIRED_CHECK = "ci"  # must match the job name in templates/*/.github/workflows/ci.yml
-REQUIRED_SCOPES = {"repo", "workflow"}
-OPTIONAL_SCOPES = {"project": "create and link a GitHub Project board"}
-
-LABELS = (
-    ("epic", "3E4B9E", "Large body of work tracked via sub-issues"),
-    ("task", "C5DEF5", "A unit of work, usually a sub-issue of an epic"),
-    ("dependencies", "0366D6", "Dependency updates"),
-    ("python", "2B67C6", "Python dependency updates"),
-    ("github-actions", "000000", "GitHub Actions updates"),
-)
+GITHUB_ACTIONS_APP_ID = 15368  # only GitHub Actions may satisfy the required check
+LABELS = {"epic": "3E4B9E", "task": "C5DEF5"}
 
 
 class GhError(RuntimeError):
     pass
 
 
-@dataclass
-class Gh:
-    """Thin wrapper around the gh CLI. ``dry_run`` prints instead of executing mutations."""
+def gh(*args: str, body: Any = None) -> str:
+    cmd = ["gh", *args] + (["--input", "-"] if body is not None else [])
+    result = subprocess.run(
+        cmd, input=None if body is None else json.dumps(body), capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise GhError(f"{' '.join(cmd)}\n{(result.stderr or result.stdout).strip()}")
+    return result.stdout
 
-    dry_run: bool = False
-    log: Callable[[str], None] = print
 
-    def run(self, *args: str, body: Any = None, mutate: bool = True) -> str:
-        cmd = ["gh", *args]
-        if body is not None:
-            cmd += ["--input", "-"]
-        if self.dry_run and mutate:
-            suffix = f"  <<< {json.dumps(body)}" if body is not None else ""
-            self.log("  [dry-run] " + " ".join(cmd) + suffix)
-            return ""
-        result = subprocess.run(
-            cmd,
-            input=json.dumps(body) if body is not None else None,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise GhError(f"{' '.join(cmd)}\n{result.stderr.strip() or result.stdout.strip()}")
-        return result.stdout
+def api(method: str, path: str, body: Any = None) -> Any:
+    out = gh("api", "-X", method, path, body=body)
+    return json.loads(out) if out.strip() else None
 
-    def api(self, method: str, path: str, body: Any = None) -> Any:
-        out = self.run(
-            "api",
-            "-X",
-            method,
-            "-H",
-            "Accept: application/vnd.github+json",
-            path,
-            body=body,
-            mutate=method != "GET",
-        )
-        return json.loads(out) if out.strip() else None
 
-    def current_user(self) -> str:
-        return self.run("api", "user", "--jq", ".login", mutate=False).strip()
+def current_user() -> str:
+    return gh("api", "user", "--jq", ".login").strip()
 
-    def token_scopes(self) -> set[str]:
-        out = self.run("api", "-i", "user", mutate=False)
-        for line in out.splitlines():
-            if line.lower().startswith("x-oauth-scopes:"):
-                return {s.strip() for s in line.split(":", 1)[1].split(",") if s.strip()}
-        return set()  # fine-grained tokens don't report scopes
 
-    def repo_exists(self, full_name: str) -> bool:
-        try:
-            self.run("repo", "view", full_name, "--json", "name", mutate=False)
-        except GhError:
+def repo_exists(full_name: str) -> bool:
+    try:
+        gh("repo", "view", full_name, "--json", "name")
+    except GhError as exc:
+        if "Could not resolve to a Repository" in str(exc):
             return False
-        return True
+        raise  # network/auth/rate-limit: don't treat as "name is free"
+    return True
 
 
-@dataclass
-class StepReport:
-    ok: list[str] = field(default_factory=list)
-    failed: list[tuple[str, str]] = field(default_factory=list)
-
-    def step(self, name: str, fn: Callable[[], object], log: Callable[[str], None]) -> None:
-        try:
-            fn()
-        except Exception as exc:  # report and keep going; the summary lists failures
-            self.failed.append((name, str(exc)))
-            log(f"  ✗ {name}: {exc}")
-        else:
-            self.ok.append(name)
-            log(f"  ✓ {name}")
+def is_private(repo: str) -> bool:
+    return bool(api("GET", f"repos/{repo}")["private"])
 
 
-def create_repo(gh: Gh, full_name: str, source: Path, description: str, private: bool) -> None:
-    gh.run(
-        "repo",
-        "create",
-        full_name,
-        "--private" if private else "--public",
-        "--description",
-        description,
-        "--source",
-        str(source),
-        "--remote",
-        "origin",
-        "--push",
-    )
-
-
-def configure_repo_settings(gh: Gh, full_name: str) -> None:
-    gh.api(
-        "PATCH",
-        f"repos/{full_name}",
-        {
-            "has_wiki": False,
-            "has_issues": True,
-            "has_projects": True,
-            "allow_squash_merge": True,
-            "allow_merge_commit": False,
-            "allow_rebase_merge": False,
-            "allow_auto_merge": True,
-            "allow_update_branch": True,
-            "delete_branch_on_merge": True,
-            "squash_merge_commit_title": "PR_TITLE",
-            "squash_merge_commit_message": "PR_BODY",
-        },
-    )
-
-
-def configure_security(gh: Gh, full_name: str) -> None:
-    gh.api("PUT", f"repos/{full_name}/vulnerability-alerts")
-    gh.api("PUT", f"repos/{full_name}/automated-security-fixes")
-    gh.api("PUT", f"repos/{full_name}/private-vulnerability-reporting")
-
-
-def configure_secret_scanning(gh: Gh, full_name: str) -> None:
-    # Free for public repos; private repos need GitHub Advanced Security.
-    gh.api(
-        "PATCH",
-        f"repos/{full_name}",
-        {
-            "security_and_analysis": {
-                "secret_scanning": {"status": "enabled"},
-                "secret_scanning_push_protection": {"status": "enabled"},
-            }
-        },
-    )
+def create_repo(repo: str, source: Path, description: str, private: bool) -> None:
+    """Create an empty repo and add it as ``origin``. The push happens later, in
+    configure_all, once push protection is on."""
+    gh("repo", "create", repo, "--private" if private else "--public",
+       "--description", description, "--source", str(source), "--remote", "origin")  # fmt: skip
 
 
 def ruleset_body() -> dict[str, Any]:
-    """Protect the default branch: PRs only, CI must pass, no force-push/delete.
-
-    Zero required approvals: on a solo repo you can't approve your own PR, so
-    requiring one would block every merge. The PR + green CI gate is the point.
-    """
+    """PRs only, CI must pass, no force-push/delete. Zero approvals: you can't
+    approve your own PR on a solo repo."""
     return {
         "name": RULESET_NAME,
         "target": "branch",
         "enforcement": "active",
         "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
-        "bypass_actors": [],
         "rules": [
             {"type": "deletion"},
             {"type": "non_fast_forward"},
@@ -190,80 +89,103 @@ def ruleset_body() -> dict[str, Any]:
                 "type": "required_status_checks",
                 "parameters": {
                     "strict_required_status_checks_policy": False,
-                    "required_status_checks": [{"context": REQUIRED_CHECK}],
+                    "required_status_checks": [
+                        {"context": REQUIRED_CHECK, "integration_id": GITHUB_ACTIONS_APP_ID}
+                    ],
                 },
             },
         ],
     }
 
 
-def configure_ruleset(gh: Gh, full_name: str) -> None:
-    # In dry-run the repo may not exist yet, so assume there's nothing to update.
-    existing = [] if gh.dry_run else gh.api("GET", f"repos/{full_name}/rulesets") or []
-    match = next((r for r in existing if r.get("name") == RULESET_NAME), None)
+def configure_ruleset(repo: str) -> None:
+    existing = api("GET", f"repos/{repo}/rulesets?includes_parents=false") or []
+    match = next((r["id"] for r in existing if r.get("name") == RULESET_NAME), None)
     if match:
-        gh.api("PUT", f"repos/{full_name}/rulesets/{match['id']}", ruleset_body())
+        api("PUT", f"repos/{repo}/rulesets/{match}", ruleset_body())
     else:
-        gh.api("POST", f"repos/{full_name}/rulesets", ruleset_body())
+        api("POST", f"repos/{repo}/rulesets", ruleset_body())
 
 
-def configure_labels(gh: Gh, full_name: str) -> None:
-    for name, color, description in LABELS:
-        gh.run(
-            "label",
-            "create",
-            name,
-            "--repo",
-            full_name,
-            "--color",
-            color,
-            "--description",
-            description,
-            "--force",
-        )
-
-
-def mute_notifications(gh: Gh, full_name: str) -> None:
-    """Set the repo to 'Ignore' so the owner gets no watch notifications."""
-    gh.api("PUT", f"repos/{full_name}/subscription", {"subscribed": False, "ignored": True})
-
-
-def configure_project(gh: Gh, full_name: str) -> None:
-    owner, name = full_name.split("/", 1)
-    if gh.dry_run:
-        gh.run("project", "create", "--owner", owner, "--title", name, "--format", "json")
-        gh.run("project", "link", "<number>", "--owner", owner, "--repo", full_name)
-        return
-    listing = json.loads(
-        gh.run("project", "list", "--owner", owner, "--format", "json", mutate=False) or "{}"
-    )
-    number = next(
-        (p["number"] for p in listing.get("projects", []) if p.get("title") == name), None
-    )
-    if number is None:
-        created = gh.run("project", "create", "--owner", owner, "--title", name, "--format", "json")
+def configure_project(repo: str) -> None:
+    owner, title = repo.split("/")
+    listing = gh("project", "list", "--owner", owner, "--closed", "--limit", "1000",
+                 "--format", "json")  # fmt: skip
+    number = next((p["number"] for p in json.loads(listing)["projects"] if p["title"] == title), 0)
+    if not number:
+        created = gh("project", "create", "--owner", owner, "--title", title, "--format", "json")
         number = json.loads(created)["number"]
-    gh.run("project", "link", str(number), "--owner", owner, "--repo", full_name)
+    gh("project", "link", str(number), "--owner", owner, "--repo", repo)
 
 
-def configure_all(gh: Gh, full_name: str, *, project: bool = True) -> StepReport:
-    report = StepReport()
+def settings_body(private: bool) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "has_wiki": False,
+        "allow_merge_commit": False,
+        "allow_rebase_merge": False,
+        "allow_auto_merge": True,
+        "allow_update_branch": True,
+        "delete_branch_on_merge": True,
+        "squash_merge_commit_title": "PR_TITLE",
+        "squash_merge_commit_message": "PR_BODY",
+    }
+    if not private:  # free on public repos; private needs Advanced Security
+        body["security_and_analysis"] = {
+            "secret_scanning": {"status": "enabled"},
+            "secret_scanning_push_protection": {"status": "enabled"},
+        }
+    return body
+
+
+def configure_all(
+    repo: str,
+    *,
+    private: bool,
+    project: bool = True,
+    push: Callable[[], object] | None = None,
+    log: Callable[[str], None] = print,
+) -> list[str]:
+    """Apply every setting; return the names of failed steps (the rest still run).
+
+    ``push`` runs after secret-scanning push protection is on (so it covers the
+    first push) and before the ruleset (which would block pushing to main).
+    """
     steps: list[tuple[str, Callable[[], object]]] = [
-        (
-            "repo settings (squash-only, auto-delete branches)",
-            lambda: configure_repo_settings(gh, full_name),
-        ),
-        (
-            "dependabot alerts + security fixes + private vuln reporting",
-            lambda: configure_security(gh, full_name),
-        ),
-        ("secret scanning + push protection", lambda: configure_secret_scanning(gh, full_name)),
-        (f"ruleset '{RULESET_NAME}' on default branch", lambda: configure_ruleset(gh, full_name)),
-        ("labels", lambda: configure_labels(gh, full_name)),
-        ("mute notifications (watch: ignore)", lambda: mute_notifications(gh, full_name)),
-    ]
+        ("repo settings", lambda: api("PATCH", f"repos/{repo}", settings_body(private))),
+        ("dependabot alerts", lambda: api("PUT", f"repos/{repo}/vulnerability-alerts")),
+        ("dependabot security fixes", lambda: api("PUT", f"repos/{repo}/automated-security-fixes")),
+    ]  # fmt: skip
+    if not private:
+        pvr = f"repos/{repo}/private-vulnerability-reporting"
+        steps.append(("private vulnerability reporting", lambda: api("PUT", pvr)))
+    if push:
+        steps.append(("push main", push))
+    if private:
+        # GitHub Free: no rulesets, secret scanning or code scanning on private repos.
+        # CI still runs but can't block merges; the local smoke test is the gate.
+        log("  - private repo: skipping ruleset, secret scanning, vuln reporting (need paid plan)")
+    else:
+        steps.append((f"ruleset '{RULESET_NAME}'", lambda: configure_ruleset(repo)))
+    steps += [
+        ("labels: " + ", ".join(LABELS), lambda: [
+            gh("label", "create", name, "--repo", repo, "--color", color, "--force")
+            for name, color in LABELS.items()
+        ]),
+        ("mute notifications (watch: ignore)",
+         lambda: api("PUT", f"repos/{repo}/subscription", {"subscribed": False, "ignored": True})),
+    ]  # fmt: skip
     if project:
-        steps.append(("project board", lambda: configure_project(gh, full_name)))
+        steps.append(("project board", lambda: configure_project(repo)))
+
+    failed: list[str] = []
     for name, fn in steps:
-        report.step(name, fn, gh.log)
-    return report
+        try:
+            fn()
+        except Exception as exc:  # report and keep going
+            log(f"  ✗ {name}: {exc}")
+            failed.append(name)
+            if fn is push:
+                break  # nothing after this makes sense without the code on GitHub
+        else:
+            log(f"  ✓ {name}")
+    return failed

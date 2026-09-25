@@ -66,3 +66,30 @@ def unique_random_name(
         if not is_taken(candidate):
             return candidate
     raise RuntimeError(f"could not find a free random name in {attempts} attempts")
+
+
+# GitHub logins: alphanumerics and single inner hyphens, max 39 chars.
+_VALID_OWNER = re.compile(r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$")
+_VALID_PYTHON = re.compile(r"^3\.\d{1,2}(?:\.\d{1,2})?$")
+MAX_DESCRIPTION = 350  # GitHub's limit for repo descriptions
+
+
+def validate_owner(owner: str) -> str:
+    if not _VALID_OWNER.match(owner):
+        raise ValueError(f"invalid GitHub owner {owner!r}")
+    return owner
+
+
+def validate_python_version(version: str) -> str:
+    if not _VALID_PYTHON.match(version):
+        raise ValueError(f"invalid python version {version!r}; expected e.g. 3.14")
+    return version
+
+
+def validate_description(text: str) -> str:
+    """Single line, printable, and short: it ends up in pyproject.toml and on GitHub."""
+    if any(not ch.isprintable() for ch in text):
+        raise ValueError("description must be a single line without control characters")
+    if len(text) > MAX_DESCRIPTION:
+        raise ValueError(f"description is longer than {MAX_DESCRIPTION} characters")
+    return text

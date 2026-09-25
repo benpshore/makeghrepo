@@ -18,6 +18,8 @@ SMOKE_CHECKS: tuple[tuple[str, ...], ...] = (
     ("uv", "run", "ruff", "format", "--check"),
     ("uv", "run", "ruff", "check"),
     ("uv", "run", "pytest", "-q"),
+    ("uv", "audit", "--locked", "--preview-features", "audit-command"),
+    ("uv", "build", "-q"),
 )
 
 
@@ -39,7 +41,7 @@ def render(template: str, dest: Path, data: dict[str, str]) -> None:
 
 
 def smoke_test(dest: Path, log: Callable[[str], None]) -> None:
-    """Lock, install, lint, and test the freshly generated project."""
+    """Lock, install, lint, test, audit and build the freshly generated project."""
     for cmd in SMOKE_CHECKS:
         log("  $ " + " ".join(cmd))
         result = subprocess.run(cmd, cwd=dest, capture_output=True, text=True)
