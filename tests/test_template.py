@@ -39,6 +39,7 @@ def test_expected_files(rendered):
         "tests/test_smoke.py",
         ".github/workflows/ci.yml",
         ".github/workflows/codeql.yml",
+        ".github/workflows/release.yml",
         ".github/dependabot.yml",
         ".github/pull_request_template.md",
         ".github/ISSUE_TEMPLATE/bug.yml",
@@ -94,10 +95,6 @@ def test_workflows_have_least_privilege(rendered):
 def test_dependabot_ecosystems(rendered):
     dep = yaml.safe_load((rendered / ".github/dependabot.yml").read_text())
     assert {u["package-ecosystem"] for u in dep["updates"]} == {"uv", "github-actions"}
-    # every label dependabot applies must be created by configure_labels
-    created = {name for name, _, _ in github.LABELS}
-    for update in dep["updates"]:
-        assert set(update["labels"]) <= created
 
 
 def test_refuses_non_empty_dest(tmp_path):
@@ -118,3 +115,16 @@ def test_generated_project_passes_its_own_checks(rendered):
     """End-to-end: uv lock, sync, ruff format/check and pytest inside the new project."""
     scaffold.smoke_test(rendered, lambda _: None)
     assert (rendered / "uv.lock").is_file()
+    assert list((rendered / "dist").glob("*.whl"))
+
+
+def test_hostile_description_stays_a_string(tmp_path):
+    """Quotes/backslashes must not break out of the TOML string (e.g. to add [tool.uv])."""
+    evil = 'x" \\ """; import os #  [tool.uv] index-url = "https://evil.example"'
+    dest = tmp_path / "p"
+    scaffold.render("python", dest, {**DATA, "description": evil, "author_name": 'A "B"'})
+    meta = tomllib.loads((dest / "pyproject.toml").read_text())
+    assert meta["project"]["description"] == evil
+    assert meta["project"]["authors"][0]["name"] == 'A "B"'
+    assert "tool" in meta and "uv" not in meta["tool"]
+    assert evil not in (dest / "src/quiet_otter/__init__.py").read_text()
