@@ -1,0 +1,36 @@
+[% if py %]
+uv run ruff format && uv run ruff check && uv run pytest && uv audit --preview-features audit-command
+[% endif %]
+[% if rs %]
+cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
+[% endif %]
+[% if swift %]
+swift build && swift test
+[% endif %]
+[% if js %]
+npm run lint && npm test
+[% endif %]
+[% if css %]
+npm run lint:css
+[% endif %]
+[% if cmake %]
+cmake -S . -B build && cmake --build build && ctest --test-dir build
+[% endif %]
+[% if api %]
+npx @stoplight/spectral-cli lint openapi.yaml
+[% endif %]
+[% if pg %]
+docker compose up -d db   # local Postgres; migrations in db/migrations run on first start
+[% endif %]
+[% if sql %]
+uvx sqlfluff lint sql[[ ' db' if pg else '' ]]
+[% endif %]
+[% if docker %]
+docker build -t [[ project_name ]] .
+[% endif %]
+[% if sh %]
+shellcheck scripts/*.sh
+[% endif %]
+[% if not languages %]
+# no language chosen yet: add your toolchain's checks here and to .github/workflows/ci.yml
+[% endif %]

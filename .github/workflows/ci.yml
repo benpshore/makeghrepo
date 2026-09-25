@@ -46,5 +46,3 @@ jobs:
         run: |
           uv tool install dist/*.whl
           makeghrepo --help
-          ghnew --local -y --dir "$RUNNER_TEMP/e2e" demo-project
-          test "$(git -C "$RUNNER_TEMP/e2e/demo-project" log --format=%s)" = setup

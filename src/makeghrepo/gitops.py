@@ -26,3 +26,10 @@ def init_and_commit(path: Path, message: str = "setup") -> None:
 
 def push_main(path: Path) -> None:
     git.Repo(path).git.push("-u", "origin", "main")
+
+
+def remote_has_main(path: Path) -> bool:
+    try:
+        return bool(git.Repo(path).git.ls_remote("--heads", "origin", "main").strip())
+    except git.GitCommandError:  # no origin yet, or unreachable
+        return False

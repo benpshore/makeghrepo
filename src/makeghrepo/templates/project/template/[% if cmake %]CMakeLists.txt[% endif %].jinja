@@ -1,0 +1,28 @@
+cmake_minimum_required(VERSION 3.25)
+project([[ package_name ]] LANGUAGES[% if c or objc %] C[% endif %][% if cpp or objcpp %] CXX[% endif %][% if objc %] OBJC[% endif %][% if objcpp %] OBJCXX[% endif %])
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_C_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
+enable_testing()
+
+function(add_program target source)
+  add_executable(${target} ${source})
+  target_compile_options(${target} PRIVATE -Wall -Wextra -Werror)
+  add_test(NAME ${target} COMMAND ${target})
+endfunction()
+
+[% if c %]
+add_program([[ package_name ]]_c src/main.c)
+[% endif %]
+[% if cpp %]
+add_program([[ package_name ]]_cpp src/main.cpp)
+[% endif %]
+[% if objc %]
+add_program([[ package_name ]]_objc src/main.m)
+target_link_libraries([[ package_name ]]_objc PRIVATE "-framework Foundation")
+[% endif %]
+[% if objcpp %]
+add_program([[ package_name ]]_objcpp src/main.mm)
+target_link_libraries([[ package_name ]]_objcpp PRIVATE "-framework Foundation")
+[% endif %]

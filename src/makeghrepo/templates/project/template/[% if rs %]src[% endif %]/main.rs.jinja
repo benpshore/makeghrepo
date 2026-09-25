@@ -1,0 +1,17 @@
+fn greeting() -> String {
+    String::from("Hello from [[ project_name ]]!")
+}
+
+fn main() {
+    println!("{}", greeting());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::greeting;
+
+    #[test]
+    fn greets() {
+        assert!(greeting().contains("[[ project_name ]]"));
+    }
+}

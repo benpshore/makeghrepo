@@ -1,0 +1,34 @@
+[% if py %]
+FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+WORKDIR /app
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+RUN uv sync --locked --no-dev
+USER nobody
+CMD ["/app/.venv/bin/[[ project_name ]]"]
+[% elif rs %]
+FROM rust:1-slim AS build
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+COPY --from=build /app/target/release/[[ project_name ]] /usr/local/bin/app
+USER nobody
+CMD ["app"]
+[% elif js %]
+FROM node:24-slim
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY src ./src
+USER node
+CMD ["node", "-e", "import('./src/index.js').then(m => console.log(m.greeting()))"]
+[% else %]
+FROM alpine:3
+WORKDIR /app
+COPY . .
+USER nobody
+CMD ["echo", "Hello from [[ project_name ]]!"]
+[% endif %]
