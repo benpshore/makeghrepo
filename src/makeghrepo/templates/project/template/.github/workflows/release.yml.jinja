@@ -1,0 +1,34 @@
+name: Release
+
+# Publish: bump the version, merge the PR, then push a tag, e.g.
+#   git tag v0.1.1 && git push --tags
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+[% if py %]
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Tag matches project version
+        run: test "v$(uv version --short)" = "$GITHUB_REF_NAME"
+      - run: uv sync --locked
+      - run: uv run pytest
+      - run: uv audit --locked --preview-features audit-command
+      - run: uv build
+[% endif %]
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes[[ ' dist/*' if py else '' ]]

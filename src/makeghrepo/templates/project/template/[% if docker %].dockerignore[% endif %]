@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+node_modules
+target
+.build
+build
+dist
+*.db
+*.sqlite*
+.env
+.env.*

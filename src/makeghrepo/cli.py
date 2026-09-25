@@ -1,7 +1,8 @@
-"""makeghrepo command line interface."""
+"""makeghrepo [NAME] [LANGUAGE]... [--private]"""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -10,10 +11,7 @@ import typer
 
 from makeghrepo import github, gitops, names, scaffold
 
-app = typer.Typer(
-    help="Bootstrap a new uv project and publish it to GitHub, fully configured.",
-    no_args_is_help=True,
-)
+app = typer.Typer(add_completion=True)
 
 
 def fail(msg: str) -> typer.Exit:
@@ -21,121 +19,79 @@ def fail(msg: str) -> typer.Exit:
     return typer.Exit(1)
 
 
-@app.command()
-def new(
-    name: Annotated[
-        str | None, typer.Argument(help="Repo name. Omit for a random one like 'quiet-otter'.")
+@app.command(
+    help="Create a new GitHub repo, fully configured. Re-run the same command to resume.\n\n"
+    f"Languages (any number, or none): {', '.join(scaffold.LANGUAGES)}.",
+)
+def main(
+    words: Annotated[
+        list[str] | None, typer.Argument(metavar="[NAME] [LANGUAGE]...", show_default=False)
     ] = None,
-    description: Annotated[str, typer.Option("--description", "-d")] = "",
-    base_dir: Annotated[
-        Path, typer.Option("--dir", envvar="MAKEGHREPO_DIR", help="Parent directory.")
-    ] = Path("~/code/GitHub"),
-    owner: Annotated[
-        str | None,
-        typer.Option(envvar="MAKEGHREPO_OWNER", help="GitHub user/org. Default: gh's user."),
-    ] = None,
-    python: Annotated[str, typer.Option("--python", "-p")] = "3.14",
     private: Annotated[bool, typer.Option("--private")] = False,
-    github_: Annotated[
-        bool, typer.Option("--github/--local", help="--local skips everything on GitHub.")
-    ] = True,
-    project: Annotated[bool, typer.Option("--project/--no-project")] = True,
-    checks: Annotated[
-        bool, typer.Option("--checks/--skip-checks", help="Lock, lint and test before commit.")
-    ] = True,
-    yes: Annotated[bool, typer.Option("--yes", "-y", help="Don't ask for confirmation.")] = False,
 ) -> None:
-    """Create a project from a template, commit it, and publish it to GitHub."""
-    base_dir = base_dir.expanduser().resolve()
+    words = list(words or [])
+    # A leading non-language word is the name; otherwise pick a random one.
+    raw_name = words.pop(0) if words and scaffold.language(words[0]) is None else None
+    langs: list[str] = []
+    for word in words:
+        lang = scaffold.language(word)
+        if lang is None:
+            raise fail(f"unknown language {word!r}. Choose from: {', '.join(scaffold.LANGUAGES)}")
+        langs += [lang] if lang not in langs else []
+
+    base_dir = Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")).expanduser().resolve()
     try:
-        if github_ and not owner:
-            owner = github.current_user()
-        if owner:
-            names.validate_owner(owner)
-        names.validate_python_version(python)
-        names.validate_description(description)
-
-        def is_taken(n: str) -> bool:
-            return (base_dir / n).exists() or (github_ and github.repo_exists(f"{owner}/{n}"))
-
-        if name:
-            name = names.validate_name(names.normalize_name(name))
-            if is_taken(name):
-                raise ValueError(f"{name} already exists in {base_dir} or on GitHub")
+        owner = names.validate_owner(github.current_user())
+        if raw_name:
+            name = names.validate_name(names.normalize_name(raw_name))
         else:
-            name = names.unique_random_name(is_taken)
+            name = names.unique_random_name(
+                lambda n: (base_dir / n).exists() or github.repo_exists(f"{owner}/{n}")
+            )
+        repo = f"{owner}/{name}"
+        dest = base_dir / name
+        resume = dest.exists()
+        on_github = github.repo_exists(repo)
     except (ValueError, RuntimeError, FileNotFoundError) as exc:
         raise fail(str(exc)) from exc
 
-    dest = base_dir / name
-    repo = f"{owner}/{name}"
-    typer.echo(f"project: {dest}")
-    visibility = "private" if private else "public"
-    typer.echo(f"github:  {repo} ({visibility})" if github_ else "github:  skipped (--local)")
-    if not yes and not typer.confirm("Proceed?", default=True):
-        raise typer.Exit(1)
-
-    # Only the name: an email would be published in pyproject.toml.
-    author = gitops.author_from_git_config()[0] or owner or ""
-    scaffold.render("python", dest, {
-        "project_name": name,
-        "package_name": names.package_name(name),
-        "description": description or name,
-        "author_name": author,
-        "python_version": python,
-        "private": private,
-    })  # fmt: skip
-
-    try:
-        if checks:
-            typer.echo("smoke testing generated project…")
-            scaffold.smoke_test(dest, typer.echo)
-        typer.echo("git init -b main && git add --all && git commit -m setup")
-        gitops.init_and_commit(dest, "setup")
-    except (RuntimeError, git.GitCommandError) as exc:
-        raise fail(f"{exc}\nNothing was published. Inspect or delete {dest}.") from exc
-
-    if not github_:
-        typer.echo(f"done: {dest}")
-        return
+    if resume:
+        if not (dest / ".git").is_dir():
+            raise fail(f"{dest} exists but isn't a git repo; pick another name")
+        typer.echo(f"resuming {dest} (already exists; languages ignored)")
+    elif on_github:
+        raise fail(f"{repo} already exists on GitHub")
+    else:
+        typer.echo(f"creating {dest} [{', '.join(langs) or 'any language'}]")
+        scaffold.render(dest, {
+            "project_name": name,
+            "package_name": names.package_name(name),
+            "description": name,
+            # Only the name: an email would be published in the repo.
+            "author_name": gitops.author_from_git_config()[0] or owner,
+            "github_owner": owner,
+            "private": private,
+            "languages": langs,
+        })  # fmt: skip
+        try:
+            scaffold.smoke_test(dest, langs, typer.echo)
+            gitops.init_and_commit(dest, "setup")
+        except (RuntimeError, git.GitCommandError) as exc:
+            raise fail(f"{exc}\nNothing was published. Fix or delete {dest}.") from exc
 
     try:
-        github.create_repo(repo, dest, description or name, private)
+        if on_github:
+            private = github.is_private(repo)
+        else:
+            github.create_repo(repo, dest, name, private)
     except github.GhError as exc:
-        raise fail(f"{exc}\nLocal project is intact at {dest}.") from exc
-    failed = github.configure_all(
-        repo, private=private, project=project, push=lambda: gitops.push_main(dest), log=typer.echo
-    )
-    _finish(repo, failed, dest)
+        raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
 
-
-@app.command()
-def configure(
-    repo: Annotated[str, typer.Argument(help="OWNER/REPO of an existing repo.")],
-    project: Annotated[bool, typer.Option("--project/--no-project")] = True,
-) -> None:
-    """(Re)apply GitHub settings to an existing repo. Safe to re-run."""
-    owner, _, name = repo.partition("/")
-    try:
-        names.validate_owner(owner)
-        names.validate_name(name)
-        private = github.is_private(repo)
-    except (ValueError, github.GhError) as exc:
-        raise fail(f"expected an existing OWNER/REPO: {exc}") from exc
-    _finish(repo, github.configure_all(repo, private=private, project=project, log=typer.echo))
-
-
-def _finish(repo: str, failed: list[str], dest: Path | None = None) -> None:
-    typer.echo(f"\nhttps://github.com/{repo}")
-    if dest:
-        typer.echo(f'cd {dest}  # or: tmux new-session -A -s main -n {dest.name} -c "{dest}"')
+    # Push only if main isn't on GitHub yet; once protected, main only changes via PRs.
+    pushed = on_github and gitops.remote_has_main(dest)
+    push = None if pushed else lambda: gitops.push_main(dest)
+    failed = github.configure_all(repo, private=private, push=push, log=typer.echo)
+    typer.echo(f"\nhttps://github.com/{repo}\ncd {dest}")
     if failed:
-        if "push main" in failed and dest:
-            typer.echo(f"push failed. Fix, then:\n  git -C {dest} push -u origin main")
-        typer.echo(f"{len(failed)} step(s) failed. Re-run:\n  makeghrepo configure {repo}")
+        typer.echo(f"{len(failed)} step(s) failed. Fix, then re-run: makeghrepo {name}")
         raise typer.Exit(2)
-
-
-def new_main() -> None:
-    """Entry point for the `ghnew` shortcut: same as `makeghrepo new`."""
-    typer.run(new)

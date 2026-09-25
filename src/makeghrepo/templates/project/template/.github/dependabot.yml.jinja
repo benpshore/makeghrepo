@@ -1,0 +1,13 @@
+version: 2
+updates:
+[% for eco, on in [('github-actions', true), ('uv', py), ('cargo', rs), ('swift', swift), ('npm', js), ('docker', docker), ('docker-compose', pg)] if on %]
+  - package-ecosystem: [[ eco ]]
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      [[ eco ]]:
+        patterns: ["*"]
+[% endfor %]
