@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The job name "ci" is a required status check in the branch ruleset.
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+      - name: Git identity for tests
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.invalid"
+      - name: Install
+        run: uv sync --locked
+      - name: Format
+        run: uv run ruff format --check
+      - name: Lint
+        run: uv run ruff check --output-format=github
+      - name: Test
+        run: uv run pytest
+      - name: Build
+        run: uv build
+      - name: Install as a uv tool and smoke test
+        run: |
+          uv tool install dist/*.whl
+          makeghrepo --help
+          ghnew --local -y --dir "$RUNNER_TEMP/e2e" demo-project
+          test "$(git -C "$RUNNER_TEMP/e2e/demo-project" log --format=%s)" = setup

@@ -1,0 +1,41 @@
+_subdirectory: template
+_templates_suffix: .jinja
+
+project_name:
+  type: str
+  help: Repository / distribution name (lowercase, dashes)
+  validator: >-
+    {% if not (project_name | regex_search('^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$')) %}
+    lowercase letters, digits and dashes only
+    {% endif %}
+
+package_name:
+  type: str
+  help: Python import name
+  default: "{{ project_name | replace('-', '_') }}"
+
+description:
+  type: str
+  default: "{{ project_name }}"
+
+author_name:
+  type: str
+  default: ""
+
+author_email:
+  type: str
+  default: ""
+
+github_owner:
+  type: str
+  default: ""
+
+python_version:
+  type: str
+  default: "3.14"
+
+year:
+  type: str
+  help: Copyright year (makeghrepo passes the current year)
+  default: "2026"
+  when: false
