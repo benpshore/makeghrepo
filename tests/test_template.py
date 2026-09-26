@@ -158,6 +158,23 @@ def test_smoke_skips_missing_tools(tmp_path, monkeypatch):
     assert all("skip" in line for line in lines) and len(lines) == 5
 
 
+def test_skip_local_checks_still_makes_lockfiles(tmp_path, monkeypatch):
+    """A constrained host can skip compiling/testing, but not the lockfile CI/Docker need."""
+    monkeypatch.setenv("MAKEGHREPO_SKIP_LOCAL_CHECKS", "1")
+    monkeypatch.setattr(scaffold.shutil, "which", lambda _: "/bin/x")  # every tool "installed"
+    ran = []
+
+    def fake_run(cmd, cwd, capture_output, text):
+        ran.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(scaffold.subprocess, "run", fake_run)
+    lines = []
+    scaffold.smoke_test(tmp_path, ["python", "rust"], lines.append)
+    assert ran == [("uv", "lock")]  # rust has no required lockfile step, so it's fully skipped
+    assert any("MAKEGHREPO_SKIP_LOCAL_CHECKS" in line for line in lines)
+
+
 @pytest.mark.slow
 def test_python_project_passes_its_own_checks(tmp_path):
     """End-to-end: uv lock/sync, ruff, pytest, uv audit and uv build inside a new project."""
