@@ -8,12 +8,11 @@ from typing import Annotated
 
 import git
 import typer
-import yaml
 
 from makeghrepo import github, gitops, names, scaffold
 
 app = typer.Typer(add_completion=True)
-ANSWERS_FILE = Path(".copier-answers.yml")  # copier's record of how the project was rendered
+CODEQL = Path(".github/workflows/codeql.yml")  # rendered for public repos only
 
 
 def fail(msg: str) -> typer.Exit:
@@ -92,9 +91,9 @@ def main(
             private = github.is_private(repo)
         else:
             if resume:
-                # copier's own answers file remembers whether it was rendered private.
-                answers = yaml.safe_load((dest / ANSWERS_FILE).read_text())
-                private = bool(answers.get("private", private))
+                # The rendered files remember whether it was meant to be private
+                # (copier only writes .copier-answers.yml if a template opts in).
+                private = private or not (dest / CODEQL).exists()
             github.create_repo(repo, dest, name, private)
     except github.GhError as exc:
         raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
