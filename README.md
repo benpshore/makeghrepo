@@ -20,6 +20,7 @@ makeghrepo quiet-otter python       # one language
 makeghrepo quiet-otter rust docker  # several
 makeghrepo swift                    # first word is a language, so the name is random
 makeghrepo quiet-otter --private
+makeghrepo quiet-otter python --lib # library layout, no console script (like `uv init --lib`)
 ```
 
 Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `postgres` `sql` `docker` `shell`. Aliases like `c++`, `objc++`, `rest` and `pg` also work.
@@ -61,6 +62,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 | language | files | checks (locally and in CI) |
 |---|---|---|
 | python | `pyproject.toml`, `src/<pkg>/`, `tests/` | ruff format + check, pytest, `uv audit`, `uv build` |
+| python --lib | same, minus the console script; adds `py.typed` | same checks |
 | rust | `Cargo.toml`, `src/main.rs` | `cargo fmt --check`, `clippy -D warnings` (pedantic), `cargo test` |
 | swift | `Package.swift`, `Sources/`, `Tests/` | `swift build`, `swift test` |
 | js | `package.json`, `eslint.config.js`, `src/`, `test/` | eslint, `node --test`, `npm audit` (CI) |
