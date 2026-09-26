@@ -52,7 +52,8 @@ CHECKS: dict[str, tuple[tuple[str, ...], ...]] = {
 
 
 # These create lockfiles that CI (`--locked`, `npm ci`) and the Dockerfiles depend on.
-REQUIRED_TOOLS = {"python": "uv", "js": "npm", "css": "npm"}
+# Each is its language's first CHECKS command, so it can't drift out of sync.
+REQUIRED_TOOLS = {lang: CHECKS[lang][0][0] for lang in ("python", "js", "css")}
 
 
 def language(word: str) -> str | None:
