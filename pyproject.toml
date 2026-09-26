@@ -5,7 +5,7 @@ description = "Create a new, fully configured GitHub repo for any language in on
 readme = "README.md"
 license = "MIT"
 authors = [
-    { name = "Ben Shore", email = "147789778+benpshore@users.noreply.github.com" }
+    { name = "Ben Shore" }
 ]
 requires-python = ">=3.14"
 dependencies = [
