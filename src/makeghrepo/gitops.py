@@ -20,6 +20,25 @@ def init(path: Path) -> None:
     git.Repo.init(path, initial_branch="main")
 
 
+def ensure_identity(path: Path, name: str, email: str) -> None:
+    """Set commit identity on this repo only, if none is set at any config level.
+
+    A fresh host or CI runner often has no ``user.name``/``user.email`` configured
+    anywhere, and ``git commit`` refuses to run without one. Shell out to ``git
+    config`` itself (not GitPython's own config parser, which resolves file paths
+    independently of ``git``'s ``GIT_CONFIG_*`` env vars and can disagree with what
+    ``git commit`` actually sees) so the check matches reality. Never touch the
+    user's global config: a plain ``git config <key> <value>`` writes to this
+    repo's own ``.git/config``.
+    """
+    repo = git.Repo(path)
+    for key, value in (("user.name", name), ("user.email", email)):
+        try:
+            repo.git.config("--get", key)
+        except git.GitCommandError:
+            repo.git.config(key, value)
+
+
 def has_commits(path: Path) -> bool:
     return git.Repo(path).head.is_valid()
 

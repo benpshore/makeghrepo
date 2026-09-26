@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -77,14 +78,25 @@ def render(dest: Path, data: dict[str, object]) -> None:
 
 
 def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> None:
-    """Run each chosen language's lint/test/build locally. Raises on the first failure."""
+    """Run each chosen language's lint/test/build locally. Raises on the first failure.
+
+    A tool being installed doesn't mean it's cheap to run here: a constrained host
+    (no cooling, a minimal CI runner) may have e.g. cargo installed but still want
+    to skip compiling. Set ``MAKEGHREPO_SKIP_LOCAL_CHECKS`` to skip every check
+    except the lockfile step CI and the Dockerfiles depend on (still required).
+    """
+    skip = bool(os.environ.get("MAKEGHREPO_SKIP_LOCAL_CHECKS"))
     commands = list(dict.fromkeys(cmd for lang in languages for cmd in CHECKS.get(lang, ())))
     if "postgres" in languages and "sql" in languages:
         commands = [(*c, "db") if c[:2] == ("uvx", "sqlfluff") else c for c in commands]
     for lang, tool in REQUIRED_TOOLS.items():
         if lang in languages and shutil.which(tool) is None:
             raise RuntimeError(f"{lang} needs {tool} installed locally to create its lockfile")
+    lockfile_cmds = {CHECKS[lang][0] for lang in REQUIRED_TOOLS}
     for cmd in commands:
+        if skip and cmd not in lockfile_cmds:
+            log(f"  - skip {' '.join(cmd)} (MAKEGHREPO_SKIP_LOCAL_CHECKS set; CI will run it)")
+            continue
         if shutil.which(cmd[0]) is None:
             log(f"  - skip {' '.join(cmd)} ({cmd[0]} not installed; CI will run it)")
             continue

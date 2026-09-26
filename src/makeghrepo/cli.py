@@ -65,17 +65,21 @@ def main(
         raise fail(f"{repo} already exists on GitHub")
     else:
         typer.echo(f"creating {dest} [{', '.join(langs) or 'any language'}]")
+        author_name = gitops.author_from_git_config()[0] or owner
         scaffold.render(dest, {
             "project_name": name,
             "package_name": names.package_name(name),
             "description": name,
             # Only the name: an email would be published in the repo.
-            "author_name": gitops.author_from_git_config()[0] or owner,
+            "author_name": author_name,
             "github_owner": owner,
             "private": private,
             "languages": langs,
         })  # fmt: skip
         gitops.init(dest)
+        # A fresh host or CI runner may have no git identity configured anywhere;
+        # fall back to the authenticated GitHub user so `git commit` never fails on that.
+        gitops.ensure_identity(dest, author_name, f"{owner}@users.noreply.github.com")
 
     if not resume or not gitops.has_commits(dest):  # earlier check/commit failed
         try:

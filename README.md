@@ -28,6 +28,10 @@ If anything fails, fix it and run the same command again. The repo already exist
 
 Projects go in `~/code/GitHub/<name>`. Set `MAKEGHREPO_DIR` to use another folder.
 
+No git identity or GitHub auth setup needed beyond `gh auth login`: makeghrepo falls back to a `users.noreply.github.com` commit identity if none is configured, and never touches your global git config.
+
+On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOCAL_CHECKS=1` to skip local lint/test/build even for tools that are installed — CI runs the same checks anyway. Lockfiles (`uv.lock`, `package-lock.json`) are still generated locally, since CI and the Dockerfiles depend on them.
+
 ## What it does
 
 1. Renders one copier template (`src/makeghrepo/templates/project/`). The shared base is always included; each language you name adds its own files.
