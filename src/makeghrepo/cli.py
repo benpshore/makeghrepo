@@ -29,6 +29,12 @@ def main(
         list[str] | None, typer.Argument(metavar="[NAME] [LANGUAGE]...", show_default=False)
     ] = None,
     private: Annotated[bool, typer.Option("--private")] = False,
+    lib: Annotated[
+        bool,
+        typer.Option(
+            "--lib", help="python: library layout, no console script (like uv init --lib)"
+        ),
+    ] = False,
 ) -> None:
     words = list(words or [])
     # A leading non-language word is the name; otherwise pick a random one.
@@ -39,6 +45,8 @@ def main(
         if lang is None:
             raise fail(f"unknown language {word!r}. Choose from: {', '.join(scaffold.LANGUAGES)}")
         langs += [lang] if lang not in langs else []
+    if lib and "python" not in langs:
+        raise fail("--lib only applies to python; add `python` to the language list")
 
     base_dir = Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")).expanduser().resolve()
     try:
@@ -74,6 +82,7 @@ def main(
             "author_name": author_name,
             "github_owner": owner,
             "private": private,
+            "py_lib": lib,
             "languages": langs,
         })  # fmt: skip
         gitops.init(dest)
