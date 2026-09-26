@@ -77,7 +77,7 @@ def main(
         })  # fmt: skip
         gitops.init(dest)
 
-    if not gitops.has_commits(dest):  # new, or an earlier check/commit failed
+    if not resume or not gitops.has_commits(dest):  # earlier check/commit failed
         try:
             scaffold.smoke_test(dest, langs, typer.echo)
             gitops.commit_all(dest, "setup")
@@ -90,8 +90,10 @@ def main(
         if on_github:
             private = github.is_private(repo)
         else:
-            # On resume, the rendered files remember whether it was meant to be private.
-            private = private or (resume and not (dest / CODEQL).exists())
+            if resume:
+                # The rendered files remember whether it was meant to be private
+                # (copier only writes .copier-answers.yml if a template opts in).
+                private = private or not (dest / CODEQL).exists()
             github.create_repo(repo, dest, name, private)
     except github.GhError as exc:
         raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
