@@ -8,9 +8,11 @@ authors = [{ name = [[ author_name | to_json(ensure_ascii=False) ]] }]
 requires-python = ">=3.14"
 dependencies = []
 
+[% if not py_lib %]
 [project.scripts]
 [[ project_name ]] = "[[ package_name ]]:main"
 
+[% endif %]
 [build-system]
 requires = ["uv_build>=0.9,<1"]
 build-backend = "uv_build"
