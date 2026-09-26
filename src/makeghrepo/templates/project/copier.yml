@@ -44,6 +44,7 @@ rs: {type: bool, when: false, default: "[[ 'rust' in languages ]]"}
 swift: {type: bool, when: false, default: "[[ 'swift' in languages ]]"}
 js: {type: bool, when: false, default: "[[ 'js' in languages ]]"}
 css: {type: bool, when: false, default: "[[ 'css' in languages ]]"}
+npm: {type: bool, when: false, default: "[[ js or css ]]"}
 c: {type: bool, when: false, default: "[[ 'c' in languages ]]"}
 cpp: {type: bool, when: false, default: "[[ 'cpp' in languages ]]"}
 objc: {type: bool, when: false, default: "[[ 'objc' in languages ]]"}
