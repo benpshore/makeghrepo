@@ -34,6 +34,9 @@ year:
 private:
   type: bool
   default: false
+py_lib:
+  type: bool
+  default: false
 languages:
   type: yaml
   default: "[]"

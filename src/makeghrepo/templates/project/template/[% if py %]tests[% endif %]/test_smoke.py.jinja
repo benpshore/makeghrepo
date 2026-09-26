@@ -1,6 +1,11 @@
 import [[ package_name ]]
 
 
+[% if py_lib %]
+def test_hello():
+    assert "[[ project_name ]]" in [[ package_name ]].hello()
+[% else %]
 def test_main_runs(capsys):
     [[ package_name ]].main()
     assert "[[ project_name ]]" in capsys.readouterr().out
+[% endif %]

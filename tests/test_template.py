@@ -62,6 +62,22 @@ def test_each_language_adds_only_its_files(tmp_path, lang, marker):
     assert not (others & got)
 
 
+def test_python_default_is_a_runnable_console_script(tmp_path):
+    dest = render(tmp_path, ["python"])
+    assert "def main() -> None:" in (dest / "src/quiet_otter/__init__.py").read_text()
+    assert "[project.scripts]" in (dest / "pyproject.toml").read_text()
+    assert not (dest / "src/quiet_otter/py.typed").exists()
+
+
+def test_python_lib_flavor_has_no_console_script(tmp_path):
+    dest = render(tmp_path, ["python"], py_lib=True)
+    init = (dest / "src/quiet_otter/__init__.py").read_text()
+    assert "def hello() -> str:" in init and "def main" not in init
+    assert "[project.scripts]" not in (dest / "pyproject.toml").read_text()
+    assert (dest / "src/quiet_otter/py.typed").exists()
+    assert "hello()" in (dest / "tests/test_smoke.py").read_text()
+
+
 @pytest.mark.parametrize("langs", COMBOS, ids=lambda c: "+".join(c) or "none")
 def test_rendered_output_is_clean(tmp_path, langs):
     dest = render(tmp_path, langs)

@@ -61,6 +61,21 @@ def test_private(tmp_path, gh):
     assert not (tmp_path / "secret/.github/workflows/codeql.yml").exists()
 
 
+def test_lib_flag_requires_python(tmp_path, gh):
+    result = runner.invoke(app, ["x", "rust", "--lib"])
+    assert result.exit_code == 1
+    assert "--lib" in result.output
+    assert not (tmp_path / "x").exists()
+
+
+def test_lib_flag(tmp_path, gh):
+    result = runner.invoke(app, ["nolib", "python", "--lib"])
+    assert result.exit_code == 0, result.output
+    pyproject = (tmp_path / "nolib/pyproject.toml").read_text()
+    assert "[project.scripts]" not in pyproject
+    assert (tmp_path / "nolib/src/nolib/py.typed").exists()
+
+
 def test_unknown_language(tmp_path, gh):
     result = runner.invoke(app, ["x", "cobol"])
     assert result.exit_code == 1

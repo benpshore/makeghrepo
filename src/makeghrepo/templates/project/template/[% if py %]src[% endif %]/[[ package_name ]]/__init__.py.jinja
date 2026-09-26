@@ -1,5 +1,10 @@
 """[[ project_name ]]."""
 
 
+[% if py_lib %]
+def hello() -> str:
+    return "Hello from [[ project_name ]]!"
+[% else %]
 def main() -> None:
     print("Hello from [[ project_name ]]!")
+[% endif %]
