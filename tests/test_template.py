@@ -282,6 +282,27 @@ def test_first_failure_reported_in_declared_order(tmp_path, monkeypatch):
         scaffold.smoke_test(tmp_path, ["python"], lambda _: None)
 
 
+def test_a_failure_stops_other_units_before_their_next_command(tmp_path, monkeypatch):
+    """A fast failure elsewhere must stop a slow chain before its next (not current) step —
+    a real cargo/cmake build shouldn't keep running to completion on a fanless host once
+    the whole smoke_test is already going to fail."""
+
+    def handler(cmd):
+        if cmd == ("cargo", "fmt", "--check"):
+            time.sleep(0.2)  # gives the fast failure below time to set the stop event
+            return 0
+        if cmd == ("uv", "run", "--no-sync", "ruff", "format", "--check"):
+            return 1  # fails immediately
+        return 0
+
+    calls = _fake_run(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="ruff format"):
+        scaffold.smoke_test(tmp_path, ["rust", "python"], lambda _: None)
+    assert ("cargo", "fmt", "--check") in calls  # already running: allowed to finish
+    assert ("cargo", "clippy", "--all-targets", "--", "-D", "warnings") not in calls
+    assert ("cargo", "test", "-q") not in calls
+
+
 def test_swift_manifest_has_no_trailing_commas(tmp_path):
     for langs in (["swift"], ["swift", "python"]):
         text = (render(tmp_path / "+".join(langs), langs) / "Package.swift").read_text()
