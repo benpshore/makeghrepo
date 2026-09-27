@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from importlib.resources import as_file, files
 from pathlib import Path
@@ -56,6 +57,20 @@ CHECKS: dict[str, tuple[tuple[str, ...], ...]] = {
 # Each is its language's first CHECKS command, so it can't drift out of sync.
 REQUIRED_TOOLS = {lang: CHECKS[lang][0][0] for lang in ("python", "js", "css")}
 
+# How many of each language's leading CHECKS commands must run sequentially,
+# in that order, before the rest of that language's checks are safe to start:
+# `uv sync`/`npm install` have to finish before anything reads the environment
+# they build. Everything after that prefix is independent of the others (and
+# of every other requested language) and can run concurrently.
+SETUP_LEN = {"python": 2, "js": 1, "css": 1}
+
+# Every command in these languages' CHECKS forms one dependency chain end to
+# end (configure-then-build-then-test, or a shared build cache/target dir that
+# concurrent invocations of the same tool would fight over), so the whole
+# tuple runs as a single sequential unit instead of being split into a
+# setup/pool prefix like python/js/css are.
+CHAIN_LANGS = {"rust", "swift", "c", "cpp", "objc", "objcpp"}
+
 
 def language(word: str) -> str | None:
     word = word.lower()
@@ -84,23 +99,74 @@ def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> 
     (no cooling, a minimal CI runner) may have e.g. cargo installed but still want
     to skip compiling. Set ``MAKEGHREPO_SKIP_LOCAL_CHECKS`` to skip every check
     except the lockfile step CI and the Dockerfiles depend on (still required).
+
+    Setup (lockfile/install) commands run first and in order, since everything
+    else assumes they finished. What's left runs concurrently: each language's
+    remaining checks are independent of every other language's, and languages
+    in ``CHAIN_LANGS`` contribute their whole tuple as one sequential unit so a
+    shared build cache never sees two invocations of the same tool at once.
     """
     skip = bool(os.environ.get("MAKEGHREPO_SKIP_LOCAL_CHECKS"))
-    commands = list(dict.fromkeys(cmd for lang in languages for cmd in CHECKS.get(lang, ())))
-    if "postgres" in languages and "sql" in languages:
-        commands = [(*c, "db") if c[:2] == ("uvx", "sqlfluff") else c for c in commands]
     for lang, tool in REQUIRED_TOOLS.items():
         if lang in languages and shutil.which(tool) is None:
             raise RuntimeError(f"{lang} needs {tool} installed locally to create its lockfile")
     lockfile_cmds = {CHECKS[lang][0] for lang in REQUIRED_TOOLS}
-    for cmd in commands:
+
+    seen: set[tuple[str, ...]] = set()
+    setup: list[tuple[str, ...]] = []
+    units: list[tuple[tuple[str, ...], ...]] = []  # each is one sequential unit to pool
+    for lang in languages:
+        cmds = CHECKS.get(lang, ())
+        if lang == "sql" and "postgres" in languages:
+            cmds = tuple((*c, "db") if c[:2] == ("uvx", "sqlfluff") else c for c in cmds)
+        if lang in CHAIN_LANGS:
+            chain = tuple(c for c in cmds if c not in seen)
+            seen.update(chain)
+            if chain:
+                units.append(chain)
+            continue
+        for i, cmd in enumerate(cmds):
+            if cmd in seen:
+                continue
+            seen.add(cmd)
+            if i < SETUP_LEN.get(lang, 0):
+                setup.append(cmd)
+            else:
+                units.append((cmd,))
+
+    def run(cmd: tuple[str, ...]) -> str:
         if skip and cmd not in lockfile_cmds:
-            log(f"  - skip {' '.join(cmd)} (MAKEGHREPO_SKIP_LOCAL_CHECKS set; CI will run it)")
-            continue
+            return f"  - skip {' '.join(cmd)} (MAKEGHREPO_SKIP_LOCAL_CHECKS set; CI will run it)"
         if shutil.which(cmd[0]) is None:
-            log(f"  - skip {' '.join(cmd)} ({cmd[0]} not installed; CI will run it)")
-            continue
-        log("  $ " + " ".join(cmd))
-        result = subprocess.run(cmd, cwd=dest, capture_output=True, text=True)
+            return f"  - skip {' '.join(cmd)} ({cmd[0]} not installed; CI will run it)"
+        # After the sequential setup phase, `uv run` no longer needs to check
+        # (or wait on another concurrent check) whether the venv is in sync.
+        run_cmd = (cmd[0], cmd[1], "--no-sync", *cmd[2:]) if cmd[:2] == ("uv", "run") else cmd
+        result = subprocess.run(run_cmd, cwd=dest, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(f"failed: {' '.join(cmd)}\n{result.stdout}{result.stderr}")
+        return "  $ " + " ".join(cmd)
+
+    for cmd in setup:
+        log(run(cmd))
+
+    if not units:
+        return
+
+    def run_unit(unit: tuple[tuple[str, ...], ...]) -> tuple[list[str], RuntimeError | None]:
+        lines: list[str] = []
+        for cmd in unit:
+            try:
+                lines.append(run(cmd))
+            except RuntimeError as exc:
+                return lines, exc
+        return lines, None
+
+    with ThreadPoolExecutor(max_workers=min(4, len(units))) as pool:
+        results = list(pool.map(run_unit, units))  # preserves declared order, not completion order
+
+    for lines, error in results:
+        for line in lines:
+            log(line)
+        if error:
+            raise error
