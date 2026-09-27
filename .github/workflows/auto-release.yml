@@ -5,30 +5,47 @@ name: Auto-release
 # hand, which is what let makeghrepo drift at v0.1.0 forever while `main` moved
 # on underneath it (#15) — `uv tool upgrade` had no new version to notice.
 #
-# Everything but the guard runs in one job and only pushes once tests/audit/
-# build all pass. This intentionally does NOT rely on the tag push to
-# re-trigger release.yml: pushes authenticated with the default GITHUB_TOKEN
-# never trigger other workflow runs (a GitHub anti-recursion rule), so a
-# two-workflow handoff would silently never fire. release.yml stays as a
-# manual fallback (see its own header) for the case where this workflow tags
-# but fails to publish. Keep its checkout/setup-uv/test/audit/build steps and
-# pinned action SHAs in sync with that file — they're duplicated, not shared,
-# because a reusable workflow would need cross-job artifact passing that adds
-# more untestable surface than the duplication it removes, for two files this
-# short.
+# main is now protected by the "protect-main" ruleset (#20): PRs required, `ci`
+# required to pass, no direct pushes. So this workflow can no longer push a
+# release commit straight to main (GH013 rejects it) — it opens a PR for its
+# own bump commit instead, same as a human would.
 #
-# Known limitation: the release commit below is pushed straight to main, not
-# through a PR, so it never runs ci.yml's "ci" job — the one ci.yml's own
-# header comment calls a required status check. No branch ruleset is
-# currently configured on this repo (verified live), so nothing enforces that
-# today. If one ever is, it needs a bypass entry for this workflow's actor, or
-# every release push will be rejected outright.
+# That PR is opened with the default GITHUB_TOKEN, which has its own wrinkle:
+# GitHub's anti-recursion rule means events *triggered by* GITHUB_TOKEN don't
+# start new workflow runs — so ci.yml's normal `pull_request` trigger never
+# fires on this PR, and the required `ci` check would never report, and
+# auto-merge would wait forever. `workflow_dispatch` is explicitly exempted
+# from that rule, so this workflow dispatches ci.yml onto its own release
+# branch by hand and waits for that run. Verified live (2026-09-27): a
+# workflow_dispatch run's check-run attaches to the dispatched branch's exact
+# head SHA under the GitHub Actions app (id 15368) — the same thing
+# required_status_checks looks for — so it satisfies the PR's required check
+# exactly as if ci.yml had triggered on its own.
+#
+# Considered and declined: a bypass_actors entry on the ruleset letting this
+# workflow's actor push straight past the PR requirement. Rejected because it
+# would exempt the release commit from the same CI gate every other change on
+# this repo has to clear — the whole point of #20 — for a config change riskier
+# to reason about than the dispatch dance above.
+#
+# Requires "Allow GitHub Actions to create and approve pull requests" enabled
+# under Settings → Actions → General (done 2026-09-27) — GITHUB_TOKEN can't
+# open PRs at all otherwise. No PAT/secret needed: everything here runs as
+# GITHUB_TOKEN.
+#
+# Build happens twice on purpose: once pre-flight (fail fast, don't open a
+# doomed PR) and once after the squash merge, from the actual merged commit —
+# so the published dist/* always matches what's really on main, not a
+# pre-merge snapshot.
+#
+# release.yml stays as the manual fallback (see its own header) for the case
+# where this workflow tags but fails to publish. Keep the two files' pinned
+# action SHAs in sync — duplicated, not shared, for the same reason as before:
+# a reusable workflow needs cross-job artifact passing that's more surface
+# than the duplication it replaces, for files this short.
 on:
   push:
     branches: [main]
-
-permissions:
-  contents: write
 
 concurrency:
   group: auto-release
@@ -45,6 +62,8 @@ jobs:
     name: guard
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
@@ -69,7 +88,13 @@ jobs:
     needs: guard
     if: needs.guard.outputs.skip != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -84,28 +109,81 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
       - name: Bump minor version
-        run: uv version --bump minor --no-sync
+        id: bump
+        run: |
+          uv version --bump minor --no-sync
+          echo "version=$(uv version --short)" >> "$GITHUB_OUTPUT"
       - name: Install
         run: uv sync --locked
       - name: Test
         run: uv run pytest
       - name: Audit dependencies
         run: uv audit --locked --preview-features audit-command
-      - name: Build
-        run: uv build
-      - name: Commit, tag, and push
-        id: tag
-        run: |
-          version="$(uv version --short)"
-          git add pyproject.toml uv.lock
-          git commit -m "chore: release v$version"
-          git tag -a "v$version" -m "v$version"
-          # Atomic: the branch update and the tag either both land or neither
-          # does, so a rejected/failed push can't leave main carrying an
-          # unreleased "chore: release" commit with no matching tag.
-          git push --atomic origin HEAD:refs/heads/main "refs/tags/v$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Publish GitHub release
+      - name: Open release PR
+        id: pr
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "v${{ steps.tag.outputs.version }}" dist/* --verify-tag --generate-notes
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          branch="release/v$VERSION"
+          git checkout -b "$branch"
+          git add pyproject.toml uv.lock
+          git commit -m "chore: release v$VERSION"
+          git push origin "$branch"
+          url="$(gh pr create --base main --head "$branch" \
+            --title "chore: release v$VERSION" \
+            --body "Automated version bump. Merges itself once \`ci\` passes on this branch.")"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+      - name: Dispatch ci on the release branch
+        env:
+          BRANCH: ${{ steps.pr.outputs.branch }}
+        run: |
+          set -euo pipefail
+          gh workflow run ci.yml --ref "$BRANCH"
+          # The dispatch API call is fire-and-forget; the run takes a few
+          # seconds to appear in the list.
+          for _ in $(seq 1 10); do
+            run_id="$(gh run list --workflow=ci.yml --branch="$BRANCH" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            [ -n "$run_id" ] && break
+            sleep 3
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error::dispatched ci run never appeared for $BRANCH" >&2
+            exit 1
+          fi
+          gh run watch "$run_id" --exit-status
+      - name: Merge once the required check reports
+        env:
+          NUMBER: ${{ steps.pr.outputs.number }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          # gh run watch confirmed the check succeeded; GitHub's own mergeable
+          # computation can lag a few seconds behind that, so poll rather than
+          # merge on the first try.
+          for _ in $(seq 1 20); do
+            state="$(gh pr view "$NUMBER" --json mergeStateStatus --jq .mergeStateStatus)"
+            [ "$state" = "CLEAN" ] && break
+            sleep 3
+          done
+          if [ "$state" != "CLEAN" ]; then
+            echo "::error::PR #$NUMBER never became mergeable (state: $state)" >&2
+            exit 1
+          fi
+          gh pr merge "$NUMBER" --squash --subject "chore: release v$VERSION" --body ""
+      - name: Build from the merged commit
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout origin/main
+          uv build
+      - name: Tag and publish
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin "refs/tags/v$VERSION"
+          gh release create "v$VERSION" dist/* --verify-tag --generate-notes
