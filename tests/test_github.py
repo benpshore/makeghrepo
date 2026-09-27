@@ -144,6 +144,43 @@ def test_private_skips_paid_features(calls):
     assert "security_and_analysis" not in patch
 
 
+def test_private_disables_actions_before_push(calls):
+    """No Actions minutes to spend on a private repo: disabled before the first
+    push, so ci.yml/release.yml/Dependabot never get a chance to trigger."""
+    order = []
+    failed = github.configure_all(
+        "me/r", private=True, project=False, push=lambda: order.append(len(calls)),
+        log=lambda _: None,
+    )  # fmt: skip
+    assert failed == []
+    paths = _paths(calls)
+    disable_idx = paths.index("repos/me/r/actions/permissions")
+    pushed_at = order[0]
+    assert disable_idx < pushed_at
+    disable_body = next(b for a, b in calls if a[3] == "repos/me/r/actions/permissions")
+    assert disable_body == {"enabled": False}
+
+
+def test_push_skipped_entirely_when_actions_cannot_be_disabled(calls):
+    """A private repo must never reach GitHub with Actions still enabled: if
+    disabling them fails, push isn't attempted at all, not just reported."""
+    calls.fail_on = ("actions/permissions",)
+    pushed = []
+    failed = github.configure_all(
+        "me/r", private=True, project=False, push=lambda: pushed.append(True), log=lambda _: None
+    )
+    assert "disable actions" in failed
+    assert "push main" in failed
+    assert not pushed  # the push callable itself must never run
+
+
+def test_public_repo_leaves_actions_alone(calls):
+    calls.responses.update({"GET": "[]", "graphql": _graphql_projects()})
+    calls.responses["project create"] = '{"number": 1}'
+    github.configure_all("me/r", private=False, log=lambda _: None)
+    assert "repos/me/r/actions/permissions" not in _paths(calls)
+
+
 def test_failures_are_collected_and_others_still_run(calls):
     calls.responses["GET"] = "[]"
     calls.fail_on = ("automated-security-fixes",)
