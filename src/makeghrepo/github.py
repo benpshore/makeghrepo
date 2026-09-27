@@ -147,6 +147,17 @@ def configure_project(repo: str) -> None:
     gh("project", "link", str(number), "--owner", owner, "--repo", repo)
 
 
+def disable_actions(repo: str) -> None:
+    """Turn off GitHub Actions entirely for this repo.
+
+    Private repos here have no Actions minutes to spare, and `ci.yml`/
+    `release.yml`/Dependabot-triggered runs would otherwise fire on the very
+    first push regardless of branch protection (which Free doesn't offer on
+    private repos anyway) — so this has to happen before that push, not after.
+    """
+    api("PUT", f"repos/{repo}/actions/permissions", {"enabled": False})
+
+
 def settings_body(private: bool) -> dict[str, Any]:
     body: dict[str, Any] = {
         "has_wiki": False,
@@ -181,12 +192,15 @@ def configure_all(
     itself — run concurrently; (3) the ruleset, which needs the pushed `main`
     to protect, so it only runs once the push (if any) has actually succeeded.
 
-    Phase 1 running first isn't a dependency gate on push succeeding (that's
-    pre-existing: the old sequential version didn't stop for a failed "repo
-    settings" either, only for a failed push itself). It's kept as its own
-    serial round trip because none of phase 2's steps actually need it to
-    have applied first — this just hasn't been worth the extra bookkeeping
-    to fold in given it's one call.
+    Phase 1 running first isn't generally a dependency gate on push succeeding
+    (that's pre-existing: the old sequential version didn't stop for a failed
+    "repo settings" either, only for a failed push itself; kept serial mostly
+    because none of phase 2's other steps need it applied first, not because
+    of a real dependency). The one exception is private repos: if disabling
+    Actions fails there, push is skipped outright rather than attempted — the
+    whole point of disabling Actions first is to guarantee it happens before
+    any code reaches GitHub, so a failure there can't be silently bypassed by
+    pushing anyway.
     """
     failed: list[str] = []
 
@@ -203,11 +217,17 @@ def configure_all(
             failed.append(name)
 
     if private:
-        # GitHub Free: no rulesets, secret scanning or code scanning on private repos.
-        # CI still runs but can't block merges; the local smoke test is the gate.
+        # GitHub Free: no rulesets, secret scanning or code scanning on private repos,
+        # and Actions get disabled below rather than left running with nothing to
+        # gate — the local smoke test is the only gate left for these repos.
         log("  - private repo: skipping ruleset, secret scanning, vuln reporting (need paid plan)")
 
     report("repo settings", run(lambda: api("PATCH", f"repos/{repo}", settings_body(private))))
+    actions_disabled = True  # only meaningful, and only checked below, when private
+    if private:
+        actions_err = run(lambda: disable_actions(repo))
+        report("disable actions", actions_err)
+        actions_disabled = actions_err is None
 
     fanout: list[tuple[str, Callable[[], object]]] = [
         # One task, alerts before fixes: enabling automated fixes while alerts
@@ -231,7 +251,12 @@ def configure_all(
     ]  # fmt: skip
     if project:
         fanout.append(("project board", lambda: configure_project(repo)))
-    if push:
+    if push and not actions_disabled:
+        # Refuse to push rather than risk a run: disabling Actions is the one
+        # thing standing between a private repo and burning its own minutes.
+        log("  - push main: skipped (couldn't disable Actions; refusing to risk a run)")
+        failed.append("push main")
+    elif push:
         fanout.append(("push main", push))
 
     with ThreadPoolExecutor(max_workers=min(4, len(fanout))) as pool:
