@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -107,11 +108,39 @@ def configure_ruleset(repo: str) -> None:
         api("POST", f"repos/{repo}/rulesets", ruleset_body())
 
 
+FIND_PROJECT_QUERY = """
+query($owner: String!, $title: String!) {
+  user(login: $owner) {
+    projectsV2(first: 100, query: $title) {
+      nodes { number title }
+    }
+  }
+}
+"""
+
+
+def _find_project_by_title(owner: str, title: str) -> int:
+    """GraphQL text search: cheap, but a substring match, and capped at one page.
+
+    If the page comes back full (100) with no exact title match, an existing
+    project could be sitting on a second page — fall back to the old full
+    scan rather than risk creating a duplicate board.
+    """
+    listing = gh("api", "graphql", "-f", f"query={FIND_PROJECT_QUERY}", "-f", f"owner={owner}",
+                 "-f", f"title={title}")  # fmt: skip
+    nodes = json.loads(listing)["data"]["user"]["projectsV2"]["nodes"]
+    number = next((p["number"] for p in nodes if p["title"] == title), 0)
+    if number or len(nodes) < 100:
+        return number
+    full = gh("project", "list", "--owner", owner, "--closed", "--limit", "1000",
+              "--format", "json")  # fmt: skip
+    return next((p["number"] for p in json.loads(full)["projects"] if p["title"] == title), 0)
+
+
 def configure_project(repo: str) -> None:
+    """Link the repo to a same-named project, creating one if it doesn't exist."""
     owner, title = repo.split("/")
-    listing = gh("project", "list", "--owner", owner, "--closed", "--limit", "1000",
-                 "--format", "json")  # fmt: skip
-    number = next((p["number"] for p in json.loads(listing)["projects"] if p["title"] == title), 0)
+    number = _find_project_by_title(owner, title)
     if not number:
         created = gh("project", "create", "--owner", owner, "--title", title, "--format", "json")
         number = json.loads(created)["number"]
@@ -147,26 +176,52 @@ def configure_all(
 ) -> list[str]:
     """Apply every setting; return the names of failed steps (the rest still run).
 
-    ``push`` runs after secret-scanning push protection is on (so it covers the
-    first push) and before the ruleset (which would block pushing to main).
+    Three phases, so independent configuration doesn't wait on itself: (1)
+    repo settings, serial; (2) every independent step — including the push
+    itself — run concurrently; (3) the ruleset, which needs the pushed `main`
+    to protect, so it only runs once the push (if any) has actually succeeded.
+
+    Phase 1 running first isn't a dependency gate on push succeeding (that's
+    pre-existing: the old sequential version didn't stop for a failed "repo
+    settings" either, only for a failed push itself). It's kept as its own
+    serial round trip because none of phase 2's steps actually need it to
+    have applied first — this just hasn't been worth the extra bookkeeping
+    to fold in given it's one call.
     """
-    steps: list[tuple[str, Callable[[], object]]] = [
-        ("repo settings", lambda: api("PATCH", f"repos/{repo}", settings_body(private))),
-        ("dependabot alerts", lambda: api("PUT", f"repos/{repo}/vulnerability-alerts")),
-        ("dependabot security fixes", lambda: api("PUT", f"repos/{repo}/automated-security-fixes")),
-    ]  # fmt: skip
-    if not private:
-        pvr = f"repos/{repo}/private-vulnerability-reporting"
-        steps.append(("private vulnerability reporting", lambda: api("PUT", pvr)))
-    if push:
-        steps.append(("push main", push))
+    failed: list[str] = []
+
+    def run(fn: Callable[[], object]) -> Exception | None:
+        try:
+            fn()
+        except Exception as exc:  # report and keep going
+            return exc
+        return None
+
+    def report(name: str, err: Exception | None) -> None:
+        log(f"  ✗ {name}: {err}" if err else f"  ✓ {name}")
+        if err:
+            failed.append(name)
+
     if private:
         # GitHub Free: no rulesets, secret scanning or code scanning on private repos.
         # CI still runs but can't block merges; the local smoke test is the gate.
         log("  - private repo: skipping ruleset, secret scanning, vuln reporting (need paid plan)")
-    else:
-        steps.append((f"ruleset '{RULESET_NAME}'", lambda: configure_ruleset(repo)))
-    steps += [
+
+    report("repo settings", run(lambda: api("PATCH", f"repos/{repo}", settings_body(private))))
+
+    fanout: list[tuple[str, Callable[[], object]]] = [
+        # One task, alerts before fixes: enabling automated fixes while alerts
+        # are still off can 422. They're independent of everything else here,
+        # just not of each other.
+        ("dependabot alerts + security fixes", lambda: (
+            api("PUT", f"repos/{repo}/vulnerability-alerts"),
+            api("PUT", f"repos/{repo}/automated-security-fixes"),
+        )),
+    ]  # fmt: skip
+    if not private:
+        pvr = f"repos/{repo}/private-vulnerability-reporting"
+        fanout.append(("private vulnerability reporting", lambda: api("PUT", pvr)))
+    fanout += [
         ("labels: " + ", ".join(LABELS), lambda: [
             gh("label", "create", name, "--repo", repo, "--color", color, "--force")
             for name, color in LABELS.items()
@@ -175,17 +230,21 @@ def configure_all(
          lambda: api("PUT", f"repos/{repo}/subscription", {"subscribed": False, "ignored": True})),
     ]  # fmt: skip
     if project:
-        steps.append(("project board", lambda: configure_project(repo)))
+        fanout.append(("project board", lambda: configure_project(repo)))
+    if push:
+        fanout.append(("push main", push))
 
-    failed: list[str] = []
-    for name, fn in steps:
-        try:
-            fn()
-        except Exception as exc:  # report and keep going
-            log(f"  ✗ {name}: {exc}")
-            failed.append(name)
-            if fn is push:
-                break  # nothing after this makes sense without the code on GitHub
-        else:
-            log(f"  ✓ {name}")
+    with ThreadPoolExecutor(max_workers=min(4, len(fanout))) as pool:
+        errors = list(pool.map(lambda item: run(item[1]), fanout))  # declared order, not completion
+    for (name, _), err in zip(fanout, errors, strict=True):
+        report(name, err)
+
+    # Identity, not the step's display name, so renaming a step (as this diff
+    # already does for the dependabot pair) can't silently break this check.
+    push_failed = any(
+        fn is push and err is not None for (_, fn), err in zip(fanout, errors, strict=True)
+    )
+    if not private and not push_failed:
+        report(f"ruleset '{RULESET_NAME}'", run(lambda: configure_ruleset(repo)))
+
     return failed

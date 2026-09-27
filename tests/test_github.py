@@ -1,4 +1,5 @@
 import json
+import time
 
 import pytest
 
@@ -58,38 +59,76 @@ def test_ruleset_is_solo_friendly_and_tied_to_actions():
     assert {"deletion", "non_fast_forward"} <= rules.keys()
 
 
+def _graphql_projects(*nodes: dict) -> str:
+    return json.dumps({"data": {"user": {"projectsV2": {"nodes": list(nodes)}}}})
+
+
 def test_project_reuses_existing_board(calls):
-    calls.responses["project list"] = json.dumps({"projects": [{"number": 7, "title": "r"}]})
+    calls.responses["graphql"] = _graphql_projects({"number": 7, "title": "r"})
     github.configure_project("me/r")
-    assert [a[1] for a, _ in calls] == ["list", "link"]
+    assert [a[1] for a, _ in calls] == ["graphql", "link"]
     assert calls[1][0][2] == "7"
-    assert "--closed" in calls[0][0]
+
+
+def test_project_reuses_existing_closed_board(calls):
+    """The query() filter returns closed projects too — no separate flag needed."""
+    calls.responses["graphql"] = _graphql_projects({"number": 9, "title": "r", "closed": True})
+    github.configure_project("me/r")
+    assert [a[1] for a, _ in calls] == ["graphql", "link"]
+    assert calls[1][0][2] == "9"
+
+
+def test_project_exact_title_match_among_text_search_hits(calls):
+    """query() is a substring search: a same-prefix project must not be mistaken for it."""
+    calls.responses["graphql"] = _graphql_projects(
+        {"number": 4, "title": "r-old"}, {"number": 7, "title": "r"}
+    )
+    github.configure_project("me/r")
+    assert calls[1][0][2] == "7"
+
+
+def test_project_falls_back_to_full_scan_when_search_page_is_full(calls):
+    """A full page of 100 non-matches doesn't prove the board doesn't exist — it could
+    be on a second page. Fall back to the old full scan rather than duplicate it."""
+    calls.responses["graphql"] = _graphql_projects(
+        *({"number": i, "title": f"other-{i}"} for i in range(100))
+    )
+    calls.responses["project list"] = json.dumps({"projects": [{"number": 42, "title": "r"}]})
+    github.configure_project("me/r")
+    assert [a[1] for a, _ in calls] == ["graphql", "list", "link"]
+    assert calls[2][0][2] == "42"
 
 
 def test_project_created_when_missing(calls):
-    calls.responses["project list"] = '{"projects": []}'
+    calls.responses["graphql"] = _graphql_projects()
     calls.responses["project create"] = '{"number": 3}'
     github.configure_project("me/r")
-    assert [a[1] for a, _ in calls] == ["list", "create", "link"]
+    assert [a[1] for a, _ in calls] == ["graphql", "create", "link"]
 
 
 def _paths(calls):
     return [a[3] if a[0] == "api" else " ".join(a[:2]) for a, _ in calls]
 
 
-def test_public_order_security_then_push_then_ruleset(calls):
-    calls.responses.update(
-        {"GET": "[]", "project list": '{"projects": [{"number": 1, "title": "r"}]}'}
-    )
-    order = []
-    failed = github.configure_all(
-        "me/r", private=False, push=lambda: order.append(len(calls)), log=lambda _: None
-    )
+def test_public_settles_settings_before_fanout_before_ruleset(calls):
+    """repo settings (push protection) precedes every independent step, which all
+    precede the ruleset — but the independent steps run concurrently, so their
+    order *relative to each other* isn't (and shouldn't be) asserted here."""
+    calls.responses.update({"GET": "[]", "graphql": _graphql_projects({"number": 1, "title": "r"})})
+    failed = github.configure_all("me/r", private=False, push=lambda: None, log=lambda _: None)
     assert failed == []
     paths = _paths(calls)
-    pushed_at = order[0]
-    assert "repos/me/r/private-vulnerability-reporting" in paths[:pushed_at]
-    assert "repos/me/r/rulesets?includes_parents=false" in paths[pushed_at:]
+    settings_idx = paths.index("repos/me/r")
+    ruleset_idx = paths.index("repos/me/r/rulesets?includes_parents=false")
+    fanout_paths = {
+        "repos/me/r/vulnerability-alerts",
+        "repos/me/r/automated-security-fixes",
+        "repos/me/r/private-vulnerability-reporting",
+        "repos/me/r/subscription",
+    }
+    fanout_indices = [i for i, p in enumerate(paths) if p in fanout_paths]
+    assert len(fanout_indices) == len(fanout_paths)  # sanity: all of them actually ran
+    assert all(settings_idx < i < ruleset_idx for i in fanout_indices)
     patch = next(b for a, b in calls if a[2] == "PATCH")
     assert "secret_scanning_push_protection" in patch["security_and_analysis"]
     mute = next(b for a, b in calls if a[3].endswith("/subscription"))
@@ -109,17 +148,42 @@ def test_failures_are_collected_and_others_still_run(calls):
     calls.responses["GET"] = "[]"
     calls.fail_on = ("automated-security-fixes",)
     failed = github.configure_all("me/r", private=False, project=False, log=lambda _: None)
-    assert failed == ["dependabot security fixes"]
+    # Alerts and security-fixes are one task (enabling fixes before alerts can 422),
+    # so a failure in either is reported under their combined name.
+    assert failed == ["dependabot alerts + security fixes"]
     assert any("subscription" in p for p in _paths(calls))
 
 
 def test_push_failure_stops_before_ruleset(calls):
+    calls.responses["graphql"] = _graphql_projects({"number": 1, "title": "r"})
+
     def bad_push():
         raise RuntimeError("rejected")
 
     failed = github.configure_all("me/r", private=False, push=bad_push, log=lambda _: None)
+    # push and project board are independent, concurrent fan-out steps: push
+    # failing doesn't stop project board from running (it's already in flight),
+    # it only skips the ruleset phase that comes strictly after the fan-out.
     assert failed == ["push main"]
     assert not any("rulesets" in p for p in _paths(calls))
+
+
+def test_fanout_failure_order_is_declared_not_completion(monkeypatch):
+    """A later-declared fan-out step failing faster than an earlier one must not
+    reorder `failed` — pool.map preserves declared order, not completion order."""
+
+    def fake_gh(*args, body=None):
+        joined = " ".join(args)
+        if "vulnerability-alerts" in joined:  # declared first, but slow
+            time.sleep(0.2)
+            raise github.GhError("alerts boom")
+        if "subscription" in joined:  # declared later, fails immediately
+            raise github.GhError("mute boom")
+        return ""
+
+    monkeypatch.setattr(github, "gh", fake_gh)
+    failed = github.configure_all("me/r", private=True, project=False, log=lambda _: None)
+    assert failed == ["dependabot alerts + security fixes", "mute notifications (watch: ignore)"]
 
 
 def test_repo_exists_distinguishes_missing_from_errors(monkeypatch):
