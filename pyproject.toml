@@ -1,6 +1,6 @@
 [project]
 name = "makeghrepo"
-version = "0.2.0"
+version = "0.3.0"
 description = "Create a new, fully configured GitHub repo for any language in one command."
 readme = "README.md"
 license = "MIT"
