@@ -1,5 +1,6 @@
 import os
 import stat
+import time
 import tomllib
 from pathlib import Path
 
@@ -212,6 +213,94 @@ def test_lockfile_tools_are_required(tmp_path, monkeypatch, lang, tool):
     monkeypatch.setattr(scaffold.shutil, "which", lambda t: None if t == tool else "/bin/x")
     with pytest.raises(RuntimeError, match=tool):
         scaffold.smoke_test(tmp_path, [lang], lambda _: None)
+
+
+def _fake_run(monkeypatch, handler=None):
+    """Replace subprocess.run; `handler(cmd) -> int | None` picks the exit code (default 0)."""
+    calls: list[tuple[str, ...]] = []
+
+    def fake(cmd, cwd, capture_output, text):
+        calls.append(cmd)
+        code = handler(cmd) if handler else 0
+        return type("R", (), {"returncode": code or 0, "stdout": "", "stderr": "failed"})()
+
+    monkeypatch.setattr(scaffold.subprocess, "run", fake)
+    monkeypatch.setattr(scaffold.shutil, "which", lambda _: "/bin/x")
+    return calls
+
+
+def test_chain_language_keeps_its_own_command_order(tmp_path, monkeypatch):
+    """rust's fmt/clippy/test share a target dir; pooling with python must not reorder them."""
+    calls = _fake_run(monkeypatch)
+    scaffold.smoke_test(tmp_path, ["rust", "python"], lambda _: None)
+    rust_calls = [c for c in calls if c[0] == "cargo"]
+    assert rust_calls == list(scaffold.CHECKS["rust"])
+
+
+def test_setup_completes_before_any_pooled_command(tmp_path, monkeypatch):
+    """uv sync must finish before any `uv run` starts, or ruff/pytest can race the sync."""
+    done = {"lock": False, "sync": False}
+    violations = []
+
+    def handler(cmd):
+        if cmd == ("uv", "lock"):
+            done["lock"] = True
+        elif cmd == ("uv", "sync", "--locked"):
+            done["sync"] = True
+        elif not (done["lock"] and done["sync"]):
+            violations.append(cmd)
+        return 0
+
+    _fake_run(monkeypatch, handler)
+    scaffold.smoke_test(tmp_path, ["python"], lambda _: None)
+    assert violations == []
+
+
+def test_pooled_uv_run_commands_get_no_sync(tmp_path, monkeypatch):
+    """Once uv sync has run, concurrent `uv run` checks shouldn't each re-check/re-sync."""
+    calls = _fake_run(monkeypatch)
+    scaffold.smoke_test(tmp_path, ["python"], lambda _: None)
+    assert ("uv", "lock") in calls
+    assert ("uv", "sync", "--locked") in calls
+    run_calls = [c for c in calls if c[:2] == ("uv", "run")]
+    assert run_calls and all(c[2] == "--no-sync" for c in run_calls)
+
+
+def test_first_failure_reported_in_declared_order(tmp_path, monkeypatch):
+    """A later pooled command failing faster than an earlier one must not win the race."""
+
+    def handler(cmd):
+        if cmd == ("uv", "run", "--no-sync", "ruff", "format", "--check"):
+            time.sleep(0.2)  # declared first, but slower than the failure below
+            return 1
+        if cmd == ("uv", "build", "-q"):
+            return 1  # declared last, fails immediately
+        return 0
+
+    _fake_run(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="ruff format"):
+        scaffold.smoke_test(tmp_path, ["python"], lambda _: None)
+
+
+def test_a_failure_stops_other_units_before_their_next_command(tmp_path, monkeypatch):
+    """A fast failure elsewhere must stop a slow chain before its next (not current) step —
+    a real cargo/cmake build shouldn't keep running to completion on a fanless host once
+    the whole smoke_test is already going to fail."""
+
+    def handler(cmd):
+        if cmd == ("cargo", "fmt", "--check"):
+            time.sleep(0.2)  # gives the fast failure below time to set the stop event
+            return 0
+        if cmd == ("uv", "run", "--no-sync", "ruff", "format", "--check"):
+            return 1  # fails immediately
+        return 0
+
+    calls = _fake_run(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="ruff format"):
+        scaffold.smoke_test(tmp_path, ["rust", "python"], lambda _: None)
+    assert ("cargo", "fmt", "--check") in calls  # already running: allowed to finish
+    assert ("cargo", "clippy", "--all-targets", "--", "-D", "warnings") not in calls
+    assert ("cargo", "test", "-q") not in calls
 
 
 def test_swift_manifest_has_no_trailing_commas(tmp_path):
