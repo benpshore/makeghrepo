@@ -163,6 +163,11 @@ def settings_body(private: bool) -> dict[str, Any]:
         "has_wiki": False,
         "allow_merge_commit": False,
         "allow_rebase_merge": False,
+        # Requested either way, but confirmed live (GET after PATCH) that this
+        # silently stays false on a Free-plan private repo — there's no
+        # ruleset/required-check there for auto-merge to wait on, so GitHub
+        # appears to just drop it rather than error. Not worth branching on:
+        # it's harmless to keep requesting, and it does apply on public repos.
         "allow_auto_merge": True,
         "allow_update_branch": True,
         "delete_branch_on_merge": True,
