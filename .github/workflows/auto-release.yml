@@ -8,19 +8,21 @@ name: Auto-release
 # main is now protected by the "protect-main" ruleset (#20): PRs required, `ci`
 # required to pass, no direct pushes. So this workflow can no longer push a
 # release commit straight to main (GH013 rejects it) — it opens a PR for its
-# own bump commit instead, same as a human would, and lets GitHub's own
-# auto-merge land it once `ci` passes.
+# own bump commit instead, same as a human would, and squash-merges it once
+# `ci` passes.
 #
 # GITHUB_TOKEN PRs have a wrinkle: GitHub's anti-recursion rule means events
 # *triggered by* GITHUB_TOKEN don't start new workflow runs — so ci.yml's
-# normal `pull_request` trigger never fires on this PR, the required `ci`
-# check never reports, and auto-merge waits forever. `workflow_dispatch` is
-# explicitly exempted from that rule, so this workflow dispatches ci.yml onto
-# its own release branch by hand and waits for that run. Verified live
-# (2026-09-27): a workflow_dispatch run's check-run attaches to the dispatched
-# branch's exact head SHA under the GitHub Actions app (id 15368) — the same
-# thing required_status_checks looks for — so it satisfies the PR's required
-# check exactly as if ci.yml had triggered on its own.
+# normal `pull_request` trigger never fires on this PR, and the required `ci`
+# check never reports. `workflow_dispatch` is explicitly exempted from that
+# rule, so this workflow dispatches ci.yml onto its own release branch by hand
+# and waits for that run. Verified live (2026-09-27): a workflow_dispatch
+# run's check-run attaches to the dispatched branch's exact head SHA under the
+# GitHub Actions app (id 15368) — the same thing required_status_checks looks
+# for — so it satisfies the PR's required check exactly as if ci.yml had
+# triggered on its own. The same anti-recursion rule means the eventual squash
+# merge to main triggers nothing further either, which is *why* the guard job
+# below can't just react to "a new push landed" — see its own comment.
 #
 # Considered and declined: a bypass_actors entry on the ruleset letting this
 # workflow's actor push straight past the PR requirement. Rejected because it
@@ -35,28 +37,37 @@ name: Auto-release
 #
 # The merge and the tag/publish are two separate, non-atomic steps (unlike the
 # old single `git push --atomic`), because the merge now has to go through
-# GitHub's own merge machinery. If the job dies between them — merged, but not
-# yet tagged/published — main is left with a "chore: release vX.Y.Z" commit
-# and no matching tag. The guard job below exists specifically to notice and
-# recover from that: it distinguishes "already fully released" (tag exists —
-# skip) from "release commit landed but never got tagged" (no tag — run
-# publish-only: build from that commit, tag it, publish, no re-bump, no new
-# PR). Recovery needs a fresh trigger to run on, so `workflow_dispatch` is
-# added below alongside `push` — after fixing a stuck release, re-run this
-# workflow by hand against main rather than waiting for an unrelated push.
+# GitHub's own merge machinery, and this job can die (timeout, runner
+# eviction, a transient gh/network failure) anywhere between them. If it dies
+# after merging but before tagging, main is left with a "chore: release
+# vX.Y.Z" commit and no matching tag — worse, because the merge was performed
+# with GITHUB_TOKEN, that commit landing on main triggers no new workflow run
+# at all, so nothing re-checks it on its own. There's no "next push will
+# notice" safety net here: recovery has to be re-triggered by hand
+# (`gh workflow run auto-release.yml --ref main` — NOT the Actions UI's
+# "Re-run failed jobs", which reuses the guard job's already-computed output
+# instead of re-evaluating current state) whenever `uv tool upgrade` doesn't
+# show a version bump you expected.
+#
+# The guard job is built around that: it doesn't look at commit messages at
+# all (an earlier version did, and could get permanently blinded the moment
+# any other commit landed on top of a stuck release commit before guard next
+# ran). Instead it checks the one fact that actually matters and can't drift:
+# does a tag exist for main's CURRENT pyproject.toml version? Yes → that
+# version already shipped, bump to a new one (mode=full). No → that version
+# was bumped but never tagged/published — finish it from main's current tip,
+# no re-bump, no new PR (mode=publish-only). This is correct regardless of
+# what else has landed on main since, because nothing but this workflow ever
+# touches the version field.
 #
 # Build happens twice on purpose: once pre-flight (fail fast, don't open a PR
-# that can only fail later) and once after the squash merge, from the actual
-# merged commit — so the published dist/* always matches what's really on
-# main, not a pre-merge snapshot.
+# that can only fail later) and once after the merge, from the actual merged
+# commit — so the published dist/* always matches what's really on main, not
+# a pre-merge snapshot.
 #
-# release.yml stays as a manual fallback (see its own header) for the rare
-# case even this recovery path can't reach — e.g. a human merge landing on top
-# of a stuck release commit before this workflow gets a chance to re-run and
-# notice it. Keep the two files' pinned action SHAs in sync — duplicated, not
-# shared, for the same reason as before: a reusable workflow needs cross-job
-# artifact passing that's more surface than the duplication it replaces, for
-# files this short.
+# release.yml stays as a manual fallback (see its own header) for the one
+# thing even this can't reach: recovering a release whose *tag* was already
+# pushed but whose GitHub Release publish step then failed.
 on:
   push:
     branches: [main]
@@ -67,9 +78,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Reads the *live* tip of main rather than trusting the triggering event's
-  # payload, so a manual re-run (workflow_dispatch, or a retry after a partial
-  # failure) always sees current reality instead of a stale snapshot.
   guard:
     name: guard
     runs-on: ubuntu-latest
@@ -79,31 +87,25 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     outputs:
-      mode: ${{ steps.check.outputs.mode }} # skip | full | publish-only
-      version: ${{ steps.check.outputs.version }} # only set for publish-only
+      mode: ${{ steps.check.outputs.mode }} # full | publish-only
+      version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
-          fetch-depth: 2
           persist-credentials: false
       - id: check
         run: |
           set -euo pipefail
-          subject="$(git log -1 --format=%s)"
-          # Exact-format match, not a bare "chore: release" prefix: a human PR
-          # legitimately titled e.g. "chore: release notes for Q3" must not be
-          # mistaken for this bot's own commit.
-          if [[ "$subject" =~ ^chore:\ release\ v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            version="${BASH_REMATCH[1]}"
-            if gh api "repos/${{ github.repository }}/git/ref/tags/v$version" >/dev/null 2>&1; then
-              echo "mode=skip" >> "$GITHUB_OUTPUT"
-            else
-              echo "mode=publish-only" >> "$GITHUB_OUTPUT"
-              echo "version=$version" >> "$GITHUB_OUTPUT"
-            fi
-          else
+          version="$(sed -nE 's/^version = "(.*)"/\1/p' pyproject.toml)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if out=$(gh api "repos/${{ github.repository }}/git/ref/tags/v$version" 2>&1); then
             echo "mode=full" >> "$GITHUB_OUTPUT"
+          elif [[ "$out" == *"HTTP 404"* ]]; then
+            echo "mode=publish-only" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::couldn't check whether tag v$version exists: $out" >&2
+            exit 1
           fi
 
   release:
@@ -144,26 +146,17 @@ jobs:
         run: uv audit --locked --preview-features audit-command
       - name: Build
         run: uv build
-      - name: Clean up a stale branch/PR from a previous failed attempt
-        env:
-          BRANCH: release/v${{ steps.bump.outputs.version }}
-        run: |
-          set -euo pipefail
-          # A prior run can die after pushing this branch/PR but before
-          # merging (ci failure, timeout, runner eviction). Since nothing
-          # landed on main, the next attempt computes the identical branch
-          # name and would otherwise collide on push/`gh pr create`.
-          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-            number="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
-            [ -n "$number" ] && gh pr close "$number" --delete-branch || git push origin --delete "$BRANCH"
-          fi
       - name: Open release PR
         id: pr
         env:
           VERSION: ${{ steps.bump.outputs.version }}
         run: |
           set -euo pipefail
-          branch="release/v$VERSION"
+          # Unique per run (not just per version) so a retry after a prior
+          # attempt died mid-flight can never collide with it — no stale
+          # branch/PR to detect or clean up, at the cost of a harmless orphan
+          # branch left behind on the rare attempt that doesn't complete.
+          branch="release/v$VERSION-$GITHUB_RUN_ID"
           git checkout -b "$branch"
           git add pyproject.toml uv.lock
           git commit -m "chore: release v$VERSION"
@@ -173,18 +166,6 @@ jobs:
             --body "Automated version bump. Merges itself once \`ci\` passes on this branch.")"
           echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
-      - name: Arm auto-merge
-        env:
-          NUMBER: ${{ steps.pr.outputs.number }}
-          VERSION: ${{ steps.bump.outputs.version }}
-        run: |
-          set -euo pipefail
-          # GitHub's own merge engine, not a hand-rolled mergeStateStatus poll:
-          # it already handles "wait for the required check" and "rebase past
-          # an unrelated concurrent merge" correctly, which a fixed-timeout
-          # poll from outside can't distinguish from a genuinely stuck PR.
-          gh pr merge "$NUMBER" --auto --squash --delete-branch \
-            --subject "chore: release v$VERSION" --body ""
       - name: Dispatch ci on the release branch
         env:
           BRANCH: ${{ steps.pr.outputs.branch }}
@@ -192,8 +173,8 @@ jobs:
           set -euo pipefail
           gh workflow run ci.yml --ref "$BRANCH"
           # The dispatch API call is fire-and-forget; the run takes a few
-          # seconds to appear in the list. Filtered to workflow_dispatch runs
-          # so a stray earlier run on this branch name can't be picked up.
+          # seconds to appear. The branch name is unique to this run (above),
+          # so nothing else can ever match it — no stale-run risk here.
           run_id=""
           for _ in $(seq 1 10); do
             run_id="$(gh run list --workflow=ci.yml --branch="$BRANCH" --event=workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
@@ -205,31 +186,39 @@ jobs:
             exit 1
           fi
           gh run watch "$run_id" --exit-status
-      - name: Wait for auto-merge to land
+      - name: Merge once ci passes
+        id: merge
+        env:
+          NUMBER: ${{ steps.pr.outputs.number }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          # ci already passed (previous step); this just waits out GitHub's
+          # own short lag in recomputing mergeability from that check before
+          # actually performing the squash merge. Nothing is left "armed" if
+          # this job dies here — either the merge below succeeds, or it
+          # doesn't happen at all, so there's no unattended in-flight state.
+          for _ in $(seq 1 20); do
+            if gh pr merge "$NUMBER" --squash --delete-branch \
+                --subject "chore: release v$VERSION" --body ""; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::PR #$NUMBER never became mergeable" >&2
+          exit 1
+      - name: Build from the merged commit
         env:
           NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           set -euo pipefail
-          # ci passing (previous step) is the only real gate; this just waits
-          # for GitHub to notice and perform the merge it already armed. If
-          # this times out, the merge can still complete on its own after this
-          # job exits — the guard job's publish-only path picks that up on the
-          # next trigger, so this loop can stay modest instead of open-ended.
-          state=""
-          for _ in $(seq 1 36); do
-            state="$(gh pr view "$NUMBER" --json state --jq .state)"
-            [ "$state" = "MERGED" ] && break
-            sleep 5
-          done
-          if [ "$state" != "MERGED" ]; then
-            echo "::error::PR #$NUMBER hasn't merged yet (state: $state) — auto-merge is armed and may still land it; re-run this workflow afterward to publish" >&2
-            exit 1
-          fi
-      - name: Build from the merged commit
-        run: |
-          set -euo pipefail
-          git fetch origin main
-          git checkout origin/main
+          # The exact merge commit, not the `main` ref: main can move again
+          # between the merge above and this step, and building/tagging
+          # whatever happens to be at `main` by then would publish the wrong
+          # commit as this version.
+          sha="$(gh pr view "$NUMBER" --json mergeCommit --jq .mergeCommit.oid)"
+          git fetch origin "$sha"
+          git checkout "$sha"
           uv build
       - name: Tag and publish
         env:
@@ -240,6 +229,9 @@ jobs:
           git push origin "refs/tags/v$VERSION"
           gh release create "v$VERSION" dist/* --verify-tag --generate-notes
 
+  # Reached when a prior run's release commit landed on main but the run died
+  # before tagging/publishing it (see the header comment). No bump, no PR —
+  # just finish releasing whatever main's tip already is.
   publish-only:
     name: publish-only
     needs: guard
