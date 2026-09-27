@@ -1,0 +1,111 @@
+name: Auto-release
+
+# Every merge to main is a release: bump the minor version, tag it, and publish
+# a GitHub release with built artifacts. No one has to remember to do this by
+# hand, which is what let makeghrepo drift at v0.1.0 forever while `main` moved
+# on underneath it (#15) — `uv tool upgrade` had no new version to notice.
+#
+# Everything but the guard runs in one job and only pushes once tests/audit/
+# build all pass. This intentionally does NOT rely on the tag push to
+# re-trigger release.yml: pushes authenticated with the default GITHUB_TOKEN
+# never trigger other workflow runs (a GitHub anti-recursion rule), so a
+# two-workflow handoff would silently never fire. release.yml stays as a
+# manual fallback (see its own header) for the case where this workflow tags
+# but fails to publish. Keep its checkout/setup-uv/test/audit/build steps and
+# pinned action SHAs in sync with that file — they're duplicated, not shared,
+# because a reusable workflow would need cross-job artifact passing that adds
+# more untestable surface than the duplication it removes, for two files this
+# short.
+#
+# Known limitation: the release commit below is pushed straight to main, not
+# through a PR, so it never runs ci.yml's "ci" job — the one ci.yml's own
+# header comment calls a required status check. No branch ruleset is
+# currently configured on this repo (verified live), so nothing enforces that
+# today. If one ever is, it needs a bypass entry for this workflow's actor, or
+# every release push will be rejected outright.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  # A separate job (not a job-level `if:` on github.event.head_commit.message)
+  # because that event payload is fixed at trigger time: re-running a failed
+  # `release` job re-checks out the CURRENT tip of main, but a job-level `if`
+  # would still see the ORIGINAL push's commit message and never skip, so a
+  # manual re-run after a partial success would bump and tag a second time.
+  # Reading the actual git log here makes the guard correct on a re-run too.
+  guard:
+    name: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 2
+          persist-credentials: false
+      - id: check
+        # Exact-format match, not a bare "chore: release" prefix: a human PR
+        # legitimately titled e.g. "chore: release notes for Q3" must not be
+        # mistaken for this bot's own commit and have its release skipped.
+        run: |
+          if git log -1 --format=%s | grep -qE '^chore: release v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    name: release
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Bump minor version
+        run: uv version --bump minor --no-sync
+      - name: Install
+        run: uv sync --locked
+      - name: Test
+        run: uv run pytest
+      - name: Audit dependencies
+        run: uv audit --locked --preview-features audit-command
+      - name: Build
+        run: uv build
+      - name: Commit, tag, and push
+        id: tag
+        run: |
+          version="$(uv version --short)"
+          git add pyproject.toml uv.lock
+          git commit -m "chore: release v$version"
+          git tag -a "v$version" -m "v$version"
+          # Atomic: the branch update and the tag either both land or neither
+          # does, so a rejected/failed push can't leave main carrying an
+          # unreleased "chore: release" commit with no matching tag.
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ steps.tag.outputs.version }}" dist/* --verify-tag --generate-notes

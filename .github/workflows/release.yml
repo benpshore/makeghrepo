@@ -1,10 +1,27 @@
 name: Release
 
-# Tag a version to publish: bump with `uv version --bump patch`, merge the PR,
-# then `git tag v$(uv version --short) && git push --tags`.
+# Manual fallback only: every ordinary merge to main is released automatically
+# by auto-release.yml, which does its own bump/commit/tag/push before this
+# workflow ever sees a ref. The one thing that workflow can't do for itself is
+# recover if IT tags a version but then fails before publishing the GitHub
+# release (network blip, `gh release create` hiccup, etc.) — the tag already
+# exists at that point, so re-pushing it is a no-op that fires nothing here.
+# For that case, run this workflow by hand against the existing tag:
+#   gh workflow run release.yml --ref vX.Y.Z
+# There is no other supported manual release path: don't hand-bump the
+# version and push a tag yourself, since auto-release.yml will still fire on
+# that same merge (it reacts to every push to main, not to whether a bump
+# already happened) and immediately bump again on top of it.
+#
+# Keep the checkout/setup-uv/test/audit/build steps and pinned action SHAs
+# below in sync with auto-release.yml's — duplicated rather than shared via a
+# reusable workflow, since that would need cross-job artifact passing that
+# adds more untestable surface than the duplication it removes, for two files
+# this short.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -21,6 +38,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
       - name: Git identity for tests
         run: |
           git config --global user.name "CI"
