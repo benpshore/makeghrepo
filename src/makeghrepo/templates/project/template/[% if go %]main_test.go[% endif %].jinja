@@ -1,0 +1,12 @@
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestGreets(t *testing.T) {
+	if !strings.Contains(greeting(), "[[ project_name ]]") {
+		t.Fatalf("unexpected greeting %q", greeting())
+	}
+}

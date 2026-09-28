@@ -23,7 +23,7 @@ makeghrepo quiet-otter --private
 makeghrepo quiet-otter python --lib # library layout, no console script (like `uv init --lib`)
 ```
 
-Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `postgres` `sql` `docker` `shell`. Aliases like `c++`, `objc++`, `rest` and `pg` also work.
+Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `postgres` `sql` `docker` `shell` `go`. Aliases like `c++`, `objc++`, `rest`, `pg` and `golang` also work.
 
 If anything fails, fix it and run the same command again. The repo already exists, so makeghrepo skips creating it and only finishes what's missing: pushing `main` and re-applying settings. Every setting is safe to re-apply.
 
@@ -65,9 +65,9 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 - `README.md` and `AGENTS.md` (plus `CLAUDE.md`), each listing that project's check commands; MIT `LICENSE`, `SECURITY.md`, `.editorconfig`.
 - Issue templates for bug, task and epic (epics use native sub-issues), and a PR template.
 - `ci.yml`: one job per language, plus a final `ci` job that passes only if all of them passed. That `ci` job is the one required check.
-- `codeql.yml` (public repos): actions, plus python, js, rust, c-cpp and swift as chosen.
-- `dependabot.yml`: GitHub Actions, plus uv, cargo, swift, npm, docker and docker-compose as chosen; weekly and grouped, with a 7-day cooldown.
-- `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python the version *is* the tag (hatchling + uv-dynamic-versioning, nothing to bump by hand): it checks the tag against the computed version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`. For Rust it checks the tag against `Cargo.toml`, tests, builds a release binary and attaches it with a `SHA256SUMS` file.
+- `codeql.yml` (public repos): actions, plus python, js, rust, go, c-cpp and swift as chosen.
+- `dependabot.yml`: GitHub Actions, plus uv, cargo, gomod, swift, npm, docker and docker-compose as chosen; weekly and grouped, with a 7-day cooldown.
+- `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python the version *is* the tag (hatchling + uv-dynamic-versioning, nothing to bump by hand): it checks the tag against the computed version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`. For Rust it checks the tag against `Cargo.toml`, tests, builds a release binary and attaches it with a `SHA256SUMS` file. For Go it tests and attaches static linux amd64 and arm64 binaries with `SHA256SUMS`.
 - `auto-release.yml` (public Python repos): every merge to `main` waits for that commit's `ci` check, then tags the next minor version and publishes the release. The same design makeghrepo itself uses.
 
 | language | files | checks (locally and in CI) |
@@ -79,6 +79,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 | js | `package.json`, `eslint.config.js`, `src/`, `test/` | eslint, `node --test`, `npm audit` (CI) |
 | css | `styles/`, `.stylelintrc.json` | stylelint |
 | c, cpp, objc, objcpp | one `CMakeLists.txt`, `src/main.{c,cpp,m,mm}` | CMake build with `-Wall -Wextra -Werror`, ctest (macOS runner if ObjC) |
+| go | `go.mod`, `main.go`, `main_test.go` | `go vet`, `go test` (CI adds `gofmt -l` and `-race`); distroless static Docker runtime; release builds linux amd64 + arm64 binaries |
 | api | `openapi.yaml` | Spectral |
 | postgres | `compose.yaml` (db service, `pgdata` volume), `db/migrations/` | CI applies the migrations to a real Postgres 17 |
 | sql | `sql/`, `.sqlfluff` | sqlfluff (Postgres dialect with `postgres`) |

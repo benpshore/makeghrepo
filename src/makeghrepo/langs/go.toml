@@ -1,0 +1,29 @@
+# go: registry entry (schema 1). See src/makeghrepo/registry.py for field meanings.
+schema = 1
+id = "go"
+order = 15
+aliases = ["golang"]
+kind = "language"
+flag = "go"
+groups = []
+marker = "go.mod"
+checks = [
+  ["go", "vet", "./..."],
+  ["go", "test", "./..."],
+  ["go", "build", "./..."],
+]
+setup_len = 0
+required_tool = false
+ci_job = "go"
+dependabot = { ecosystem = "gomod", order = 25 }
+codeql = { language = "go", build_mode = "autobuild", os = "ubuntu-latest", order = 25 }
+docker_priority = 0
+requires = []
+host_os = []
+probe = []
+leading_letter = false
+apps = []
+lockfile = ""
+release = ""
+npm_scripts = {}
+npm_dev = {}
