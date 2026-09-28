@@ -34,6 +34,11 @@ _MULTI = [
     ["js", "css", "api"],
     ["c", "cpp", "objc", "objcpp"],
     ["postgres", "sql", "shell"],
+    # Every Dockerfile branch (python, rust, js, base) with the checks that share
+    # the runner: these are where a lockfile/setup ordering race would show up.
+    ["python", "docker"],
+    ["js", "docker"],
+    ["python", "rust", "docker"],
 ]
 
 

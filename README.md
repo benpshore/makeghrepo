@@ -111,6 +111,8 @@ uv run scripts/regen-golden
 git diff tests/golden
 ```
 
+The multi-language combos include every Dockerfile branch (`python+docker`, `js+docker`, `rust+docker`, `python+rust+docker`) and `all`, which CI checks three times in a row to flush out ordering races between concurrent checks.
+
 Never edit or hand-merge a `.golden` file. On a conflict, rebase and regenerate. CI also renders them on every run and uploads them as the `golden` artifact, so they can be regenerated without a local toolchain:
 
 ```sh
