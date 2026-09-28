@@ -157,6 +157,86 @@ Closes #
 <!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
 
 ### END
+### FILE .github/workflows/auto-release.yml exec=0 bytes=2858 encoding=utf-8
+name: Auto-release
+
+# Every merge to main is a release: once this commit's `ci` check has passed,
+# tag the next minor version and publish a GitHub release with the built
+# wheel and sdist. The version is dynamic (uv-dynamic-versioning reads the
+# tag), so nothing is committed and no PR is needed. Tags aren't covered by
+# the protect-main ruleset. Run by hand (workflow_dispatch) to retry.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.sha }}
+    steps:
+      - name: Wait for this commit's ci check
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 75); do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?check_name=ci&per_page=100" \
+              --jq '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last | .conclusion // "pending"')
+            case "$state" in
+              success) exit 0 ;;
+              pending) sleep 20 ;;
+              *) echo "::error::ci concluded '$state' on $SHA; not releasing it"; exit 1 ;;
+            esac
+          done
+          echo "::error::timed out waiting for ci on $SHA"
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Already released?
+        id: guard
+        run: |
+          if [ -n "$(git tag --points-at HEAD 'v*')" ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        if: steps.guard.outputs.skip != 'true'
+      - name: Tag, test, build
+        if: steps.guard.outputs.skip != 'true'
+        id: tag
+        run: |
+          set -euo pipefail
+          latest="$(git tag --list 'v*' --sort=-v:refname | head -1)"
+          IFS=. read -r major minor _patch <<<"${latest#v}"
+          version="${major:-0}.$((${minor:-0} + 1)).0"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$version" -m "v$version"
+          uv sync --locked
+          uv run pytest
+          uv audit --locked --preview-features audit-command
+          uv build
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Push tag and publish
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          git push origin "refs/tags/v$VERSION"
+          gh release create "v$VERSION" dist/* --verify-tag --generate-notes
+
+### END
 ### FILE .github/workflows/ci.yml exec=0 bytes=2307 encoding=utf-8
 name: CI
 
@@ -278,11 +358,11 @@ jobs:
           category: "/language:${{ matrix.language }}"
 
 ### END
-### FILE .github/workflows/release.yml exec=0 bytes=1419 encoding=utf-8
+### FILE .github/workflows/release.yml exec=0 bytes=1499 encoding=utf-8
 name: Release
 
-# Publish: bump the version, merge the PR, then push a tag, e.g.
-#   git tag v0.1.1 && git push --tags
+# Publish: push a tag, e.g. `git tag v0.1.1 && git push --tags`.
+# Every merge to main is also released automatically by auto-release.yml.
 on:
   push:
     tags: ["v*"]
@@ -299,10 +379,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - name: Tag matches project version
-        run: test "v$(uv version --short)" = "$GITHUB_REF_NAME"
+      - name: Tag matches computed project version
+        run: test "$(uvx uv-dynamic-versioning)" = "${GITHUB_REF_NAME#v}"
       - run: uv sync --locked
       - run: uv run pytest
       - run: uv audit --locked --preview-features audit-command
@@ -483,12 +564,14 @@ postgres-data/
 3.14
 
 ### END
-### FILE AGENTS.md exec=0 bytes=576 encoding=utf-8
+### FILE AGENTS.md exec=0 bytes=740 encoding=utf-8
 # quiet-otter
 
 - `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
 - Never commit secrets, `.env` files, databases or `.DS_Store` (see `.gitignore`; CI rejects them).
 - Python: use **uv** only (`uv add`, `uv run`). Never pip.
+- The version is the git tag; never edit a version field by hand.
+- Every merge to `main` is released automatically (next minor version, wheel and sdist attached).
 - Before committing, run:
 
 ```sh
@@ -591,10 +674,10 @@ volumes:
   appdata:
 
 ### END
-### FILE pyproject.toml exec=0 bytes=632 encoding=utf-8
+### FILE pyproject.toml exec=0 bytes=911 encoding=utf-8
 [project]
 name = "quiet-otter"
-version = "0.1.0"
+dynamic = ["version"]
 description = "a test project"
 readme = "README.md"
 license = "MIT"
@@ -605,9 +688,19 @@ dependencies = []
 [project.scripts]
 quiet-otter = "quiet_otter:main"
 
+# The version is the git tag (v1.2.3 -> 1.2.3); nothing to bump by hand.
 [build-system]
-requires = ["uv_build>=0.9,<1"]
-build-backend = "uv_build"
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quiet_otter"]
+
+[tool.uv-dynamic-versioning]
+fallback-version = "0.0.0"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.14"]
