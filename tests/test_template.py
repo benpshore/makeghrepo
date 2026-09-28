@@ -328,8 +328,11 @@ def test_swift_manifest_has_no_trailing_commas(tmp_path):
         assert ",\n        )" not in text and ",\n    ]" not in text
 
 
+CREDENTIAL_VARS = {"GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"}
+
+
 def test_checks_run_without_credential_channels(tmp_path, monkeypatch):
-    for key in ("GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"):
+    for key in CREDENTIAL_VARS:
         monkeypatch.setenv(key, "secret")
     monkeypatch.setenv("KEEP_ME", "1")
     envs = []
@@ -344,7 +347,7 @@ def test_checks_run_without_credential_channels(tmp_path, monkeypatch):
     assert envs
     for env in envs:
         assert env["KEEP_ME"] == "1"
-        assert not {"GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"} & set(env)
+        assert not CREDENTIAL_VARS & set(env)
 
 
 @pytest.mark.parametrize(("system", "runs"), [("Linux", False), ("Darwin", True)])

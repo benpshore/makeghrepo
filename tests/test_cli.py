@@ -231,4 +231,3 @@ def test_rust_refuses_a_name_starting_with_a_digit(tmp_path, gh):
 def test_python_accepts_a_name_starting_with_a_digit(tmp_path, gh):
     assert runner.invoke(app, ["7up", "python"]).exit_code == 0
     assert (tmp_path / "7up" / "src" / "_7up").is_dir()
-
