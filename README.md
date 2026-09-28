@@ -93,6 +93,15 @@ uv run pytest              # includes slow end-to-end tests for python and rust 
 uv run pytest -m "not slow"
 ```
 
+### Cloud checks
+
+makeghrepo's own CI does all the real verification on GitHub runners; nothing needs to run on a dev machine.
+
+- **`test`:** ruff, the full pytest suite, and the golden snapshots.
+- **`templates`:** renders every combo in `tests/golden_snapshots.py` and runs the generated project's own local checks on real toolchains. ObjC combos run on macOS.
+- **`actionlint`:** lints makeghrepo's workflows and every generated one.
+- **`ci`:** rolls all of the above up into the one required check.
+
 ### Golden snapshots
 
 `tests/golden/` holds the exact rendered output of a fixed set of language combos (listed in `tests/golden_snapshots.py`). `tests/test_golden.py` fails on any difference in a file's bytes, name or exec bit, so a refactor that shouldn't change output can prove it doesn't. When you change templates on purpose, regenerate and review the diff:

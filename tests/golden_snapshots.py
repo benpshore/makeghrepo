@@ -116,3 +116,28 @@ def diff_report(name: str, expected: str, actual: str, limit: int = 80) -> str:
         + "".join(lines)
         + "\nIf this change is intended, run `uv run scripts/regen-golden` and review the diff."
     )
+
+
+# The private variants run exactly the same checks as their public twins.
+_MATRIX_SKIP = {"base-private", "python-private", "all-private"}
+LINUX_RUNNER = "ubuntu-24.04"
+MAC_RUNNER = "macos-latest"
+
+
+def ci_matrix() -> dict[str, list[dict[str, str]]]:
+    """GitHub Actions matrix for makeghrepo's `templates` job: one entry per combo.
+
+    A combo that includes a macOS-only language (registry ``host_os``) runs on
+    macOS. `all` runs twice: on macOS for everything, and on Linux for
+    everything that can run there together.
+    """
+    include: list[dict[str, str]] = []
+    for name, data in COMBOS.items():
+        if name in _MATRIX_SKIP:
+            continue
+        langs = data["languages"]
+        mac = any("Darwin" in scaffold.LANGS[lang].host_os for lang in langs)
+        include.append({"combo": name, "os": MAC_RUNNER if mac else LINUX_RUNNER})
+        if name == "all":
+            include.append({"combo": name, "os": LINUX_RUNNER})
+    return {"include": include}
