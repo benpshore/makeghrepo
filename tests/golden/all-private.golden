@@ -193,7 +193,7 @@ Closes #
 <!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
 
 ### END
-### FILE .github/workflows/ci.yml exec=0 bytes=5686 encoding=utf-8
+### FILE .github/workflows/ci.yml exec=0 bytes=6095 encoding=utf-8
 name: CI
 
 on:
@@ -372,16 +372,30 @@ jobs:
       - run: go test -race ./...
       - run: go build ./...
 
+  ts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:ts
+
   # The single required check in the branch ruleset. It passes only if every job above passed.
   ci:
     if: always()
-    needs: [repo, python, rust, swift, js, css, cmake, api, postgres, sql, docker, shell, go]
+    needs: [repo, python, rust, swift, js, css, cmake, api, postgres, sql, docker, shell, go, ts]
     runs-on: ubuntu-latest
     steps:
       - run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = false
 
 ### END
-### FILE .github/workflows/release.yml exec=0 bytes=1769 encoding=utf-8
+### FILE .github/workflows/release.yml exec=0 bytes=2085 encoding=utf-8
 name: Release
 
 # Publish: push a tag, e.g. `git tag v0.1.1 && git push --tags`.
@@ -426,6 +440,15 @@ jobs:
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o "dist/quiet-otter-linux-$arch" .
           done
+          (cd dist && sha256sum -- * > SHA256SUMS)
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Pack the release tarball
+        run: |
+          mkdir -p dist
+          npm pack --pack-destination dist
           (cd dist && sha256sum -- * > SHA256SUMS)
       - name: Publish GitHub release
         env:
@@ -613,7 +636,7 @@ capitalisation_policy = lower
 }
 
 ### END
-### FILE AGENTS.md exec=0 bytes=1009 encoding=utf-8
+### FILE AGENTS.md exec=0 bytes=1046 encoding=utf-8
 # quiet-otter
 
 - `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
@@ -635,6 +658,7 @@ uvx sqlfluff lint sql db
 docker build -t quiet-otter . && docker compose up -d app   # data volume: appdata:/data
 shellcheck scripts/*.sh
 gofmt -l . && go vet ./... && go test ./...
+npm run typecheck && npm run test:ts
 ```
 
 ### END
@@ -733,7 +757,7 @@ let package = Package(
 )
 
 ### END
-### FILE README.md exec=0 bytes=822 encoding=utf-8
+### FILE README.md exec=0 bytes=859 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -755,6 +779,7 @@ uvx sqlfluff lint sql db
 docker build -t quiet-otter . && docker compose up -d app   # data volume: appdata:/data
 shellcheck scripts/*.sh
 gofmt -l . && go vet ./... && go test ./...
+npm run typecheck && npm run test:ts
 ```
 
 `main` is protected: open a PR; the `ci` check must pass before merging (squash only).
@@ -907,7 +932,7 @@ paths:
                     const: ok
 
 ### END
-### FILE package.json exec=0 bytes=468 encoding=utf-8
+### FILE package.json exec=0 bytes=605 encoding=utf-8
 {
   "name": "quiet-otter",
   "version": "0.1.0",
@@ -918,14 +943,18 @@ paths:
   "scripts": {
     "lint": "eslint src test eslint.config.js",
     "test": "node --test \"test/**/*.test.js\"",
-    "lint:css": "stylelint \"styles/**/*.css\""
+    "lint:css": "stylelint \"styles/**/*.css\"",
+    "typecheck": "tsc --noEmit",
+    "test:ts": "node --test \"test/**/*.test.ts\""
   },
   "devDependencies": {
     "@eslint/js": "^10",
     "eslint": "^10",
     "globals": "^17",
     "stylelint": "^17",
-    "stylelint-config-standard": "^40"
+    "stylelint-config-standard": "^40",
+    "typescript": "^5.9",
+    "@types/node": "^24"
   }
 }
 
@@ -988,6 +1017,12 @@ select 1 as ok;
 ### END
 ### FILE src/index.js exec=0 bytes=67 encoding=utf-8
 export function greeting() {
+  return "Hello from quiet-otter!";
+}
+
+### END
+### FILE src/index.ts exec=0 bytes=75 encoding=utf-8
+export function greeting(): string {
   return "Hello from quiet-otter!";
 }
 
@@ -1085,6 +1120,17 @@ test("greets", () => {
 });
 
 ### END
+### FILE test/index.test.ts exec=0 bytes=191 encoding=utf-8
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { greeting } from "../src/index.ts";
+
+test("greets", () => {
+  assert.match(greeting(), /quiet-otter/);
+});
+
+### END
 ### FILE tests/test_smoke.py exec=0 bytes=124 encoding=utf-8
 import quiet_otter
 
@@ -1092,5 +1138,22 @@ import quiet_otter
 def test_main_runs(capsys):
     quiet_otter.main()
     assert "quiet-otter" in capsys.readouterr().out
+
+### END
+### FILE tsconfig.json exec=0 bytes=315 encoding=utf-8
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "types": ["node"]
+  },
+  "include": ["src", "test"]
+}
 
 ### END
