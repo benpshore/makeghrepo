@@ -210,7 +210,15 @@ mod origin_tests {
         ));
         std::fs::create_dir_all(&dir).expect("temp dir");
         init(&dir).expect("git init");
-        assert!(Command::new("git").args(["-C"]).arg(&dir).args(["remote", "add", "origin", url]).status().expect("git").success());
+        assert!(
+            Command::new("git")
+                .args(["-C"])
+                .arg(&dir)
+                .args(["remote", "add", "origin", url])
+                .status()
+                .expect("git")
+                .success()
+        );
         dir
     }
 
@@ -236,7 +244,20 @@ mod origin_tests {
         assert!(validate_origin(&dir, "me/sample").is_err());
         let _ = std::fs::remove_dir_all(&dir);
         let dir = repo_with_origin("https://github.com/me/sample.git");
-        assert!(Command::new("git").args(["-C"]).arg(&dir).args(["config", "--add", "remote.origin.pushurl", "git@github.com:other/public.git"]).status().expect("git").success());
+        assert!(
+            Command::new("git")
+                .args(["-C"])
+                .arg(&dir)
+                .args([
+                    "config",
+                    "--add",
+                    "remote.origin.pushurl",
+                    "git@github.com:other/public.git"
+                ])
+                .status()
+                .expect("git")
+                .success()
+        );
         assert!(validate_origin(&dir, "me/sample").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -244,7 +265,15 @@ mod origin_tests {
     #[test]
     fn missing_origin_is_allowed() {
         let dir = repo_with_origin("https://github.com/me/sample.git");
-        assert!(Command::new("git").args(["-C"]).arg(&dir).args(["remote", "remove", "origin"]).status().expect("git").success());
+        assert!(
+            Command::new("git")
+                .args(["-C"])
+                .arg(&dir)
+                .args(["remote", "remove", "origin"])
+                .status()
+                .expect("git")
+                .success()
+        );
         assert!(validate_origin(&dir, "me/sample").is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }

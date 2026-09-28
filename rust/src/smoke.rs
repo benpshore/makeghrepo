@@ -269,8 +269,7 @@ pub fn smoke_test(
 
     let stop = AtomicBool::new(false);
     let next = AtomicUsize::new(0);
-    let results: Vec<Mutex<Option<UnitResult>>> =
-        units.iter().map(|_| Mutex::new(None)).collect();
+    let results: Vec<Mutex<Option<UnitResult>>> = units.iter().map(|_| Mutex::new(None)).collect();
     let run_unit = |unit: &[Cmd]| -> UnitResult {
         let mut lines = Vec::new();
         for cmd in unit {
