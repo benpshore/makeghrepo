@@ -207,7 +207,7 @@ Closes #
 <!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
 
 ### END
-### FILE .github/workflows/ci.yml exec=0 bytes=6528 encoding=utf-8
+### FILE .github/workflows/ci.yml exec=0 bytes=6864 encoding=utf-8
 name: CI
 
 on:
@@ -414,10 +414,21 @@ jobs:
       - run: bundle exec rubocop
       - run: bundle exec rake test
 
+  sqlite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Schema applies to an empty database
+        run: |
+          sqlite3 -bail :memory: ".read sqlite/schema.sql"
+
   # The single required check in the branch ruleset. It passes only if every job above passed.
   ci:
     if: always()
-    needs: [repo, python, rust, swift, js, css, cmake, api, postgres, sql, docker, shell, go, ts, ruby]
+    needs: [repo, python, rust, swift, js, css, cmake, api, postgres, sql, docker, shell, go, ts, ruby, sqlite]
     runs-on: ubuntu-latest
     steps:
       - run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = false
@@ -683,7 +694,7 @@ capitalisation_policy = lower
 }
 
 ### END
-### FILE AGENTS.md exec=0 bytes=1091 encoding=utf-8
+### FILE AGENTS.md exec=0 bytes=1180 encoding=utf-8
 # quiet-otter
 
 - `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
@@ -707,6 +718,7 @@ shellcheck scripts/*.sh
 gofmt -l . && go vet ./... && go test ./...
 npm run typecheck && npm run test:ts
 bundle exec rubocop && bundle exec rake test
+sqlite3 -bail :memory: ".read sqlite/schema.sql"   # the app opens ${APP_DATA:-.}/app.db
 ```
 
 ### END
@@ -815,7 +827,7 @@ let package = Package(
 )
 
 ### END
-### FILE README.md exec=0 bytes=904 encoding=utf-8
+### FILE README.md exec=0 bytes=993 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -839,6 +851,7 @@ shellcheck scripts/*.sh
 gofmt -l . && go vet ./... && go test ./...
 npm run typecheck && npm run test:ts
 bundle exec rubocop && bundle exec rake test
+sqlite3 -bail :memory: ".read sqlite/schema.sql"   # the app opens ${APP_DATA:-.}/app.db
 ```
 
 `main` is protected: open a PR; the `ci` check must pass before merging (squash only).
@@ -1095,6 +1108,27 @@ echo "Hello from quiet-otter!"
 ### END
 ### FILE sql/example.sql exec=0 bytes=16 encoding=utf-8
 select 1 as ok;
+
+### END
+### FILE sqlite/schema.sql exec=0 bytes=644 encoding=utf-8
+-- Schema for the app's SQLite database. Applied to a fresh database on first
+-- start; keep it idempotent. The file lives at ${APP_DATA:-.}/app.db, so with
+-- Docker it sits on the appdata volume.
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS items (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+INSERT OR IGNORE INTO schema_version (version) VALUES (1);
 
 ### END
 ### FILE src/index.js exec=0 bytes=67 encoding=utf-8
