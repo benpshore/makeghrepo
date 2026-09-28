@@ -1,0 +1,10 @@
+# frozen_string_literal: true
+
+require 'minitest/autorun'
+require_relative '../lib/[[ package_name ]]'
+
+class [[ package_name | replace('_', ' ') | title | replace(' ', '') ]]Test < Minitest::Test
+  def test_greets
+    assert_includes [[ package_name | replace('_', ' ') | title | replace(' ', '') ]].greeting, '[[ project_name ]]'
+  end
+end
