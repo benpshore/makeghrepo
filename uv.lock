@@ -134,7 +134,6 @@ wheels = [
 
 [[package]]
 name = "makeghrepo"
-version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "copier" },
