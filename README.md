@@ -27,6 +27,8 @@ Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `p
 
 If anything fails, fix it and run the same command again. The repo already exists, so makeghrepo skips creating it and only finishes what's missing: pushing `main` and re-applying settings. Every setting is safe to re-apply.
 
+makeghrepo only resumes folders it created itself. It records that, along with the visibility and languages you chose, in `.git/makeghrepo.json`, which is never committed. It refuses any other git repo at that path, so an unrelated local project can't be published by accident. A re-run keeps the original visibility and languages. `--private` on a repo created public is refused rather than ignored, and makeghrepo never changes an existing repo's visibility.
+
 Projects go in `~/code/GitHub/<name>`. Set `MAKEGHREPO_DIR` to use another folder.
 
 No git identity or GitHub auth setup needed beyond `gh auth login`: makeghrepo falls back to a `users.noreply.github.com` commit identity if none is configured, and never touches your global git config.
