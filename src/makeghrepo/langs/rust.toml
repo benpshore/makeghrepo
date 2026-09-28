@@ -20,6 +20,8 @@ codeql = { language = "rust", build_mode = "none", os = "ubuntu-latest", order =
 docker_priority = 2
 requires = []
 host_os = []
+probe = []
+leading_letter = true
 apps = []
 lockfile = ""
 release = ""

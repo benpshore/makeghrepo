@@ -177,7 +177,7 @@ def test_skip_local_checks_still_makes_lockfiles(tmp_path, monkeypatch):
     monkeypatch.setattr(scaffold.shutil, "which", lambda _: "/bin/x")  # every tool "installed"
     ran = []
 
-    def fake_run(cmd, cwd, capture_output, text):
+    def fake_run(cmd, **kwargs):
         ran.append(cmd)
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
@@ -238,7 +238,7 @@ def _fake_run(monkeypatch, handler=None):
     """Replace subprocess.run; `handler(cmd) -> int | None` picks the exit code (default 0)."""
     calls: list[tuple[str, ...]] = []
 
-    def fake(cmd, cwd, capture_output, text):
+    def fake(cmd, **kwargs):
         calls.append(cmd)
         code = handler(cmd) if handler else 0
         return type("R", (), {"returncode": code or 0, "stdout": "", "stderr": "failed"})()
@@ -326,3 +326,64 @@ def test_swift_manifest_has_no_trailing_commas(tmp_path):
     for langs in (["swift"], ["swift", "python"]):
         text = (render(tmp_path / "+".join(langs), langs) / "Package.swift").read_text()
         assert ",\n        )" not in text and ",\n    ]" not in text
+
+
+CREDENTIAL_VARS = {"GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS"}
+
+
+def test_checks_run_without_credential_channels(tmp_path, monkeypatch):
+    for key in CREDENTIAL_VARS:
+        monkeypatch.setenv(key, "secret")
+    monkeypatch.setenv("KEEP_ME", "1")
+    envs = []
+
+    def fake(cmd, **kwargs):
+        envs.append(kwargs["env"])
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(scaffold.subprocess, "run", fake)
+    monkeypatch.setattr(scaffold.shutil, "which", lambda _: "/bin/x")
+    scaffold.smoke_test(tmp_path, ["shell"], lambda _: None)
+    assert envs
+    for env in envs:
+        assert env["KEEP_ME"] == "1"
+        assert not CREDENTIAL_VARS & set(env)
+
+
+@pytest.mark.parametrize(("system", "runs"), [("Linux", False), ("Darwin", True)])
+def test_objc_blocks_the_shared_cmake_checks_off_macos(tmp_path, monkeypatch, system, runs):
+    monkeypatch.setattr(scaffold.platform, "system", lambda: system)
+    calls = _fake_run(monkeypatch)
+    lines = []
+    scaffold.smoke_test(tmp_path, ["c", "objc"], lines.append)
+    assert any(c[0] in ("cmake", "ctest") for c in calls) is runs
+    assert any("objc needs Darwin" in line for line in lines) is not runs
+
+
+@pytest.mark.parametrize(("daemon_up", "runs"), [(False, False), (True, True)])
+def test_docker_checks_need_a_reachable_daemon(tmp_path, monkeypatch, daemon_up, runs):
+    calls = _fake_run(monkeypatch, lambda cmd: 0 if daemon_up or cmd != ("docker", "info") else 1)
+    lines = []
+    scaffold.smoke_test(tmp_path, ["docker"], lines.append)
+    assert ("docker", "info") in calls
+    assert (("hadolint", "Dockerfile") in calls) is runs
+    assert any("`docker info` failed" in line for line in lines) is not runs
+
+
+def test_npm_installs_skip_lifecycle_scripts():
+    installs = [c for cmds in scaffold.CHECKS.values() for c in cmds if c[:2] == ("npm", "install")]
+    assert installs and all("--ignore-scripts" in c for c in installs)
+
+
+def test_npx_and_uvx_tools_are_pinned():
+    tools = [c for cmds in scaffold.CHECKS.values() for c in cmds if c[0] in ("npx", "uvx")]
+    assert tools
+    for cmd in tools:
+        spec = next(arg for arg in cmd[1:] if not arg.startswith("-"))
+        assert "==" in spec or spec.rpartition("@")[0], cmd
+
+
+def test_sql_with_postgres_still_lints_the_db_dir(tmp_path, monkeypatch):
+    calls = _fake_run(monkeypatch)
+    scaffold.smoke_test(tmp_path, ["postgres", "sql"], lambda _: None)
+    assert any(c[:2] == ("uvx", "sqlfluff==4.3.0") and c[-1] == "db" for c in calls)

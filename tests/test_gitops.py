@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import git
 import pytest
 
@@ -64,3 +66,34 @@ def test_read_marker_rejects_anything_but_a_valid_schema_1_marker(tmp_path, cont
     if content is not None:
         (tmp_path / ".git" / "makeghrepo.json").write_text(content)
     assert gitops.read_marker(tmp_path) is None
+
+
+@pytest.mark.parametrize(
+    ("name", "junk"),
+    [
+        (".env", True),
+        ("app/.env.local", True),
+        (".env.example", False),
+        ("keys/server.PEM", True),
+        ("data/app.sqlite3", True),
+        (".DS_Store", True),
+        ("src/main.py", False),
+        ("docs/keynote.md", False),
+    ],
+)
+def test_junk_files(name, junk):
+    assert gitops.junk_files([name]) == ([name] if junk else [])
+
+
+def test_commit_refuses_junk_and_keeps_nothing_committed(tmp_path):
+    gitops.init(tmp_path)
+    (tmp_path / "ok.txt").write_text("fine")
+    (tmp_path / "deploy.key").write_text("-----BEGIN PRIVATE KEY-----")
+    with pytest.raises(RuntimeError, match=r"deploy\.key"):
+        gitops.commit_all(tmp_path)
+    assert not gitops.has_commits(tmp_path)
+
+
+def test_junk_pattern_matches_the_generated_ci_check():
+    ci = Path(gitops.__file__).parent / "templates/project/template/.github/workflows/ci.yml.jinja"
+    assert f"grep -Ei '{gitops.JUNK_PATTERN}'" in ci.read_text()

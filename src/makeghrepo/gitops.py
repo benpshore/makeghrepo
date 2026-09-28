@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import git
 
 MARKER = "makeghrepo.json"  # lives inside .git, so it is never committed or pushed
+
+
+# Same pattern as the `repo` job in the generated ci.yml (a test keeps them in sync).
+JUNK_PATTERN = r"(^|/)(\.DS_Store|\.env(\..+)?|[^/]+\.(db|sqlite3?|duckdb|pem|key|p12|pfx))$"
+_JUNK = re.compile(JUNK_PATTERN, re.IGNORECASE)
+
+
+def junk_files(names: list[str]) -> list[str]:
+    """The paths CI would reject: OS junk, databases, private keys and .env files."""
+    return [name for name in names if _JUNK.search(name) and not name.endswith(".env.example")]
 
 
 def write_marker(path: Path, data: dict[str, object]) -> None:
@@ -68,9 +79,12 @@ def has_commits(path: Path) -> bool:
 
 
 def commit_all(path: Path, message: str = "setup") -> None:
-    """``git add --all && git commit -m <message>``."""
+    """``git add --all && git commit -m <message>``, refusing anything CI would reject."""
     repo = git.Repo(path)
     repo.git.add(all=True)
+    junk = junk_files(repo.git.diff("--cached", "--name-only").splitlines())
+    if junk:
+        raise RuntimeError(f"refusing to commit junk or secrets: {', '.join(junk)}")
     # Use the git CLI (not index.commit) so hooks and commit signing are honored.
     repo.git.commit("-m", message)
 
