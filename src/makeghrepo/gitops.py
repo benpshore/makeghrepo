@@ -93,6 +93,36 @@ def push_main(path: Path) -> None:
     git.Repo(path).git.push("-u", "origin", "main")
 
 
+def validate_origin(path: Path, full_name: str) -> None:
+    """Refuse a resume whose effective fetch or push URLs target another repo.
+
+    A missing origin is normal after a failed create; create_repo adds it later.
+    Ask git for expanded URLs so pushurl and insteadOf rewrites are checked too.
+    Never print an unexpected URL: it could contain embedded credentials.
+    """
+    repo = git.Repo(path)
+    if "origin" not in repo.remotes:
+        return
+    allowed = {
+        f"{prefix}{full_name}{suffix}".casefold()
+        for prefix in (
+            "https://github.com/",
+            "git@github.com:",
+            "ssh://git@github.com/",
+            "ssh://git@github.com:22/",
+            "ssh://git@ssh.github.com:443/",
+        )
+        for suffix in ("", ".git")
+    }
+    for options in (("--all",), ("--push", "--all")):
+        urls = repo.git.remote("get-url", *options, "origin").splitlines()
+        if not urls or any(url.rstrip("/").casefold() not in allowed for url in urls):
+            raise RuntimeError(
+                f"origin does not match {full_name}; restore its GitHub fetch and push URLs "
+                "before resuming"
+            )
+
+
 def remote_has_main(path: Path) -> bool:
     try:
         return bool(git.Repo(path).git.ls_remote("--heads", "origin", "main").strip())
