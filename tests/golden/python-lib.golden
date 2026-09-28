@@ -566,7 +566,7 @@ Please report vulnerabilities privately via
 Do not open public issues for security problems.
 
 ### END
-### FILE pyproject.toml exec=0 bytes=859 encoding=utf-8
+### FILE pyproject.toml exec=0 bytes=877 encoding=utf-8
 [project]
 name = "quiet-otter"
 dynamic = ["version"]
@@ -579,7 +579,7 @@ dependencies = []
 
 # The version is the git tag (v1.2.3 -> 1.2.3); nothing to bump by hand.
 [build-system]
-requires = ["hatchling", "uv-dynamic-versioning"]
+requires = ["hatchling>=1.32,<2", "uv-dynamic-versioning>=0.14,<1"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]

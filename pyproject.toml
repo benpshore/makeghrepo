@@ -21,7 +21,7 @@ Repository = "https://github.com/benpshore/makeghrepo"
 makeghrepo = "makeghrepo:main"
 
 [build-system]
-requires = ["hatchling", "uv-dynamic-versioning"]
+requires = ["hatchling>=1.32,<2", "uv-dynamic-versioning>=0.14,<1"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
