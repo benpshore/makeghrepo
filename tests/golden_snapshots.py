@@ -44,6 +44,8 @@ _MULTI = [
     ["js", "ts", "css"],
     ["ruby", "docker"],
     ["python", "sqlite", "docker"],
+    ["cpp", "docker"],
+    ["c", "cpp", "docker"],
 ]
 
 
