@@ -25,21 +25,9 @@ jobs:
       matrix:
         include:
           - { language: actions, build-mode: none, os: ubuntu-latest }
-[% if py %]
-          - { language: python, build-mode: none, os: ubuntu-latest }
-[% endif %]
-[% if js %]
-          - { language: javascript-typescript, build-mode: none, os: ubuntu-latest }
-[% endif %]
-[% if rs %]
-          - { language: rust, build-mode: none, os: ubuntu-latest }
-[% endif %]
-[% if c or cpp %]
-          - { language: c-cpp, build-mode: none, os: ubuntu-latest }
-[% endif %]
-[% if swift %]
-          - { language: swift, build-mode: autobuild, os: macos-latest }
-[% endif %]
+[% for e in codeql_entries %]
+          - { language: [[ e.language ]], build-mode: [[ e.build_mode ]], os: [[ e.os ]] }
+[% endfor %]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

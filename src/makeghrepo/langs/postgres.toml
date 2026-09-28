@@ -1,0 +1,23 @@
+# postgres: registry entry (schema 1). See src/makeghrepo/registry.py for field meanings.
+schema = 1
+id = "postgres"
+order = 11
+aliases = ["pg", "postgresql"]
+kind = "component"
+flag = "pg"
+groups = []
+marker = "compose.yaml"
+checks = []
+setup_len = 0
+required_tool = false
+ci_job = "postgres"
+dependabot = { ecosystem = "docker-compose", order = 60 }
+codeql = {}
+docker_priority = 0
+requires = []
+host_os = []
+apps = []
+lockfile = ""
+release = ""
+npm_scripts = {}
+npm_dev = {}

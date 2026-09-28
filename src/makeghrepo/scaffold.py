@@ -14,16 +14,13 @@ from pathlib import Path
 
 import copier
 
-LANGUAGES = (
-    "python", "rust", "swift", "js", "css", "c", "cpp", "objc", "objcpp",
-    "api", "postgres", "sql", "docker", "shell",
-)  # fmt: skip
-ALIASES = {
-    "py": "python", "rs": "rust", "javascript": "js", "node": "js",
-    "c++": "cpp", "cxx": "cpp", "objective-c": "objc", "objc++": "objcpp",
-    "rest": "api", "openapi": "api", "pg": "postgres", "postgresql": "postgres",
-    "sh": "shell", "bash": "shell",
-}  # fmt: skip
+from makeghrepo import registry
+
+# Everything per-language lives in src/makeghrepo/langs/<id>.toml (see registry.py);
+# these tables are derived from it so the rest of the code keeps its shape.
+LANGS = registry.load()
+LANGUAGES = tuple(LANGS)
+ALIASES = {alias: lang.id for lang in LANGS.values() for alias in lang.aliases}
 
 # Ship as separate, sometimes-missing plugin binaries (cargo-fmt, cargo-clippy)
 # rather than being built into cargo itself — `cargo <name>` fails outright
@@ -31,38 +28,15 @@ ALIASES = {
 # itself is (e.g. an apt-installed rustc/cargo with no rustup components).
 CARGO_PLUGIN_SUBCOMMANDS = {"fmt", "clippy"}
 
-UV_AUDIT = ("uv", "audit", "--locked", "--preview-features", "audit-command")
-CMAKE = (("cmake", "-S", ".", "-B", "build"), ("cmake", "--build", "build"),
-         ("ctest", "--test-dir", "build", "--output-on-failure"))  # fmt: skip
-
 # Local checks per language. Each is skipped if its tool isn't installed (CI still runs it).
 # postgres has none: its CI job applies the migrations to a real database.
 CHECKS: dict[str, tuple[tuple[str, ...], ...]] = {
-    "python": (
-        ("uv", "lock"), ("uv", "sync", "--locked"), ("uv", "run", "ruff", "format", "--check"),
-        ("uv", "run", "ruff", "check"), ("uv", "run", "pytest", "-q"), UV_AUDIT,
-        ("uv", "build", "-q"),
-    ),
-    "rust": (
-        ("cargo", "fmt", "--check"),
-        ("cargo", "clippy", "--all-targets", "--", "-D", "warnings"),
-        ("cargo", "test", "-q"),
-    ),
-    "swift": (("swift", "build"), ("swift", "test")),
-    "js": (("npm", "install", "--no-fund"), ("npm", "run", "lint"), ("npm", "test")),
-    "css": (("npm", "install", "--no-fund"), ("npm", "run", "lint:css")),
-    "c": CMAKE, "cpp": CMAKE, "objc": CMAKE, "objcpp": CMAKE,
-    "api": (("npx", "--yes", "@stoplight/spectral-cli", "lint", "openapi.yaml",
-             "--fail-severity=warn"),),
-    "sql": (("uvx", "sqlfluff", "lint", "sql"),),
-    "docker": (("hadolint", "Dockerfile"),),
-    "shell": (("shellcheck", "scripts/hello.sh"),),
-}  # fmt: skip
-
+    lang.id: lang.checks for lang in LANGS.values() if lang.checks
+}
 
 # These create lockfiles that CI (`--locked`, `npm ci`) and the Dockerfiles depend on.
 # Each is its language's first CHECKS command, so it can't drift out of sync.
-REQUIRED_TOOLS = {lang: CHECKS[lang][0][0] for lang in ("python", "js", "css")}
+REQUIRED_TOOLS = {lang.id: lang.checks[0][0] for lang in LANGS.values() if lang.required_tool}
 
 # How many of each language's leading CHECKS commands must run sequentially,
 # in that order, before the rest of that language's checks are safe to start:
@@ -75,7 +49,7 @@ REQUIRED_TOOLS = {lang: CHECKS[lang][0][0] for lang in ("python", "js", "css")}
 # added later without being taught how to split safely (e.g. cargo/cmake,
 # which share a build cache a concurrent invocation of the same tool would
 # fight over) would otherwise silently become "fully poolable" by omission.
-SETUP_LEN = {"python": 2, "js": 1, "css": 1}
+SETUP_LEN = {lang.id: lang.setup_len for lang in LANGS.values() if lang.setup_len}
 
 
 def language(word: str) -> str | None:
@@ -86,11 +60,16 @@ def language(word: str) -> str | None:
 def render(dest: Path, data: dict[str, object]) -> None:
     if dest.exists() and any(dest.iterdir()):
         raise FileExistsError(f"{dest} already exists and is not empty")
+    chosen = list(data.get("languages") or [])
     with as_file(files("makeghrepo") / "templates" / "project") as src:
         copier.run_copy(
             str(src),
             str(dest),
-            data={"year": str(date.today().year), **data},
+            data={
+                "year": str(date.today().year),
+                **registry.derived(LANGS, chosen),
+                **data,
+            },
             defaults=True,
             unsafe=False,
             quiet=True,

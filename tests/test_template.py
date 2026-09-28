@@ -47,13 +47,8 @@ def test_no_language_is_just_the_base(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("lang", "marker"),
-    [("python", "pyproject.toml"), ("rust", "Cargo.toml"), ("swift", "Package.swift"),
-     ("js", "eslint.config.js"), ("css", ".stylelintrc.json"), ("c", "CMakeLists.txt"),
-     ("cpp", "src/main.cpp"), ("objc", "src/main.m"), ("objcpp", "src/main.mm"),
-     ("api", "openapi.yaml"), ("postgres", "compose.yaml"), ("sql", ".sqlfluff"),
-     ("docker", "Dockerfile"), ("shell", "scripts/hello.sh")],
-)  # fmt: skip
+    ("lang", "marker"), [(lang.id, lang.marker) for lang in scaffold.LANGS.values()]
+)
 def test_each_language_adds_only_its_files(tmp_path, lang, marker):
     got = files_of(render(tmp_path, [lang]))
     assert marker in got
@@ -103,8 +98,8 @@ def test_ci_rollup_needs_every_job(tmp_path, langs):
 def test_dependabot_follows_languages(tmp_path):
     dep = yaml.safe_load((render(tmp_path, ALL) / ".github/dependabot.yml").read_text())
     ecosystems = {u["package-ecosystem"] for u in dep["updates"]}
-    assert ecosystems == {"github-actions", "uv", "cargo", "swift", "npm", "docker",
-                          "docker-compose"}  # fmt: skip
+    declared = {lang.dependabot["ecosystem"] for lang in scaffold.LANGS.values() if lang.dependabot}
+    assert ecosystems == {"github-actions"} | declared
 
 
 def test_private_repo_has_no_codeql(tmp_path):
@@ -116,7 +111,8 @@ def test_private_repo_has_no_codeql(tmp_path):
 def test_codeql_languages(tmp_path):
     wf = yaml.safe_load((render(tmp_path, ALL) / ".github/workflows/codeql.yml").read_text())
     langs = {m["language"] for m in wf["jobs"]["analyze"]["strategy"]["matrix"]["include"]}
-    assert langs == {"actions", "python", "javascript-typescript", "rust", "c-cpp", "swift"}
+    declared = {lang.codeql["language"] for lang in scaffold.LANGS.values() if lang.codeql}
+    assert langs == {"actions"} | declared
 
 
 def test_python_and_swift_tests_dont_collide(tmp_path):

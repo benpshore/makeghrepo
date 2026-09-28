@@ -1,0 +1,27 @@
+# js: registry entry (schema 1). See src/makeghrepo/registry.py for field meanings.
+schema = 1
+id = "js"
+order = 4
+aliases = ["javascript", "node"]
+kind = "language"
+flag = "js"
+groups = ["npm"]
+marker = "eslint.config.js"
+checks = [
+  ["npm", "install", "--no-fund"],
+  ["npm", "run", "lint"],
+  ["npm", "test"],
+]
+setup_len = 1
+required_tool = true
+ci_job = "js"
+dependabot = { ecosystem = "npm", order = 40 }
+codeql = { language = "javascript-typescript", build_mode = "none", os = "ubuntu-latest", order = 20 }
+docker_priority = 1
+requires = []
+host_os = []
+apps = []
+lockfile = ""
+release = ""
+npm_scripts = { "lint" = "eslint .", "test" = "node --test" }
+npm_dev = { "@eslint/js" = "^10", "eslint" = "^10", "globals" = "^17" }

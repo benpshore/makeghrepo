@@ -1,0 +1,25 @@
+# docker: registry entry (schema 1). See src/makeghrepo/registry.py for field meanings.
+schema = 1
+id = "docker"
+order = 13
+aliases = []
+kind = "component"
+flag = "docker"
+groups = []
+marker = "Dockerfile"
+checks = [
+  ["hadolint", "Dockerfile"],
+]
+setup_len = 0
+required_tool = false
+ci_job = "docker"
+dependabot = { ecosystem = "docker", order = 50 }
+codeql = {}
+docker_priority = 0
+requires = []
+host_os = []
+apps = []
+lockfile = ""
+release = ""
+npm_scripts = {}
+npm_dev = {}

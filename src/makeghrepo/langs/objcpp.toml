@@ -1,0 +1,27 @@
+# objcpp: registry entry (schema 1). See src/makeghrepo/registry.py for field meanings.
+schema = 1
+id = "objcpp"
+order = 9
+aliases = ["objc++"]
+kind = "language"
+flag = "objcpp"
+groups = ["cmake"]
+marker = "src/main.mm"
+checks = [
+  ["cmake", "-S", ".", "-B", "build"],
+  ["cmake", "--build", "build"],
+  ["ctest", "--test-dir", "build", "--output-on-failure"],
+]
+setup_len = 0
+required_tool = false
+ci_job = "cmake"
+dependabot = {}
+codeql = {}
+docker_priority = 0
+requires = []
+host_os = []
+apps = []
+lockfile = ""
+release = ""
+npm_scripts = {}
+npm_dev = {}
