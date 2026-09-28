@@ -52,12 +52,12 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
    - squash-merge only, auto-merge on, delete branches after merge, wiki off
    - Dependabot alerts and security fixes
    - public repos: secret scanning, push protection, private vulnerability reporting
-   - **pushes `main`**, after push protection is on
+   - **pushes `main`**, after public push protection is on or private Actions are disabled
    - public repos: a `protect-main` ruleset. PRs are required (0 approvals, because you can't approve your own PR), the `ci` check from GitHub Actions must pass, history stays linear, and force-push and deletion are blocked.
    - labels `epic` and `task`, and a Project board linked to the repo
    - notifications set to **Ignore**, and no CODEOWNERS file, so nothing pings you
 
-**Private repos on GitHub Free** can't have rulesets, secret scanning or code scanning, so makeghrepo skips them and leaves CodeQL out. CI still runs but can't block merges; the local checks are the gate.
+**Private repos on GitHub Free** can't have rulesets, secret scanning or code scanning, so makeghrepo skips them and leaves CodeQL out. It disables GitHub Actions before the first push to avoid using Actions minutes without an enforceable merge gate, and refuses that push if disabling Actions fails. Workflow files are still generated, but they do not run while Actions is disabled. Local checks are the only gate; skipped local checks have no CI fallback in this mode.
 
 ## What every repo gets
 
@@ -69,6 +69,8 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 - `dependabot.yml`: GitHub Actions, plus uv, cargo, gomod, bundler, swift, npm, docker and docker-compose as chosen; weekly and grouped, with a 7-day cooldown.
 - `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python the version *is* the tag (hatchling + uv-dynamic-versioning, nothing to bump by hand): it checks the tag against the computed version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`. For Rust it checks the tag against `Cargo.toml`, tests, builds a release binary and attaches it with a `SHA256SUMS` file. For Go it tests and attaches static linux amd64 and arm64 binaries with `SHA256SUMS`. For C/C++ (without ObjC) it builds Release, runs ctest and attaches the linux x86_64 binaries with `SHA256SUMS`. For js/ts/css it attaches the `npm pack` tarball.
 - `auto-release.yml` (public Python repos): every merge to `main` waits for that commit's `ci` check, then tags the next minor version and publishes the release. The same design makeghrepo itself uses.
+
+Main-push CI runs independently for each run; only superseded PR runs are canceled. Auto-releases use GitHub's native `queue: max` to serialize releases without replacing pending runs. The queue holds at most 100 pending runs; overflow runs are canceled. Queue order follows arrival at the concurrency group, not necessarily commit order. Failed CI still blocks that commit's release. These are platform limits on the every-merge release policy; see [GitHub's concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 
 | language | files | checks (locally and in CI) |
 |---|---|---|
