@@ -1,6 +1,6 @@
 [project]
 name = "makeghrepo"
-version = "0.6.0"
+dynamic = ["version"]
 description = "Create a new, fully configured GitHub repo for any language in one command."
 readme = "README.md"
 license = "MIT"
@@ -21,8 +21,14 @@ Repository = "https://github.com/benpshore/makeghrepo"
 makeghrepo = "makeghrepo:main"
 
 [build-system]
-requires = ["uv_build>=0.12.18,<0.13.0"]
-build-backend = "uv_build"
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/makeghrepo"]
 
 [dependency-groups]
 dev = [
