@@ -1,8 +1,10 @@
+import json
+
 import git
 import pytest
 from typer.testing import CliRunner
 
-from makeghrepo import github, scaffold
+from makeghrepo import github, gitops, scaffold
 from makeghrepo.cli import app
 
 runner = CliRunner()
@@ -142,3 +144,77 @@ def test_rerun_after_failed_create_keeps_private(tmp_path, gh, monkeypatch):
     result = runner.invoke(app, ["hush"])  # --private forgotten on the re-run
     assert result.exit_code == 0, result.output
     assert gh["calls"][0][-1] is True
+
+
+def _fail_create(monkeypatch):
+    def create_fails(*a):
+        raise github.GhError("network down")
+
+    monkeypatch.setattr(github, "create_repo", create_fails)
+
+
+def test_create_writes_the_resume_marker(tmp_path, gh):
+    assert runner.invoke(app, ["marked", "python", "--private"]).exit_code == 0
+    marker = gitops.read_marker(tmp_path / "marked")
+    assert marker is not None
+    assert marker["name"] == "marked" and marker["owner"] == "me"
+    assert marker["private"] is True and marker["languages"] == ["python"]
+    assert marker["lib"] is False and str(marker["created_by"]).startswith("makeghrepo ")
+    assert "makeghrepo.json" not in git.Repo(tmp_path / "marked").git.ls_files()
+
+
+def test_unrelated_git_repo_is_refused(tmp_path, gh):
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    git.Repo.init(foreign)
+    (foreign / "secrets.txt").write_text("not for github")
+    result = runner.invoke(app, ["foreign"])
+    assert result.exit_code == 1
+    assert "didn't create" in result.output
+    assert gh["calls"] == []
+
+
+def test_corrupt_marker_is_refused(tmp_path, gh, monkeypatch):
+    _fail_create(monkeypatch)
+    assert runner.invoke(app, ["broken"]).exit_code == 1
+    (tmp_path / "broken" / ".git" / "makeghrepo.json").write_text("{not json")
+    result = runner.invoke(app, ["broken"])
+    assert result.exit_code == 1 and "didn't create" in result.output
+    assert gh["calls"] == []
+
+
+def test_private_flag_on_a_repo_created_public_is_refused(tmp_path, gh, monkeypatch):
+    _fail_create(monkeypatch)
+    assert runner.invoke(app, ["open"]).exit_code == 1
+    result = runner.invoke(app, ["open", "--private"])
+    assert result.exit_code == 1
+    assert "was created public" in result.output
+    assert gh["calls"] == []
+
+
+def test_private_flag_on_a_public_github_repo_is_refused(tmp_path, gh):
+    assert runner.invoke(app, ["shown"]).exit_code == 0
+    gh["existing"].add("me/shown")
+    marker = tmp_path / "shown" / ".git" / "makeghrepo.json"
+    data = json.loads(marker.read_text())
+    marker.write_text(json.dumps({**data, "private": True}))  # meant private; GitHub says public
+    gh["calls"].clear()
+    result = runner.invoke(app, ["shown", "--private"])
+    assert result.exit_code == 1
+    assert "public on GitHub" in result.output
+    assert gh["calls"] == []
+
+
+def test_resume_uses_the_marker_languages(tmp_path, gh, monkeypatch):
+    seen = []
+
+    def broken(dest, langs, log):
+        seen.append(list(langs))
+        raise RuntimeError("check failed")
+
+    monkeypatch.setattr(scaffold, "smoke_test", broken)
+    assert runner.invoke(app, ["polyglot", "python"]).exit_code == 1
+    result = runner.invoke(app, ["polyglot", "rust"])
+    assert result.exit_code == 1
+    assert "ignoring languages on resume; using python" in result.output
+    assert seen == [["python"], ["python"]]

@@ -2,9 +2,33 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import git
+
+MARKER = "makeghrepo.json"  # lives inside .git, so it is never committed or pushed
+
+
+def write_marker(path: Path, data: dict[str, object]) -> None:
+    """Record that makeghrepo created this repo, and with what intent (visibility, languages)."""
+    (path / ".git" / MARKER).write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def read_marker(path: Path) -> dict[str, object] | None:
+    """The marker written by write_marker, or None if missing, unreadable or not schema 1."""
+    try:
+        data = json.loads((path / ".git" / MARKER).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != 1:
+        return None
+    langs = data.get("languages")
+    if not isinstance(data.get("private"), bool) or not isinstance(langs, list):
+        return None
+    if not all(isinstance(lang, str) for lang in langs):
+        return None
+    return data
 
 
 def author_from_git_config() -> tuple[str, str]:

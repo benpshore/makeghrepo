@@ -34,3 +34,33 @@ def test_ensure_identity_never_overrides_a_real_one(tmp_path):
     reader = repo.config_reader()
     assert reader.get_value("user", "name") == "Real Person"
     assert reader.get_value("user", "email") == "real@example.com"
+
+
+MARKER = {"schema": 1, "name": "x", "owner": "me", "private": True, "languages": ["python"]}
+
+
+def test_marker_round_trips_and_stays_out_of_the_work_tree(tmp_path):
+    gitops.init(tmp_path)
+    gitops.write_marker(tmp_path, MARKER)
+    assert gitops.read_marker(tmp_path) == MARKER
+    assert (tmp_path / ".git" / "makeghrepo.json").is_file()
+    assert git.Repo(tmp_path).untracked_files == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        None,  # missing
+        "{not json",
+        "[]",
+        '{"schema": 2, "private": false, "languages": []}',
+        '{"schema": 1, "private": "yes", "languages": []}',
+        '{"schema": 1, "private": false, "languages": "python"}',
+        '{"schema": 1, "private": false, "languages": [1]}',
+    ],
+)
+def test_read_marker_rejects_anything_but_a_valid_schema_1_marker(tmp_path, content):
+    gitops.init(tmp_path)
+    if content is not None:
+        (tmp_path / ".git" / "makeghrepo.json").write_text(content)
+    assert gitops.read_marker(tmp_path) is None
