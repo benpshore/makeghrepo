@@ -140,10 +140,11 @@ def main(
     try:
         if on_github:
             actual_private = github.is_private(repo)
-            if private and not actual_private:
+            if want_private and not actual_private:
                 raise fail(
-                    f"{repo} is public on GitHub; makeghrepo never changes visibility. "
-                    "Re-run without --private"
+                    f"{repo} is public on GitHub, but this project was created private. "
+                    "Refusing to publish; makeghrepo never changes visibility. "
+                    "Restore the remote's private visibility before retrying"
                 )
             private = actual_private
         else:

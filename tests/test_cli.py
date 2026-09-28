@@ -220,6 +220,30 @@ def test_resume_uses_the_marker_languages(tmp_path, gh, monkeypatch):
     assert seen == [["python"], ["python"]]
 
 
+@pytest.mark.parametrize("remote_has_main", [False, True])
+def test_resume_private_intent_refuses_public_remote_without_flag(
+    tmp_path, gh, monkeypatch, remote_has_main
+):
+    assert runner.invoke(app, ["hush", "--private"]).exit_code == 0
+    gh["existing"].add("me/hush")
+    gh["calls"].clear()
+    monkeypatch.setattr(gitops, "remote_has_main", lambda _: remote_has_main)
+    result = runner.invoke(app, ["hush"])
+    assert result.exit_code == 1
+    assert "public on GitHub" in result.output
+    assert gh["calls"] == []
+
+
+def test_resume_private_intent_accepts_private_remote_without_flag(tmp_path, gh, monkeypatch):
+    assert runner.invoke(app, ["hush", "--private"]).exit_code == 0
+    gh["existing"].add("me/hush")
+    gh["calls"].clear()
+    monkeypatch.setattr(github, "is_private", lambda _: True)
+    result = runner.invoke(app, ["hush"])
+    assert result.exit_code == 0, result.output
+    assert gh["calls"] == [("configure", "me/hush", True, True)]
+
+
 def test_rust_refuses_a_name_starting_with_a_digit(tmp_path, gh):
     result = runner.invoke(app, ["7up", "rust"])
     assert result.exit_code == 1
