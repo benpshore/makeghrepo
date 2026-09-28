@@ -127,7 +127,10 @@ def derived(langs: dict[str, Lang], languages: list[str]) -> dict[str, Any]:
         npm_dev.update(lang.npm_dev)
     return {
         "ci_jobs": ci_jobs,
-        "dependabot_ecosystems": ["github-actions", *sorted(ecosystems, key=ecosystems.__getitem__)],
+        "dependabot_ecosystems": [
+            "github-actions",
+            *sorted(ecosystems, key=ecosystems.__getitem__),
+        ],
         "codeql_entries": [
             {key: entry[key] for key in ("language", "build_mode", "os")}
             for entry in sorted(codeql.values(), key=lambda entry: entry["order"])
