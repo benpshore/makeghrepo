@@ -107,10 +107,19 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/hadolint"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: uv sync --locked
+      # `all` runs three times: the local checks run concurrently, so a rare
+      # ordering race between setup steps and checks shows up as a flake here.
       - name: Render the combo and run its checks
         env:
           COMBO: ${{ matrix.combo }}
-        run: uv run scripts/render-check "$COMBO"
+        run: |
+          runs=1
+          [ "$COMBO" = all ] && runs=3
+          for i in $(seq "$runs"); do
+            echo "::group::render-check $COMBO ($i/$runs)"
+            uv run scripts/render-check "$COMBO"
+            echo "::endgroup::"
+          done
 
   actionlint:
     name: actionlint
