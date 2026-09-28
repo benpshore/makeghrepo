@@ -39,6 +39,18 @@ jobs:
         run: uv run ruff check --output-format=github
       - name: Test
         run: uv run pytest
+      # Snapshots are rendered here, not on a dev machine, and uploaded so a PR
+      # that changes output on purpose can commit them (see README "Golden snapshots").
+      - name: Render golden snapshots
+        if: ${{ !cancelled() }}
+        run: uv run scripts/regen-golden --out out/golden
+      - name: Upload golden snapshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: golden
+          path: out/golden
+          if-no-files-found: error
       - name: Audit dependencies
         run: uv audit --locked --preview-features audit-command
       - name: Build

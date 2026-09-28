@@ -1,0 +1,469 @@
+### FILE .editorconfig exec=0 bytes=192 encoding=utf-8
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+charset = utf-8
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,toml,json,md}]
+indent_size = 2
+
+### END
+### FILE .github/ISSUE_TEMPLATE/bug.yml exec=0 bytes=438 encoding=utf-8
+name: Bug
+description: Something is broken
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Include the command you ran and the full error output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      render: shell
+
+### END
+### FILE .github/ISSUE_TEMPLATE/config.yml exec=0 bytes=27 encoding=utf-8
+blank_issues_enabled: true
+
+### END
+### FILE .github/ISSUE_TEMPLATE/epic.yml exec=0 bytes=569 encoding=utf-8
+name: Epic
+description: A large body of work broken into sub-issues
+labels: [epic]
+title: "[Epic] "
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: What does done look like for the whole epic?
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: >
+        After creating this issue, add child issues with **Create sub-issue**
+        (or `gh issue create` and link them). Progress rolls up automatically.
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+
+### END
+### FILE .github/ISSUE_TEMPLATE/feature.yml exec=0 bytes=348 encoding=utf-8
+name: Feature / task
+description: A unit of work
+labels: [task]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be true when this is done?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ]
+
+### END
+### FILE .github/dependabot.yml exec=0 bytes=206 encoding=utf-8
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+### END
+### FILE .github/pull_request_template.md exec=0 bytes=276 encoding=utf-8
+## What
+
+<!-- One or two sentences: what does this change and why? -->
+
+Closes #
+
+## How to verify
+
+- [ ] `uv run ruff format --check && uv run ruff check`
+- [ ] `uv run pytest`
+
+## Notes
+
+<!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
+
+### END
+### FILE .github/workflows/ci.yml exec=0 bytes=1369 encoding=utf-8
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: No junk, databases or secrets committed
+        run: |
+          bad=$(git ls-files | grep -Ei '(^|/)(\.DS_Store|\.env(\..+)?|[^/]+\.(db|sqlite3?|duckdb|pem|key|p12|pfx))$' | grep -v '\.env\.example$' || true)
+          if [ -n "$bad" ]; then echo "::error::remove from git: $bad"; exit 1; fi
+
+  sql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uvx sqlfluff lint sql
+
+  # The single required check in the branch ruleset. It passes only if every job above passed.
+  ci:
+    if: always()
+    needs: [repo, sql]
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = false
+
+### END
+### FILE .github/workflows/codeql.yml exec=0 bytes=1032 encoding=utf-8
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "27 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { language: actions, build-mode: none, os: ubuntu-latest }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: "/language:${{ matrix.language }}"
+
+### END
+### FILE .github/workflows/release.yml exec=0 bytes=599 encoding=utf-8
+name: Release
+
+# Publish: bump the version, merge the PR, then push a tag, e.g.
+#   git tag v0.1.1 && git push --tags
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+
+### END
+### FILE .gitignore exec=0 bytes=1712 encoding=utf-8
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.python-eggs/
+pip-wheel-metadata/
+
+# ---- Tooling caches ----
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.tox/
+.nox/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.ipynb_checkpoints/
+
+# ---- Databases & data files (never commit) ----
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.duckdb
+*.duckdb.wal
+*.mdb
+*.accdb
+*.parquet
+*.feather
+*.arrow
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.dump
+*.bak
+
+# ---- Secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.*
+credentials.json
+.netrc
+
+# ---- Logs & scratch ----
+*.log
+logs/
+tmp/
+temp/
+scratch/
+output/
+outputs/
+
+# ---- macOS ----
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+Icon?
+
+# ---- Windows / Linux ----
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*~
+.directory
+
+# ---- Editors & IDEs ----
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+.project
+.settings/
+*.sublime-workspace
+
+# ---- R / Jupyter / misc ----
+.Rhistory
+.RData
+.Rproj.user/
+
+# ---- AI tooling (local-only settings) ----
+.claude/settings.local.json
+.claude/.cc-writes/
+
+# ---- Rust ----
+target/
+**/*.rs.bk
+
+# ---- Swift / Xcode / ObjC ----
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.hmap
+*.ipa
+*.dSYM/
+*.dSYM.zip
+
+# ---- C / C++ / CMake ----
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+*.o
+*.obj
+*.a
+*.dylib
+*.dll
+*.exe
+*.out
+
+# ---- JS / CSS ----
+node_modules/
+.npm/
+.next/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+npm-debug.log*
+
+# ---- Postgres / Docker local state ----
+pgdata/
+postgres-data/
+*.pgdump
+.docker/
+
+### END
+### FILE .sqlfluff exec=0 bytes=120 encoding=utf-8
+[sqlfluff]
+dialect = ansi
+max_line_length = 100
+
+[sqlfluff:rules:capitalisation.keywords]
+capitalisation_policy = lower
+
+### END
+### FILE AGENTS.md exec=0 bytes=279 encoding=utf-8
+# quiet-otter
+
+- `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
+- Never commit secrets, `.env` files, databases or `.DS_Store` (see `.gitignore`; CI rejects them).
+- Before committing, run:
+
+```sh
+uvx sqlfluff lint sql
+```
+
+### END
+### FILE CLAUDE.md exec=0 bytes=11 encoding=utf-8
+@AGENTS.md
+
+### END
+### FILE LICENSE exec=0 bytes=1066 encoding=utf-8
+MIT License
+
+Copyright (c) 2026 Test User
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+### END
+### FILE README.md exec=0 bytes=217 encoding=utf-8
+# quiet-otter
+
+a test project
+
+## Checks
+
+Run these before opening a PR. CI runs the same ones.
+
+```sh
+uvx sqlfluff lint sql
+```
+
+`main` is protected: open a PR; the `ci` check must pass before merging (squash only).
+
+### END
+### FILE SECURITY.md exec=0 bytes=213 encoding=utf-8
+# Security Policy
+
+Please report vulnerabilities privately via
+**Security → Report a vulnerability** on this repository (GitHub private vulnerability reporting).
+Do not open public issues for security problems.
+
+### END
+### FILE sql/example.sql exec=0 bytes=16 encoding=utf-8
+select 1 as ok;
+
+### END

@@ -83,4 +83,19 @@ uv run pytest              # includes slow end-to-end tests for python and rust 
 uv run pytest -m "not slow"
 ```
 
+### Golden snapshots
+
+`tests/golden/` holds the exact rendered output of a fixed set of language combos (listed in `tests/golden_snapshots.py`). `tests/test_golden.py` fails on any difference in a file's bytes, name or exec bit, so a refactor that shouldn't change output can prove it doesn't. When you change templates on purpose, regenerate and review the diff:
+
+```sh
+uv run scripts/regen-golden
+git diff tests/golden
+```
+
+Never edit or hand-merge a `.golden` file. On a conflict, rebase and regenerate. CI also renders them on every run and uploads them as the `golden` artifact, so they can be regenerated without a local toolchain:
+
+```sh
+gh run download <run-id> -n golden -D tests/golden
+```
+
 To add a language: add its files to `templates/project/template/` behind a `[% if flag %]` name, a flag in `copier.yml`, its jobs in `ci.yml.jinja` and `codeql`/`dependabot`, its line in `_checks.jinja`, and its entries in `LANGUAGES` and `CHECKS` in `scaffold.py`.
