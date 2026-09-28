@@ -25,7 +25,11 @@ pub fn git(path: &Path, args: &[&str]) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         let err = String::from_utf8_lossy(&out.stderr);
-        let msg = if err.trim().is_empty() { String::from_utf8_lossy(&out.stdout) } else { err };
+        let msg = if err.trim().is_empty() {
+            String::from_utf8_lossy(&out.stdout)
+        } else {
+            err
+        };
         Err(format!("git {}\n{}", args.join(" "), msg.trim()))
     }
 }
@@ -102,7 +106,10 @@ pub fn commit_all(path: &Path, message: &str) -> Result<(), String> {
         .collect();
     let junk = junk_files(&staged);
     if !junk.is_empty() {
-        return Err(format!("refusing to commit junk or secrets: {}", junk.join(", ")));
+        return Err(format!(
+            "refusing to commit junk or secrets: {}",
+            junk.join(", ")
+        ));
     }
     git(path, &["commit", "-q", "-m", message]).map(|_| ())
 }
@@ -124,15 +131,29 @@ mod tests {
     #[test]
     fn junk_matches_ci_pattern() {
         let names: Vec<String> = [
-            ".env", "config/.env.local", ".env.example", "data.db", "x/.DS_Store", "key.pem",
-            "src/main.rs", "notes.md", "SECRETS.KEY",
+            ".env",
+            "config/.env.local",
+            ".env.example",
+            "data.db",
+            "x/.DS_Store",
+            "key.pem",
+            "src/main.rs",
+            "notes.md",
+            "SECRETS.KEY",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
         assert_eq!(
             junk_files(&names),
-            vec![".env", "config/.env.local", "data.db", "x/.DS_Store", "key.pem", "SECRETS.KEY"]
+            vec![
+                ".env",
+                "config/.env.local",
+                "data.db",
+                "x/.DS_Store",
+                "key.pem",
+                "SECRETS.KEY"
+            ]
         );
     }
 }

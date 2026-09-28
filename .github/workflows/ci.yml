@@ -177,20 +177,6 @@ jobs:
         with:
           name: cargo-lock
           path: rust/Cargo.lock
-      - name: Format
-        id: fmt
-        run: |
-          if ! cargo fmt --check; then
-            cargo fmt
-            git diff -- . > "$RUNNER_TEMP/rustfmt.patch"
-            echo "::error::rustfmt wants changes; apply the rustfmt-patch artifact"
-            exit 1
-          fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure() && steps.fmt.outcome == 'failure'
-        with:
-          name: rustfmt-patch
-          path: ${{ runner.temp }}/rustfmt.patch
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Test
@@ -216,6 +202,22 @@ jobs:
           ./target/release/makeghrepo quiet-otter rust docker --render "$RUNNER_TEMP/dry" >/dev/null
           test -f "$RUNNER_TEMP/dry/Cargo.toml" && test -f "$RUNNER_TEMP/dry/Dockerfile"
           ./target/release/makeghrepo --version
+      # Last, so one cloud round reports compile, test and parity results together
+      # with the format patch (nothing is formatted on a dev host).
+      - name: Format
+        id: fmt
+        run: |
+          if ! cargo fmt --check; then
+            cargo fmt
+            git diff -- . > "$RUNNER_TEMP/rustfmt.patch"
+            echo "::error::rustfmt wants changes; apply the rustfmt-patch artifact"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && steps.fmt.outcome == 'failure'
+        with:
+          name: rustfmt-patch
+          path: ${{ runner.temp }}/rustfmt.patch
 
   # The single required check in the branch ruleset ("ci"): passes only if every job above passed.
   ci:

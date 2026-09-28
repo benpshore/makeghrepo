@@ -3,13 +3,72 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const ADJECTIVES: &[&str] = &[
-    "amber", "ancient", "autumn", "bold", "brave", "bright", "brisk", "calm", "clever", "cosmic",
-    "crimson", "crisp", "curious", "dapper", "daring", "dusty", "eager", "electric", "fancy",
-    "fluffy", "fuzzy", "gentle", "gilded", "glad", "golden", "grand", "happy", "hidden", "humble",
-    "icy", "jolly", "keen", "kind", "lively", "lucky", "lunar", "mellow", "misty", "modest",
-    "mossy", "nimble", "noble", "odd", "polite", "proud", "quick", "quiet", "rapid", "rustic",
-    "shiny", "silent", "silver", "sleepy", "sly", "smooth", "snowy", "solar", "sunny", "swift",
-    "tidy", "tiny", "vivid", "wandering", "warm", "witty", "zesty",
+    "amber",
+    "ancient",
+    "autumn",
+    "bold",
+    "brave",
+    "bright",
+    "brisk",
+    "calm",
+    "clever",
+    "cosmic",
+    "crimson",
+    "crisp",
+    "curious",
+    "dapper",
+    "daring",
+    "dusty",
+    "eager",
+    "electric",
+    "fancy",
+    "fluffy",
+    "fuzzy",
+    "gentle",
+    "gilded",
+    "glad",
+    "golden",
+    "grand",
+    "happy",
+    "hidden",
+    "humble",
+    "icy",
+    "jolly",
+    "keen",
+    "kind",
+    "lively",
+    "lucky",
+    "lunar",
+    "mellow",
+    "misty",
+    "modest",
+    "mossy",
+    "nimble",
+    "noble",
+    "odd",
+    "polite",
+    "proud",
+    "quick",
+    "quiet",
+    "rapid",
+    "rustic",
+    "shiny",
+    "silent",
+    "silver",
+    "sleepy",
+    "sly",
+    "smooth",
+    "snowy",
+    "solar",
+    "sunny",
+    "swift",
+    "tidy",
+    "tiny",
+    "vivid",
+    "wandering",
+    "warm",
+    "witty",
+    "zesty",
 ];
 
 pub const NOUNS: &[&str] = &[
@@ -17,9 +76,9 @@ pub const NOUNS: &[&str] = &[
     "dune", "ember", "falcon", "fern", "finch", "fjord", "fox", "garden", "geyser", "glacier",
     "harbor", "heron", "hollow", "island", "lagoon", "lantern", "lichen", "lynx", "maple",
     "meadow", "meteor", "moose", "nebula", "newt", "oasis", "orbit", "otter", "owl", "panda",
-    "pebble", "pine", "prairie", "quartz", "rabbit", "raven", "reef", "river", "sparrow",
-    "spruce", "summit", "system", "thicket", "tiger", "tundra", "valley", "walrus", "willow",
-    "wombat", "yak", "zephyr",
+    "pebble", "pine", "prairie", "quartz", "rabbit", "raven", "reef", "river", "sparrow", "spruce",
+    "summit", "system", "thicket", "tiger", "tundra", "valley", "walrus", "willow", "wombat",
+    "yak", "zephyr",
 ];
 
 /// A small xorshift generator: names, not cryptography.
@@ -73,7 +132,9 @@ pub fn normalize_name(name: &str) -> String {
 pub fn validate_name(name: &str) -> Result<String, String> {
     let ok = !name.is_empty()
         && name.len() <= 100
-        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         && !name.starts_with('-')
         && !name.ends_with('-');
     if ok {
@@ -111,7 +172,9 @@ pub fn validate_owner(owner: &str) -> Result<String, String> {
     let bytes = owner.as_bytes();
     let ok = !bytes.is_empty()
         && bytes.len() <= 39
-        && bytes.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
         && !owner.starts_with('-')
         && !owner.ends_with('-')
         && !owner.contains("--");

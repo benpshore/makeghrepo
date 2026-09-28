@@ -48,24 +48,48 @@ pub fn load() -> Vec<Lang> {
         if !name.ends_with(".toml") {
             continue;
         }
-        let text = file.contents_utf8().unwrap_or_else(|| panic!("{name}: not UTF-8"));
+        let text = file
+            .contents_utf8()
+            .unwrap_or_else(|| panic!("{name}: not UTF-8"));
         let lang: Lang = toml::from_str(text).unwrap_or_else(|e| panic!("{name}: {e}"));
-        assert_eq!(lang.schema, SCHEMA, "{name}: schema {} (expected {SCHEMA})", lang.schema);
-        assert_eq!(format!("{}.toml", lang.id), name, "{name}: id doesn't match the file name");
-        assert!(lang.setup_len <= lang.checks.len(), "{name}: setup_len out of range");
-        assert!(!lang.required_tool || !lang.checks.is_empty(), "{name}: required_tool without checks");
+        assert_eq!(
+            lang.schema, SCHEMA,
+            "{name}: schema {} (expected {SCHEMA})",
+            lang.schema
+        );
+        assert_eq!(
+            format!("{}.toml", lang.id),
+            name,
+            "{name}: id doesn't match the file name"
+        );
+        assert!(
+            lang.setup_len <= lang.checks.len(),
+            "{name}: setup_len out of range"
+        );
+        assert!(
+            !lang.required_tool || !lang.checks.is_empty(),
+            "{name}: required_tool without checks"
+        );
         langs.push(lang);
     }
     langs.sort_by_key(|l| l.order);
     let mut words: Vec<&str> = Vec::new();
     for lang in &langs {
         for word in std::iter::once(&lang.id).chain(lang.aliases.iter()) {
-            assert!(!words.contains(&word.as_str()), "{}.toml: {word:?} is already an id or alias", lang.id);
+            assert!(
+                !words.contains(&word.as_str()),
+                "{}.toml: {word:?} is already an id or alias",
+                lang.id
+            );
             words.push(word);
         }
     }
     let orders: std::collections::BTreeSet<u64> = langs.iter().map(|l| l.order).collect();
-    assert_eq!(orders.len(), langs.len(), "two registry entries share an order");
+    assert_eq!(
+        orders.len(),
+        langs.len(),
+        "two registry entries share an order"
+    );
     langs
 }
 
@@ -83,7 +107,10 @@ pub fn ids(langs: &[Lang]) -> Vec<String> {
 }
 
 pub fn get<'a>(langs: &'a [Lang], id: &str) -> &'a Lang {
-    langs.iter().find(|l| l.id == id).expect("known language id")
+    langs
+        .iter()
+        .find(|l| l.id == id)
+        .expect("known language id")
 }
 
 /// Template data for the chosen languages, in registry order, with shared entries once
@@ -102,7 +129,10 @@ pub fn derived(langs: &[Lang], chosen: &[String]) -> Map<String, Value> {
             ci_jobs.push(lang.ci_job.clone());
         }
         if !lang.dependabot.is_empty() {
-            let eco = lang.dependabot["ecosystem"].as_str().unwrap_or_default().to_string();
+            let eco = lang.dependabot["ecosystem"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
             let order = lang.dependabot["order"].as_i64().unwrap_or_default();
             if let Some(entry) = ecosystems.iter_mut().find(|(e, _)| *e == eco) {
                 entry.1 = order;
@@ -111,7 +141,10 @@ pub fn derived(langs: &[Lang], chosen: &[String]) -> Map<String, Value> {
             }
         }
         if !lang.codeql.is_empty() {
-            let language = lang.codeql["language"].as_str().unwrap_or_default().to_string();
+            let language = lang.codeql["language"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
             if let Some(entry) = codeql.iter_mut().find(|(l, _)| *l == language) {
                 entry.1 = lang.codeql.clone();
             } else {

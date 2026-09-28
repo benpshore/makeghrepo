@@ -97,7 +97,11 @@ fn parse_combo(langs: &[registry::Lang], name: &str) -> Result<(Vec<String>, boo
         "all" => registry::ids(langs),
         _ => body
             .split('+')
-            .map(|w| registry::language(langs, w).map(str::to_string).ok_or(format!("unknown combo {name:?}")))
+            .map(|w| {
+                registry::language(langs, w)
+                    .map(str::to_string)
+                    .ok_or(format!("unknown combo {name:?}"))
+            })
             .collect::<Result<Vec<_>, _>>()?,
     };
     Ok((languages, private, lib))
@@ -118,7 +122,10 @@ fn main() -> ExitCode {
 
     // A leading non-language word is the name; otherwise pick a random one.
     let mut words = cli.words.clone();
-    let raw_name = if words.first().is_some_and(|w| registry::language(&langs, w).is_none()) {
+    let raw_name = if words
+        .first()
+        .is_some_and(|w| registry::language(&langs, w).is_none())
+    {
         Some(words.remove(0))
     } else {
         None
@@ -126,7 +133,10 @@ fn main() -> ExitCode {
     let mut chosen: Vec<String> = Vec::new();
     for word in &words {
         let Some(id) = registry::language(&langs, word) else {
-            return fail(&format!("unknown language {word:?}. Choose from: {}", all.join(", ")));
+            return fail(&format!(
+                "unknown language {word:?}. Choose from: {}",
+                all.join(", ")
+            ));
         };
         if !chosen.iter().any(|c| c == id) {
             chosen.push(id.to_string());
@@ -145,11 +155,16 @@ fn main() -> ExitCode {
             },
             None => (chosen.clone(), cli.private, cli.lib),
         };
-        let name = raw_name.clone().unwrap_or_else(|| "quiet-otter".to_string());
+        let name = raw_name
+            .clone()
+            .unwrap_or_else(|| "quiet-otter".to_string());
         let data = render::Data {
             package_name: names::package_name(&name),
             project_name: name,
-            description: cli.description.clone().unwrap_or_else(|| "a test project".into()),
+            description: cli
+                .description
+                .clone()
+                .unwrap_or_else(|| "a test project".into()),
             author_name: cli.author.clone().unwrap_or_else(|| "Test User".into()),
             github_owner: cli.owner.clone().unwrap_or_else(|| "someone".into()),
             year: cli.year.clone().unwrap_or_else(|| "2026".into()),
@@ -182,7 +197,9 @@ fn main() -> ExitCode {
     let base_dir = std::env::var_os("MAKEGHREPO_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."));
             home.join("code").join("GitHub")
         });
     let owner = match github::current_user().and_then(|u| names::validate_owner(&u)) {
@@ -217,7 +234,10 @@ fn main() -> ExitCode {
     let mut want_private = cli.private;
     if resume {
         if !dest.join(".git").is_dir() {
-            return fail(&format!("{} exists but isn't a git repo; pick another name", dest.display()));
+            return fail(&format!(
+                "{} exists but isn't a git repo; pick another name",
+                dest.display()
+            ));
         }
         let Some(marker) = gitops::read_marker(&dest) else {
             return fail(&format!(
@@ -227,7 +247,9 @@ fn main() -> ExitCode {
         };
         let marker_private = marker["private"].as_bool().unwrap_or(false);
         if cli.private && !marker_private {
-            return fail(&format!("{repo} was created public; re-run without --private or pick another name"));
+            return fail(&format!(
+                "{repo} was created public; re-run without --private or pick another name"
+            ));
         }
         want_private = marker_private;
         let recorded: Vec<String> = marker["languages"]
@@ -237,15 +259,24 @@ fn main() -> ExitCode {
             .filter_map(|v| v.as_str().map(str::to_string))
             .collect();
         if !chosen.is_empty() && chosen != recorded {
-            let shown = if recorded.is_empty() { "none".to_string() } else { recorded.join(", ") };
-            echo(&format!("note: ignoring languages on resume; using {shown}"));
+            let shown = if recorded.is_empty() {
+                "none".to_string()
+            } else {
+                recorded.join(", ")
+            };
+            echo(&format!(
+                "note: ignoring languages on resume; using {shown}"
+            ));
         }
         chosen = recorded;
         echo(&format!("resuming {}", dest.display()));
     } else if on_github {
         return fail(&format!("{repo} already exists on GitHub"));
     } else {
-        let strict: Vec<&String> = chosen.iter().filter(|c| registry::get(&langs, c).leading_letter).collect();
+        let strict: Vec<&String> = chosen
+            .iter()
+            .filter(|c| registry::get(&langs, c).leading_letter)
+            .collect();
         if let Some(first) = strict.first() {
             if !name.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
                 return fail(&format!(
@@ -253,10 +284,18 @@ fn main() -> ExitCode {
                 ));
             }
         }
-        let shown = if chosen.is_empty() { "any language".to_string() } else { chosen.join(", ") };
+        let shown = if chosen.is_empty() {
+            "any language".to_string()
+        } else {
+            chosen.join(", ")
+        };
         echo(&format!("creating {} [{shown}]", dest.display()));
         let (git_name, _) = gitops::author_from_git_config();
-        let author_name = if git_name.is_empty() { owner.clone() } else { git_name };
+        let author_name = if git_name.is_empty() {
+            owner.clone()
+        } else {
+            git_name
+        };
         let data = render::Data {
             project_name: name.clone(),
             package_name: names::package_name(&name),
@@ -274,7 +313,11 @@ fn main() -> ExitCode {
         if let Err(e) = gitops::init(&dest) {
             return fail(&e);
         }
-        if let Err(e) = gitops::ensure_identity(&dest, &author_name, &format!("{owner}@users.noreply.github.com")) {
+        if let Err(e) = gitops::ensure_identity(
+            &dest,
+            &author_name,
+            &format!("{owner}@users.noreply.github.com"),
+        ) {
             return fail(&e);
         }
         let mut marker: BTreeMap<String, Value> = BTreeMap::new();
@@ -284,7 +327,10 @@ fn main() -> ExitCode {
         marker.insert("private".into(), json!(cli.private));
         marker.insert("languages".into(), json!(chosen));
         marker.insert("lib".into(), json!(cli.lib));
-        marker.insert("created_by".into(), json!(format!("makeghrepo {} (rust)", version())));
+        marker.insert(
+            "created_by".into(),
+            json!(format!("makeghrepo {} (rust)", version())),
+        );
         if let Err(e) = gitops::write_marker(&dest, &marker) {
             return fail(&e);
         }
@@ -294,7 +340,9 @@ fn main() -> ExitCode {
         let result = smoke::smoke_test(&dest, &langs, &chosen, &echo)
             .and_then(|()| gitops::commit_all(&dest, "setup"));
         if let Err(e) = result {
-            return fail(&format!("{e}\nNothing was published. Fix it, then re-run the same command."));
+            return fail(&format!(
+                "{e}\nNothing was published. Fix it, then re-run the same command."
+            ));
         }
     }
 
@@ -319,15 +367,23 @@ fn main() -> ExitCode {
     // Push only if main isn't on GitHub yet; once protected, main only changes via PRs.
     let pushed = on_github && gitops::remote_has_main(&dest);
     let push_dest = dest.clone();
-    let push: Option<Box<dyn Fn() -> Result<(), String> + Send + Sync>> =
-        if pushed { None } else { Some(Box::new(move || gitops::push_main(&push_dest))) };
+    let push: Option<Box<dyn Fn() -> Result<(), String> + Send + Sync>> = if pushed {
+        None
+    } else {
+        Some(Box::new(move || gitops::push_main(&push_dest)))
+    };
     let failed = github::configure_all(&repo, private, true, push, &echo);
-    echo(&format!("\nhttps://github.com/{repo}\ncd {}", dest.display()));
+    echo(&format!(
+        "\nhttps://github.com/{repo}\ncd {}",
+        dest.display()
+    ));
     if failed.is_empty() {
         ExitCode::SUCCESS
     } else {
-        echo(&format!("{} step(s) failed. Fix, then re-run: makeghrepo {name}", failed.len()));
+        echo(&format!(
+            "{} step(s) failed. Fix, then re-run: makeghrepo {name}",
+            failed.len()
+        ));
         ExitCode::from(2)
     }
 }
-

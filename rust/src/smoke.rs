@@ -17,14 +17,20 @@ pub type Cmd = Vec<String>;
 /// Plugin subcommands shipped as separate, sometimes-missing binaries.
 const CARGO_PLUGIN_SUBCOMMANDS: &[&str] = &["fmt", "clippy"];
 const SCRUBBED_PREFIXES: &[&str] = &["GH_", "GITHUB_"];
-const SCRUBBED_NAMES: &[&str] = &["DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS"];
+const SCRUBBED_NAMES: &[&str] = &[
+    "DBUS_SESSION_BUS_ADDRESS",
+    "SSH_AUTH_SOCK",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+];
 
 /// The environment local checks run in: the user's, minus credential channels.
 pub fn check_env() -> Vec<(OsString, OsString)> {
     std::env::vars_os()
         .filter(|(k, _)| {
             let key = k.to_string_lossy();
-            !SCRUBBED_PREFIXES.iter().any(|p| key.starts_with(p)) && !SCRUBBED_NAMES.contains(&key.as_ref())
+            !SCRUBBED_PREFIXES.iter().any(|p| key.starts_with(p))
+                && !SCRUBBED_NAMES.contains(&key.as_ref())
         })
         .collect()
 }
@@ -38,7 +44,12 @@ pub fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(name))
-        .find(|p| p.is_file() && p.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false))
+        .find(|p| {
+            p.is_file()
+                && p.metadata()
+                    .map(|m| m.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+        })
 }
 
 fn probe_ok(probe: &[String], env: &[(OsString, OsString)]) -> bool {
@@ -78,10 +89,16 @@ fn host_os() -> &'static str {
 }
 
 /// Chosen languages whose local checks can't run on this host, with the reason.
-pub fn unavailable(langs: &[Lang], languages: &[String], env: &[(OsString, OsString)]) -> Vec<(String, String)> {
+pub fn unavailable(
+    langs: &[Lang],
+    languages: &[String],
+    env: &[(OsString, OsString)],
+) -> Vec<(String, String)> {
     let mut reasons = Vec::new();
     for id in languages {
-        let Some(lang) = langs.iter().find(|l| l.id == *id) else { continue };
+        let Some(lang) = langs.iter().find(|l| l.id == *id) else {
+            continue;
+        };
         if !lang.host_os.is_empty() && !lang.host_os.iter().any(|os| os == host_os()) {
             reasons.push((id.clone(), format!("needs {}", lang.host_os.join(" or "))));
         } else if !lang.probe.is_empty() && !probe_ok(&lang.probe, env) {
@@ -128,13 +145,17 @@ impl Plan {
     fn announce(&self, cmd: &[String]) -> Option<String> {
         let joined = cmd.join(" ");
         if self.skip && !self.lockfile_cmds.contains(cmd) {
-            return Some(format!("  - skip {joined} (MAKEGHREPO_SKIP_LOCAL_CHECKS set; CI will run it)"));
+            return Some(format!(
+                "  - skip {joined} (MAKEGHREPO_SKIP_LOCAL_CHECKS set; CI will run it)"
+            ));
         }
         if let Some((_, reason)) = self.blocked.iter().find(|(c, _)| c == cmd) {
             return Some(format!("  - skip {joined} ({reason}; CI will run it)"));
         }
         if let Some(missing) = missing_tool(cmd) {
-            return Some(format!("  - skip {joined} ({missing} not installed; CI will run it)"));
+            return Some(format!(
+                "  - skip {joined} ({missing} not installed; CI will run it)"
+            ));
         }
         None
     }
@@ -163,12 +184,20 @@ impl Plan {
     }
 }
 
-pub fn smoke_test(dest: &Path, langs: &[Lang], languages: &[String], log: &(dyn Fn(&str) + Sync)) -> Result<(), String> {
+pub fn smoke_test(
+    dest: &Path,
+    langs: &[Lang],
+    languages: &[String],
+    log: &(dyn Fn(&str) + Sync),
+) -> Result<(), String> {
     let skip = std::env::var_os("MAKEGHREPO_SKIP_LOCAL_CHECKS").is_some_and(|v| !v.is_empty());
     let required: Vec<&Lang> = langs.iter().filter(|l| l.required_tool).collect();
     for lang in &required {
         if languages.contains(&lang.id) && which(&lang.checks[0][0]).is_none() {
-            return Err(format!("{} needs {} installed locally to create its lockfile", lang.id, lang.checks[0][0]));
+            return Err(format!(
+                "{} needs {} installed locally to create its lockfile",
+                lang.id, lang.checks[0][0]
+            ));
         }
     }
     let lockfile_cmds: HashSet<Cmd> = required.iter().map(|l| l.checks[0].clone()).collect();
@@ -196,7 +225,10 @@ pub fn smoke_test(dest: &Path, langs: &[Lang], languages: &[String], log: &(dyn 
             }
         }
         if lang.setup_len == 0 {
-            let whole: Vec<Cmd> = cmds.into_iter().filter(|c| seen.insert(c.clone())).collect();
+            let whole: Vec<Cmd> = cmds
+                .into_iter()
+                .filter(|c| seen.insert(c.clone()))
+                .collect();
             if !whole.is_empty() {
                 units.push(whole);
             }
@@ -214,7 +246,13 @@ pub fn smoke_test(dest: &Path, langs: &[Lang], languages: &[String], log: &(dyn 
         }
     }
 
-    let plan = Plan { skip, lockfile_cmds, blocked, env, dest: dest.to_path_buf() };
+    let plan = Plan {
+        skip,
+        lockfile_cmds,
+        blocked,
+        env,
+        dest: dest.to_path_buf(),
+    };
     for cmd in &setup {
         if let Some(msg) = plan.announce(cmd) {
             log(&msg);
@@ -235,7 +273,10 @@ pub fn smoke_test(dest: &Path, langs: &[Lang], languages: &[String], log: &(dyn 
         let mut lines = Vec::new();
         for cmd in unit {
             if stop.load(Ordering::SeqCst) {
-                lines.push(format!("  - not run: {} (another check failed)", cmd.join(" ")));
+                lines.push(format!(
+                    "  - not run: {} (another check failed)",
+                    cmd.join(" ")
+                ));
                 break;
             }
             if let Some(msg) = plan.announce(cmd) {

@@ -19,7 +19,11 @@ pub fn gh(args: &[&str], body: Option<&Value>) -> Result<String, String> {
     if body.is_some() {
         cmd.args(["--input", "-"]);
     }
-    cmd.stdin(if body.is_some() { Stdio::piped() } else { Stdio::null() });
+    cmd.stdin(if body.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("gh: {e}"))?;
     if let Some(body) = body {
@@ -33,7 +37,11 @@ pub fn gh(args: &[&str], body: Option<&Value>) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         let err = String::from_utf8_lossy(&out.stderr);
-        let msg = if err.trim().is_empty() { String::from_utf8_lossy(&out.stdout) } else { err };
+        let msg = if err.trim().is_empty() {
+            String::from_utf8_lossy(&out.stdout)
+        } else {
+            err
+        };
         Err(format!("gh {}\n{}", args.join(" "), msg.trim()))
     }
 }
@@ -48,7 +56,9 @@ pub fn api(method: &str, path: &str, body: Option<&Value>) -> Result<Value, Stri
 }
 
 pub fn current_user() -> Result<String, String> {
-    Ok(gh(&["api", "user", "--jq", ".login"], None)?.trim().to_string())
+    Ok(gh(&["api", "user", "--jq", ".login"], None)?
+        .trim()
+        .to_string())
 }
 
 pub fn repo_exists(full_name: &str) -> Result<bool, String> {
@@ -60,17 +70,32 @@ pub fn repo_exists(full_name: &str) -> Result<bool, String> {
 }
 
 pub fn is_private(repo: &str) -> Result<bool, String> {
-    Ok(api("GET", &format!("repos/{repo}"), None)?["private"].as_bool().unwrap_or(false))
+    Ok(api("GET", &format!("repos/{repo}"), None)?["private"]
+        .as_bool()
+        .unwrap_or(false))
 }
 
 /// Create an empty repo and add it as `origin`. The push happens later, in
 /// `configure_all`, once push protection is on.
-pub fn create_repo(repo: &str, source: &Path, description: &str, private: bool) -> Result<(), String> {
+pub fn create_repo(
+    repo: &str,
+    source: &Path,
+    description: &str,
+    private: bool,
+) -> Result<(), String> {
     let src = source.to_string_lossy();
     gh(
         &[
-            "repo", "create", repo, if private { "--private" } else { "--public" },
-            "--description", description, "--source", &src, "--remote", "origin",
+            "repo",
+            "create",
+            repo,
+            if private { "--private" } else { "--public" },
+            "--description",
+            description,
+            "--source",
+            &src,
+            "--remote",
+            "origin",
         ],
         None,
     )
@@ -108,7 +133,11 @@ pub fn ruleset_body() -> Value {
 }
 
 pub fn configure_ruleset(repo: &str) -> Result<(), String> {
-    let existing = api("GET", &format!("repos/{repo}/rulesets?includes_parents=false"), None)?;
+    let existing = api(
+        "GET",
+        &format!("repos/{repo}/rulesets?includes_parents=false"),
+        None,
+    )?;
     let found = existing
         .as_array()
         .into_iter()
@@ -116,8 +145,16 @@ pub fn configure_ruleset(repo: &str) -> Result<(), String> {
         .find(|r| r["name"] == RULESET_NAME)
         .and_then(|r| r["id"].as_u64());
     match found {
-        Some(id) => api("PUT", &format!("repos/{repo}/rulesets/{id}"), Some(&ruleset_body()))?,
-        None => api("POST", &format!("repos/{repo}/rulesets"), Some(&ruleset_body()))?,
+        Some(id) => api(
+            "PUT",
+            &format!("repos/{repo}/rulesets/{id}"),
+            Some(&ruleset_body()),
+        )?,
+        None => api(
+            "POST",
+            &format!("repos/{repo}/rulesets"),
+            Some(&ruleset_body()),
+        )?,
     };
     Ok(())
 }
@@ -135,8 +172,14 @@ query($owner: String!, $title: String!) {
 fn find_project_by_title(owner: &str, title: &str) -> Result<u64, String> {
     let listing = gh(
         &[
-            "api", "graphql", "-f", &format!("query={FIND_PROJECT_QUERY}"),
-            "-f", &format!("owner={owner}"), "-f", &format!("title={title}"),
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={FIND_PROJECT_QUERY}"),
+            "-f",
+            &format!("owner={owner}"),
+            "-f",
+            &format!("title={title}"),
         ],
         None,
     )?;
@@ -154,7 +197,9 @@ fn find_project_by_title(owner: &str, title: &str) -> Result<u64, String> {
         return Ok(number);
     }
     let full = gh(
-        &["project", "list", "--owner", owner, "--closed", "--limit", "1000", "--format", "json"],
+        &[
+            "project", "list", "--owner", owner, "--closed", "--limit", "1000", "--format", "json",
+        ],
         None,
     )?;
     let parsed: Value = serde_json::from_str(&full).map_err(|e| format!("project list: {e}"))?;
@@ -173,14 +218,27 @@ pub fn configure_project(repo: &str) -> Result<(), String> {
     let mut number = find_project_by_title(owner, title)?;
     if number == 0 {
         let created = gh(
-            &["project", "create", "--owner", owner, "--title", title, "--format", "json"],
+            &[
+                "project", "create", "--owner", owner, "--title", title, "--format", "json",
+            ],
             None,
         )?;
-        let parsed: Value = serde_json::from_str(&created).map_err(|e| format!("project create: {e}"))?;
-        number = parsed["number"].as_u64().ok_or("project create: no number")?;
+        let parsed: Value =
+            serde_json::from_str(&created).map_err(|e| format!("project create: {e}"))?;
+        number = parsed["number"]
+            .as_u64()
+            .ok_or("project create: no number")?;
     }
     gh(
-        &["project", "link", &number.to_string(), "--owner", owner, "--repo", repo],
+        &[
+            "project",
+            "link",
+            &number.to_string(),
+            "--owner",
+            owner,
+            "--repo",
+            repo,
+        ],
         None,
     )
     .map(|_| ())
@@ -188,8 +246,12 @@ pub fn configure_project(repo: &str) -> Result<(), String> {
 
 /// Turn off GitHub Actions entirely for this repo (private repos have no minutes to spare).
 pub fn disable_actions(repo: &str) -> Result<(), String> {
-    api("PUT", &format!("repos/{repo}/actions/permissions"), Some(&json!({"enabled": false})))
-        .map(|_| ())
+    api(
+        "PUT",
+        &format!("repos/{repo}/actions/permissions"),
+        Some(&json!({"enabled": false})),
+    )
+    .map(|_| ())
 }
 
 pub fn settings_body(private: bool) -> Value {
@@ -241,7 +303,12 @@ pub fn configure_all(
     let repo_s = repo.to_string();
     report(
         "repo settings",
-        api("PATCH", &format!("repos/{repo}"), Some(&settings_body(private))).map(|_| ()),
+        api(
+            "PATCH",
+            &format!("repos/{repo}"),
+            Some(&settings_body(private)),
+        )
+        .map(|_| ()),
     );
     let mut actions_disabled = true;
     if private {
@@ -266,7 +333,14 @@ pub fn configure_all(
         let r = repo_s.clone();
         fanout.push((
             "private vulnerability reporting".into(),
-            Box::new(move || api("PUT", &format!("repos/{r}/private-vulnerability-reporting"), None).map(|_| ())),
+            Box::new(move || {
+                api(
+                    "PUT",
+                    &format!("repos/{r}/private-vulnerability-reporting"),
+                    None,
+                )
+                .map(|_| ())
+            }),
         ));
     }
     {
@@ -276,7 +350,12 @@ pub fn configure_all(
             format!("labels: {}", names.join(", ")),
             Box::new(move || {
                 for (name, color) in LABELS {
-                    gh(&["label", "create", name, "--repo", &r, "--color", color, "--force"], None)?;
+                    gh(
+                        &[
+                            "label", "create", name, "--repo", &r, "--color", color, "--force",
+                        ],
+                        None,
+                    )?;
                 }
                 Ok(())
             }),
@@ -298,7 +377,10 @@ pub fn configure_all(
     }
     if project {
         let r = repo_s.clone();
-        fanout.push(("project board".into(), Box::new(move || configure_project(&r))));
+        fanout.push((
+            "project board".into(),
+            Box::new(move || configure_project(&r)),
+        ));
     }
     let mut push_index: Option<usize> = None;
     match push {
@@ -314,7 +396,10 @@ pub fn configure_all(
     }
 
     let results: Vec<Result<(), String>> = std::thread::scope(|s| {
-        let handles: Vec<_> = fanout.iter().map(|(_, step)| s.spawn(move || step())).collect();
+        let handles: Vec<_> = fanout
+            .iter()
+            .map(|(_, step)| s.spawn(move || step()))
+            .collect();
         handles
             .into_iter()
             .map(|h| h.join().unwrap_or_else(|_| Err("step panicked".into())))
@@ -329,7 +414,10 @@ pub fn configure_all(
     }
 
     if !private && !push_failed {
-        report(&format!("ruleset '{RULESET_NAME}'"), configure_ruleset(repo));
+        report(
+            &format!("ruleset '{RULESET_NAME}'"),
+            configure_ruleset(repo),
+        );
     }
     failed.into_inner().expect("lock")
 }

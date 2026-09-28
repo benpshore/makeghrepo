@@ -37,13 +37,17 @@ fn to_json_value(value: &Value) -> Result<Json, Error> {
 /// copier's `to_json` (`json.dumps(value, ensure_ascii=False)`).
 fn to_json(value: Value, _kwargs: Kwargs) -> Result<Value, Error> {
     let json = to_json_value(&value)?;
-    Ok(Value::from(serde_json::to_string(&json).expect("serializable")))
+    Ok(Value::from(
+        serde_json::to_string(&json).expect("serializable"),
+    ))
 }
 
 /// copier's `to_nice_json` (`json.dumps(value, indent=2, ensure_ascii=False, sort_keys=False)`).
 fn to_nice_json(value: Value, _kwargs: Kwargs) -> Result<Value, Error> {
     let json = to_json_value(&value)?;
-    Ok(Value::from(serde_json::to_string_pretty(&json).expect("serializable")))
+    Ok(Value::from(
+        serde_json::to_string_pretty(&json).expect("serializable"),
+    ))
 }
 
 fn environment() -> Environment<'static> {
@@ -68,7 +72,8 @@ fn environment() -> Environment<'static> {
         let name = f.path().to_str().expect("utf-8 template path");
         if let Some(src) = f.contents_utf8() {
             if name.ends_with(SUFFIX) {
-                env.add_template(name, src).unwrap_or_else(|e| panic!("{name}: {e}"));
+                env.add_template(name, src)
+                    .unwrap_or_else(|e| panic!("{name}: {e}"));
             }
         }
     }
@@ -94,14 +99,26 @@ fn context(langs: &[Lang], data: &Data) -> Value {
     for (k, v) in registry::derived(langs, &data.languages) {
         ctx.insert(k, v);
     }
-    ctx.insert("project_name".into(), Json::String(data.project_name.clone()));
-    ctx.insert("package_name".into(), Json::String(data.package_name.clone()));
+    ctx.insert(
+        "project_name".into(),
+        Json::String(data.project_name.clone()),
+    );
+    ctx.insert(
+        "package_name".into(),
+        Json::String(data.package_name.clone()),
+    );
     ctx.insert("description".into(), Json::String(data.description.clone()));
     ctx.insert("author_name".into(), Json::String(data.author_name.clone()));
-    ctx.insert("github_owner".into(), Json::String(data.github_owner.clone()));
+    ctx.insert(
+        "github_owner".into(),
+        Json::String(data.github_owner.clone()),
+    );
     ctx.insert("private".into(), Json::Bool(data.private));
     ctx.insert("py_lib".into(), Json::Bool(data.py_lib));
-    ctx.insert("languages".into(), serde_json::to_value(&data.languages).expect("strings"));
+    ctx.insert(
+        "languages".into(),
+        serde_json::to_value(&data.languages).expect("strings"),
+    );
     for (k, v) in registry::flags(langs, &data.languages) {
         ctx.insert(k, v);
     }
@@ -110,8 +127,16 @@ fn context(langs: &[Lang], data: &Data) -> Value {
 
 /// Render the template into `dest` (which must not exist or must be empty).
 pub fn render(dest: &Path, langs: &[Lang], data: &Data) -> Result<(), String> {
-    if dest.exists() && fs::read_dir(dest).map_err(|e| e.to_string())?.next().is_some() {
-        return Err(format!("{} already exists and is not empty", dest.display()));
+    if dest.exists()
+        && fs::read_dir(dest)
+            .map_err(|e| e.to_string())?
+            .next()
+            .is_some()
+    {
+        return Err(format!(
+            "{} already exists and is not empty",
+            dest.display()
+        ));
     }
     let env = environment();
     let ctx = context(langs, data);
@@ -119,7 +144,9 @@ pub fn render(dest: &Path, langs: &[Lang], data: &Data) -> Result<(), String> {
     walk(&TEMPLATE_DIR, &mut files);
     for f in files {
         let raw = f.path().to_str().expect("utf-8 template path");
-        let Some(rel) = raw.strip_prefix(&format!("{SUBDIR}/")) else { continue };
+        let Some(rel) = raw.strip_prefix(&format!("{SUBDIR}/")) else {
+            continue;
+        };
         let is_template = rel.ends_with(SUFFIX);
         let rel = rel.strip_suffix(SUFFIX).unwrap_or(rel);
         let mut out = PathBuf::from(dest);
@@ -187,11 +214,17 @@ pub fn serialize(root: &Path) -> Result<String, String> {
     let mut out = String::new();
     for (rel, path) in files {
         let data = fs::read(&path).map_err(|e| format!("{rel}: {e}"))?;
-        let mode = fs::metadata(&path).map_err(|e| e.to_string())?.permissions().mode();
+        let mode = fs::metadata(&path)
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .mode();
         let executable = u8::from(mode & 0o100 != 0);
         let (text, encoding) = match std::str::from_utf8(&data) {
             Ok(s) => (s.to_string(), "utf-8"),
-            Err(_) => (base64::engine::general_purpose::STANDARD.encode(&data), "base64"),
+            Err(_) => (
+                base64::engine::general_purpose::STANDARD.encode(&data),
+                "base64",
+            ),
         };
         out.push_str(&format!(
             "### FILE {rel} exec={executable} bytes={} encoding={encoding}\n{text}\n### END\n",
