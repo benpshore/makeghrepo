@@ -24,5 +24,5 @@ leading_letter = false
 apps = []
 lockfile = ""
 release = ""
-npm_scripts = { "lint:css" = "stylelint \"**/*.css\"" }
+npm_scripts = { "lint:css" = "stylelint \"styles/**/*.css\"" }
 npm_dev = { "stylelint" = "^17", "stylelint-config-standard" = "^40" }
