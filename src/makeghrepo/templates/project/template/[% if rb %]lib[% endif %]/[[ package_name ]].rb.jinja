@@ -1,0 +1,7 @@
+# frozen_string_literal: true
+
+module [[ package_name | replace('_', ' ') | title | replace(' ', '') ]]
+  def self.greeting
+    'Hello from [[ project_name ]]!'
+  end
+end

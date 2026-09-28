@@ -42,6 +42,7 @@ _MULTI = [
     ["go", "docker"],
     ["ts", "docker"],
     ["js", "ts", "css"],
+    ["ruby", "docker"],
 ]
 
 

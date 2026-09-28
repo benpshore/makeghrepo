@@ -105,6 +105,10 @@ Desktop.ini
 .RData
 .Rproj.user/
 
+# ---- Ruby ----
+vendor/bundle/
+.bundle/cache/
+
 # ---- AI tooling (local-only settings) ----
 .claude/settings.local.json
 .claude/.cc-writes/

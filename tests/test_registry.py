@@ -9,17 +9,17 @@ from makeghrepo import registry, scaffold
 
 # Frozen copies of the hand-written tables the registry replaced (v0.11.0), updated in F3
 # for npm --ignore-scripts and pinned npx/uvx tool versions, and extended per new token
-# (go: E3-1, ts: E2-1).
+# (go: E3-1, ts: E2-1, ruby: E4-1).
 _UV_AUDIT = ("uv", "audit", "--locked", "--preview-features", "audit-command")
 _CMAKE = (("cmake", "-S", ".", "-B", "build"), ("cmake", "--build", "build"),
           ("ctest", "--test-dir", "build", "--output-on-failure"))  # fmt: skip
 BEFORE = {
     "LANGUAGES": ("python", "rust", "swift", "js", "css", "c", "cpp", "objc", "objcpp",
-                  "api", "postgres", "sql", "docker", "shell", "go", "ts"),
+                  "api", "postgres", "sql", "docker", "shell", "go", "ts", "ruby"),
     "ALIASES": {"py": "python", "rs": "rust", "javascript": "js", "node": "js",
                 "c++": "cpp", "cxx": "cpp", "objective-c": "objc", "objc++": "objcpp",
                 "rest": "api", "openapi": "api", "pg": "postgres", "postgresql": "postgres",
-                "sh": "shell", "bash": "shell", "golang": "go", "typescript": "ts"},
+                "sh": "shell", "bash": "shell", "golang": "go", "typescript": "ts", "rb": "ruby"},
     "CHECKS": {
         "python": (("uv", "lock"), ("uv", "sync", "--locked"),
                    ("uv", "run", "ruff", "format", "--check"), ("uv", "run", "ruff", "check"),
@@ -40,9 +40,13 @@ BEFORE = {
         "go": (("go", "vet", "./..."), ("go", "test", "./..."), ("go", "build", "./...")),
         "ts": (("npm", "install", "--no-fund", "--ignore-scripts"), ("npm", "run", "typecheck"),
                ("npm", "run", "test:ts")),
+        "ruby": (("bundle", "install"),
+                 ("bundle", "lock", "--add-platform", "x86_64-linux", "aarch64-linux",
+                  "arm64-darwin"),
+                 ("bundle", "exec", "rubocop"), ("bundle", "exec", "rake", "test")),
     },
-    "REQUIRED_TOOLS": {"python": "uv", "js": "npm", "css": "npm", "ts": "npm"},
-    "SETUP_LEN": {"python": 2, "js": 1, "css": 1, "ts": 1},
+    "REQUIRED_TOOLS": {"python": "uv", "js": "npm", "css": "npm", "ts": "npm", "ruby": "bundle"},
+    "SETUP_LEN": {"python": 2, "js": 1, "css": 1, "ts": 1, "ruby": 2},
 }  # fmt: skip
 
 
@@ -53,7 +57,7 @@ def test_derived_tables_equal_the_originals(table):
 
 def test_language_order_is_stable():
     assert list(scaffold.LANGUAGES) == [lang.id for lang in scaffold.LANGS.values()]
-    assert [lang.order for lang in scaffold.LANGS.values()] == list(range(1, 17))
+    assert [lang.order for lang in scaffold.LANGS.values()] == list(range(1, 18))
 
 
 def _copy_langs(tmp_path: Path) -> Path:

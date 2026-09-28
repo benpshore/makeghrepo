@@ -60,6 +60,7 @@ docker: {type: bool, when: false, default: "[[ 'docker' in languages ]]"}
 sh: {type: bool, when: false, default: "[[ 'shell' in languages ]]"}
 go: {type: bool, when: false, default: "[[ 'go' in languages ]]"}
 ts: {type: bool, when: false, default: "[[ 'ts' in languages ]]"}
+rb: {type: bool, when: false, default: "[[ 'ruby' in languages ]]"}
 
 # Registry-derived data: makeghrepo computes these from src/makeghrepo/langs/*.toml
 # (registry.derived) and passes them in. They are never asked.

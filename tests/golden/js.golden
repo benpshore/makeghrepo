@@ -254,7 +254,7 @@ jobs:
         run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*
 
 ### END
-### FILE .gitignore exec=0 bytes=1712 encoding=utf-8
+### FILE .gitignore exec=0 bytes=1760 encoding=utf-8
 # ---- Python ----
 __pycache__/
 *.py[cod]
@@ -361,6 +361,10 @@ Desktop.ini
 .Rhistory
 .RData
 .Rproj.user/
+
+# ---- Ruby ----
+vendor/bundle/
+.bundle/cache/
 
 # ---- AI tooling (local-only settings) ----
 .claude/settings.local.json

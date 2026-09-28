@@ -53,6 +53,17 @@ ENV APP_DATA=/data
 VOLUME ["/data"]
 USER 1000:1000
 CMD ["node", "-e", "import('./src/index.ts').then(m => console.log(m.greeting()))"]
+[% elif rb %]
+FROM ruby:3.4-slim
+WORKDIR /app
+ENV BUNDLE_PATH=/app/vendor/bundle BUNDLE_WITHOUT=development
+COPY Gemfile Gemfile.lock ./
+RUN bundle install
+COPY lib ./lib
+ENV APP_DATA=/data
+VOLUME ["/data"]
+USER 65534:65534
+CMD ["ruby", "-Ilib", "-e", "require '[[ package_name ]]'; puts [[ package_name | replace('_', ' ') | title | replace(' ', '') ]].greeting"]
 [% else %]
 FROM alpine:3
 WORKDIR /app

@@ -1,3 +1,8 @@
+### FILE .bundle/config exec=0 bytes=33 encoding=utf-8
+---
+BUNDLE_PATH: "vendor/bundle"
+
+### END
 ### FILE .dockerignore exec=0 bytes=84 encoding=utf-8
 .git
 .github
@@ -99,7 +104,7 @@ body:
         - [ ]
 
 ### END
-### FILE .github/dependabot.yml exec=0 bytes=1392 encoding=utf-8
+### FILE .github/dependabot.yml exec=0 bytes=1564 encoding=utf-8
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -146,6 +151,15 @@ updates:
       default-days: 7
     groups:
       swift:
+        patterns: ["*"]
+  - package-ecosystem: bundler
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      bundler:
         patterns: ["*"]
   - package-ecosystem: npm
     directory: /
@@ -273,7 +287,7 @@ jobs:
           gh release create "v$VERSION" dist/* --verify-tag --generate-notes
 
 ### END
-### FILE .github/workflows/ci.yml exec=0 bytes=6095 encoding=utf-8
+### FILE .github/workflows/ci.yml exec=0 bytes=6528 encoding=utf-8
 name: CI
 
 on:
@@ -466,16 +480,30 @@ jobs:
       - run: npm run typecheck
       - run: npm run test:ts
 
+  ruby:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+      - run: bundle exec rubocop
+      - run: bundle exec rake test
+
   # The single required check in the branch ruleset. It passes only if every job above passed.
   ci:
     if: always()
-    needs: [repo, python, rust, swift, js, css, cmake, api, postgres, sql, docker, shell, go, ts]
+    needs: [repo, python, rust, swift, js, css, cmake, api, postgres, sql, docker, shell, go, ts, ruby]
     runs-on: ubuntu-latest
     steps:
       - run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = false
 
 ### END
-### FILE .github/workflows/codeql.yml exec=0 bytes=1468 encoding=utf-8
+### FILE .github/workflows/codeql.yml exec=0 bytes=1536 encoding=utf-8
 name: CodeQL
 
 on:
@@ -507,6 +535,7 @@ jobs:
           - { language: javascript-typescript, build-mode: none, os: ubuntu-latest }
           - { language: go, build-mode: autobuild, os: ubuntu-latest }
           - { language: rust, build-mode: none, os: ubuntu-latest }
+          - { language: ruby, build-mode: none, os: ubuntu-latest }
           - { language: c-cpp, build-mode: none, os: ubuntu-latest }
           - { language: swift, build-mode: autobuild, os: macos-latest }
     steps:
@@ -523,7 +552,7 @@ jobs:
           category: "/language:${{ matrix.language }}"
 
 ### END
-### FILE .github/workflows/release.yml exec=0 bytes=2159 encoding=utf-8
+### FILE .github/workflows/release.yml exec=0 bytes=2350 encoding=utf-8
 name: Release
 
 # Publish: push a tag, e.g. `git tag v0.1.1 && git push --tags`.
@@ -570,6 +599,11 @@ jobs:
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o "dist/quiet-otter-linux-$arch" .
           done
           (cd dist && sha256sum -- * > SHA256SUMS)
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+      - run: bundle exec rake test
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -585,7 +619,7 @@ jobs:
         run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*
 
 ### END
-### FILE .gitignore exec=0 bytes=1712 encoding=utf-8
+### FILE .gitignore exec=0 bytes=1760 encoding=utf-8
 # ---- Python ----
 __pycache__/
 *.py[cod]
@@ -693,6 +727,10 @@ Desktop.ini
 .RData
 .Rproj.user/
 
+# ---- Ruby ----
+vendor/bundle/
+.bundle/cache/
+
 # ---- AI tooling (local-only settings) ----
 .claude/settings.local.json
 .claude/.cc-writes/
@@ -746,6 +784,16 @@ postgres-data/
 3.14
 
 ### END
+### FILE .rubocop.yml exec=0 bytes=119 encoding=utf-8
+AllCops:
+  NewCops: enable
+  TargetRubyVersion: 3.2
+  Exclude:
+    - vendor/**/*
+Style/Documentation:
+  Enabled: false
+
+### END
 ### FILE .spectral.yaml exec=0 bytes=26 encoding=utf-8
 extends: ["spectral:oas"]
 
@@ -765,7 +813,7 @@ capitalisation_policy = lower
 }
 
 ### END
-### FILE AGENTS.md exec=0 bytes=1144 encoding=utf-8
+### FILE AGENTS.md exec=0 bytes=1189 encoding=utf-8
 # quiet-otter
 
 - `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
@@ -789,6 +837,7 @@ docker build -t quiet-otter . && docker compose up -d app   # data volume: appda
 shellcheck scripts/*.sh
 gofmt -l . && go vet ./... && go test ./...
 npm run typecheck && npm run test:ts
+bundle exec rubocop && bundle exec rake test
 ```
 
 ### END
@@ -846,6 +895,16 @@ USER 65534:65534
 CMD ["/app/.venv/bin/quiet-otter"]
 
 ### END
+### FILE Gemfile exec=0 bytes=150 encoding=utf-8
+# frozen_string_literal: true
+
+source 'https://rubygems.org'
+
+gem 'minitest', '~> 6.0'
+gem 'rake', '~> 13.2'
+gem 'rubocop', '~> 1.80', require: false
+
+### END
 ### FILE LICENSE exec=0 bytes=1066 encoding=utf-8
 MIT License
 
@@ -887,7 +946,7 @@ let package = Package(
 )
 
 ### END
-### FILE README.md exec=0 bytes=859 encoding=utf-8
+### FILE README.md exec=0 bytes=904 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -910,9 +969,23 @@ docker build -t quiet-otter . && docker compose up -d app   # data volume: appda
 shellcheck scripts/*.sh
 gofmt -l . && go vet ./... && go test ./...
 npm run typecheck && npm run test:ts
+bundle exec rubocop && bundle exec rake test
 ```
 
 `main` is protected: open a PR; the `ci` check must pass before merging (squash only).
+
+### END
+### FILE Rakefile exec=0 bytes=189 encoding=utf-8
+# frozen_string_literal: true
+
+require 'rake/testtask'
+
+Rake::TestTask.new(:test) do |t|
+  t.libs << 'lib' << 'test'
+  t.test_files = FileList['test/**/*_test.rb']
+end
+
+task default: :test
 
 ### END
 ### FILE SECURITY.md exec=0 bytes=213 encoding=utf-8
@@ -993,6 +1066,16 @@ export default [
 module github.com/someone/quiet-otter
 
 go 1.25
+
+### END
+### FILE lib/quiet_otter.rb exec=0 bytes=109 encoding=utf-8
+# frozen_string_literal: true
+
+module QuietOtter
+  def self.greeting
+    'Hello from quiet-otter!'
+  end
+end
 
 ### END
 ### FILE main.go exec=0 bytes=170 encoding=utf-8
@@ -1259,6 +1342,19 @@ import { greeting } from "../src/index.ts";
 test("greets", () => {
   assert.match(greeting(), /quiet-otter/);
 });
+
+### END
+### FILE test/quiet_otter_test.rb exec=0 bytes=218 encoding=utf-8
+# frozen_string_literal: true
+
+require 'minitest/autorun'
+require_relative '../lib/quiet_otter'
+
+class QuietOtterTest < Minitest::Test
+  def test_greets
+    assert_includes QuietOtter.greeting, 'quiet-otter'
+  end
+end
 
 ### END
 ### FILE tests/test_smoke.py exec=0 bytes=124 encoding=utf-8
