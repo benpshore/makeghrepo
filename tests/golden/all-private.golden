@@ -207,7 +207,7 @@ Closes #
 <!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
 
 ### END
-### FILE .github/workflows/ci.yml exec=0 bytes=6864 encoding=utf-8
+### FILE .github/workflows/ci.yml exec=0 bytes=7107 encoding=utf-8
 name: CI
 
 on:
@@ -220,8 +220,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Only PR runs share a group. Every push/dispatch gets its own group so a
+  # newer merge cannot replace a pending ci run that auto-release needs.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   repo:
