@@ -130,3 +130,13 @@ def test_derived_orders_shared_entries_once():
 def test_packaged_langs_dir_has_only_registry_files():
     names = [e.name for e in (files("makeghrepo") / "langs").iterdir()]
     assert sorted(names) == sorted(f"{lang}.toml" for lang in scaffold.LANGUAGES)
+
+
+def test_every_registry_flag_and_group_is_a_copier_flag():
+    """copier.yml still declares each derived boolean; a new token must add its line there
+    (the Rust port derives the same flags from the registry, so both must agree)."""
+    copier_yml = (files("makeghrepo") / "templates" / "project" / "copier.yml").read_text()
+    declared = {line.split(":", 1)[0] for line in copier_yml.splitlines() if ": {type: bool" in line}
+    wanted = {lang.flag for lang in scaffold.LANGS.values()}
+    wanted |= {group for lang in scaffold.LANGS.values() for group in lang.groups}
+    assert wanted <= declared, sorted(wanted - declared)
