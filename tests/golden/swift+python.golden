@@ -133,7 +133,7 @@ Closes #
 <!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
 
 ### END
-### FILE .github/workflows/auto-release.yml exec=0 bytes=3028 encoding=utf-8
+### FILE .github/workflows/auto-release.yml exec=0 bytes=2858 encoding=utf-8
 name: Auto-release
 
 # Every merge to main is a release: once this commit's `ci` check has passed,
@@ -149,9 +149,6 @@ on:
 concurrency:
   group: auto-release
   cancel-in-progress: false
-  # Keep up to 100 pending releases instead of replacing the previous pending
-  # run. FIFO is by queue entry, not commit order; overflow runs are canceled.
-  queue: max
 
 permissions:
   contents: read
@@ -216,7 +213,7 @@ jobs:
           gh release create "v$VERSION" dist/* --verify-tag --generate-notes
 
 ### END
-### FILE .github/workflows/ci.yml exec=0 bytes=2391 encoding=utf-8
+### FILE .github/workflows/ci.yml exec=0 bytes=2148 encoding=utf-8
 name: CI
 
 on:
@@ -229,10 +226,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Only PR runs share a group. Every push/dispatch gets its own group so a
-  # newer merge cannot replace a pending ci run that auto-release needs.
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   repo:
