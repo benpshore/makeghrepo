@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated
 
@@ -12,7 +13,13 @@ import typer
 from makeghrepo import github, gitops, names, scaffold
 
 app = typer.Typer(add_completion=True)
-CODEQL = Path(".github/workflows/codeql.yml")  # rendered for public repos only
+
+
+def _version() -> str:
+    try:
+        return version("makeghrepo")
+    except PackageNotFoundError:
+        return "unknown"
 
 
 def fail(msg: str) -> typer.Exit:
@@ -64,10 +71,25 @@ def main(
     except (ValueError, RuntimeError, FileNotFoundError) as exc:
         raise fail(str(exc)) from exc
 
+    want_private = private
     if resume:
         # makeghrepo git-inits right after rendering, so a dir without .git isn't ours.
         if not (dest / ".git").is_dir():
             raise fail(f"{dest} exists but isn't a git repo; pick another name")
+        # Any git repo can sit at this path; only the marker proves makeghrepo made it.
+        marker = gitops.read_marker(dest)
+        if marker is None:
+            raise fail(
+                f"{dest} is a git repo makeghrepo didn't create "
+                "(no .git/makeghrepo.json); pick another name"
+            )
+        if private and not marker.get("private"):
+            raise fail(f"{repo} was created public; re-run without --private or pick another name")
+        want_private = bool(marker.get("private"))
+        recorded = [str(lang) for lang in marker.get("languages") or []]
+        if langs and langs != recorded:
+            typer.echo(f"note: ignoring languages on resume; using {', '.join(recorded) or 'none'}")
+        langs = recorded
         typer.echo(f"resuming {dest}")
     elif on_github:
         raise fail(f"{repo} already exists on GitHub")
@@ -89,6 +111,16 @@ def main(
         # A fresh host or CI runner may have no git identity configured anywhere;
         # fall back to the authenticated GitHub user so `git commit` never fails on that.
         gitops.ensure_identity(dest, author_name, f"{owner}@users.noreply.github.com")
+        # Written before the smoke test so an interrupted first run can still resume.
+        gitops.write_marker(dest, {
+            "schema": 1,
+            "name": name,
+            "owner": owner,
+            "private": private,
+            "languages": langs,
+            "lib": lib,
+            "created_by": f"makeghrepo {_version()}",
+        })  # fmt: skip
 
     if not resume or not gitops.has_commits(dest):  # earlier check/commit failed
         try:
@@ -101,12 +133,15 @@ def main(
 
     try:
         if on_github:
-            private = github.is_private(repo)
+            actual_private = github.is_private(repo)
+            if private and not actual_private:
+                raise fail(
+                    f"{repo} is public on GitHub; makeghrepo never changes visibility. "
+                    "Re-run without --private"
+                )
+            private = actual_private
         else:
-            if resume:
-                # The rendered files remember whether it was meant to be private
-                # (copier only writes .copier-answers.yml if a template opts in).
-                private = private or not (dest / CODEQL).exists()
+            private = want_private
             github.create_repo(repo, dest, name, private)
     except github.GhError as exc:
         raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
