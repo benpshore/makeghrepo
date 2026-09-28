@@ -36,6 +36,10 @@ name: Auto-release
 # the mutable `main` ref, so a second push landing on main mid-run can't cause
 # this run to tag the wrong commit.
 #
+# The release job first waits for this commit's `ci` check-run to succeed, so a
+# red merge (found live: v0.16.0 was tagged on a commit whose CI failed) is
+# never released; re-run this workflow by hand after the fix lands if needed.
+#
 # release.yml stays as the manual fallback for the one thing this can't
 # recover from itself: the tag gets pushed but `gh release create` then fails
 # (network blip, etc.). Run it by hand against the existing tag in that case.
