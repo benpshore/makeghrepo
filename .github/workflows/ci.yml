@@ -98,6 +98,10 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+      # The runner images ship no `bundle` on PATH; the ruby combos need it for their lockfile.
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: "3.4"
       # macOS runners have no Docker daemon, so the docker checks skip there anyway.
       - name: Install hadolint 2.15.1 (checksum-verified)
         if: runner.os == 'Linux'
