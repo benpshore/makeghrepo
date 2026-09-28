@@ -37,13 +37,16 @@ fi
 
 # Fetch repo info from GitHub
 echo "Fetching repo info for $OWNER/$REPO_NAME..."
-REPO_INFO=$(gh repo view "$OWNER/$REPO_NAME" --json createdAt,url 2>/dev/null) || {
+REPO_INFO=$(gh repo view "$OWNER/$REPO_NAME" --json createdAt 2>/dev/null) || {
     echo "Error: repo $OWNER/$REPO_NAME not found or inaccessible" >&2
     exit 1
 }
 
-# Extract creation timestamp
-CREATED_AT=$(echo "$REPO_INFO" | jq -r '.createdAt')
+# Extract creation timestamp using Python (jq may not be available)
+CREATED_AT=$(python3 -c "import json, sys; print(json.load(sys.stdin)['createdAt'])" <<< "$REPO_INFO") || {
+    echo "Error: failed to parse repo creation time" >&2
+    exit 1
+}
 
 # Calculate repo age in hours
 CREATED_EPOCH=$(date -d "$CREATED_AT" +%s)
@@ -63,7 +66,18 @@ echo "Repo is $AGE_HOURS hours old (within limit of $MAXAGE_HOURS hours)"
 # Attempt to delete associated GitHub Project board
 # The project board may not exist, so we don't fail if it doesn't
 echo "Checking for associated GitHub Project..."
-PROJECT_ID=$(gh project list --owner "$OWNER" --json id,title --jq ".[] | select(.title | contains(\"$REPO_NAME\")) | .id" 2>/dev/null | head -1) || true
+# Use Python to find a project board matching the repo name
+PROJECT_ID=$(gh project list --owner "$OWNER" --json id,title 2>/dev/null | python3 -c "
+import json, sys
+try:
+    projects = json.load(sys.stdin)
+    for p in projects:
+        if '$REPO_NAME' in p.get('title', ''):
+            print(p['id'])
+            break
+except:
+    pass
+" || true)
 
 if [[ -n "${PROJECT_ID:-}" ]]; then
     echo "Deleting GitHub Project $PROJECT_ID..."
