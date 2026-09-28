@@ -1,0 +1,27 @@
+# rust: registry entry (schema 1). See src/makeghrepo/registry.py for field meanings.
+schema = 1
+id = "rust"
+order = 2
+aliases = ["rs"]
+kind = "language"
+flag = "rs"
+groups = []
+marker = "Cargo.toml"
+checks = [
+  ["cargo", "fmt", "--check"],
+  ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"],
+  ["cargo", "test", "-q"],
+]
+setup_len = 0
+required_tool = false
+ci_job = "rust"
+dependabot = { ecosystem = "cargo", order = 20 }
+codeql = { language = "rust", build_mode = "none", os = "ubuntu-latest", order = 30 }
+docker_priority = 2
+requires = []
+host_os = []
+apps = []
+lockfile = ""
+release = ""
+npm_scripts = {}
+npm_dev = {}

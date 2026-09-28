@@ -1,0 +1,25 @@
+# api: registry entry (schema 1). See src/makeghrepo/registry.py for field meanings.
+schema = 1
+id = "api"
+order = 10
+aliases = ["rest", "openapi"]
+kind = "component"
+flag = "api"
+groups = []
+marker = "openapi.yaml"
+checks = [
+  ["npx", "--yes", "@stoplight/spectral-cli", "lint", "openapi.yaml", "--fail-severity=warn"],
+]
+setup_len = 0
+required_tool = false
+ci_job = "api"
+dependabot = {}
+codeql = {}
+docker_priority = 0
+requires = []
+host_os = []
+apps = []
+lockfile = ""
+release = ""
+npm_scripts = {}
+npm_dev = {}

@@ -100,4 +100,11 @@ Never edit or hand-merge a `.golden` file. On a conflict, rebase and regenerate.
 gh run download <run-id> -n golden -D tests/golden
 ```
 
-To add a language: add its files to `templates/project/template/` behind a `[% if flag %]` name, a flag in `copier.yml`, its jobs in `ci.yml.jinja` and `codeql`/`dependabot`, its line in `_checks.jinja`, and its entries in `LANGUAGES` and `CHECKS` in `scaffold.py`.
+To add a language or component, add only files it owns:
+
+- `src/makeghrepo/langs/<id>.toml`: its registry entry (aliases, local checks, CI job, Dependabot ecosystem, CodeQL language, npm scripts). `src/makeghrepo/registry.py` documents every field.
+- `src/makeghrepo/templates/project/_ci/<job>.jinja`: its job in the generated `ci.yml`.
+- `src/makeghrepo/templates/project/_checks/<job>.jinja`: its line in the README and AGENTS checks list.
+- Its project files under `templates/project/template/`, behind `[% if '<id>' in languages %]` names.
+
+Then regenerate the golden snapshots, and review the diff: every new token gets its own snapshot automatically.

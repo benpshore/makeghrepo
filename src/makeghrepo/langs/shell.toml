@@ -1,0 +1,25 @@
+# shell: registry entry (schema 1). See src/makeghrepo/registry.py for field meanings.
+schema = 1
+id = "shell"
+order = 14
+aliases = ["sh", "bash"]
+kind = "language"
+flag = "sh"
+groups = []
+marker = "scripts/hello.sh"
+checks = [
+  ["shellcheck", "scripts/hello.sh"],
+]
+setup_len = 0
+required_tool = false
+ci_job = "shell"
+dependabot = {}
+codeql = {}
+docker_priority = 0
+requires = []
+host_os = []
+apps = []
+lockfile = ""
+release = ""
+npm_scripts = {}
+npm_dev = {}

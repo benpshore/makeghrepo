@@ -1,0 +1,11 @@
+
+  cmake:
+    runs-on: [[ 'macos-latest' if objc or objcpp else 'ubuntu-latest' ]]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cmake -S . -B build
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure

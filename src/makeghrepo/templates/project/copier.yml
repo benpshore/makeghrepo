@@ -58,3 +58,11 @@ pg: {type: bool, when: false, default: "[[ 'postgres' in languages ]]"}
 sql: {type: bool, when: false, default: "[[ 'sql' in languages ]]"}
 docker: {type: bool, when: false, default: "[[ 'docker' in languages ]]"}
 sh: {type: bool, when: false, default: "[[ 'shell' in languages ]]"}
+
+# Registry-derived data: makeghrepo computes these from src/makeghrepo/langs/*.toml
+# (registry.derived) and passes them in. They are never asked.
+ci_jobs: {type: yaml, when: false, default: "[]"}
+dependabot_ecosystems: {type: yaml, when: false, default: "[github-actions]"}
+codeql_entries: {type: yaml, when: false, default: "[]"}
+npm_scripts: {type: yaml, when: false, default: "{}"}
+npm_dev: {type: yaml, when: false, default: "{}"}

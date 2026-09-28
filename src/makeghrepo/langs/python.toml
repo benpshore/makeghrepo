@@ -1,0 +1,31 @@
+# python: registry entry (schema 1). See src/makeghrepo/registry.py for field meanings.
+schema = 1
+id = "python"
+order = 1
+aliases = ["py"]
+kind = "language"
+flag = "py"
+groups = []
+marker = "pyproject.toml"
+checks = [
+  ["uv", "lock"],
+  ["uv", "sync", "--locked"],
+  ["uv", "run", "ruff", "format", "--check"],
+  ["uv", "run", "ruff", "check"],
+  ["uv", "run", "pytest", "-q"],
+  ["uv", "audit", "--locked", "--preview-features", "audit-command"],
+  ["uv", "build", "-q"],
+]
+setup_len = 2
+required_tool = true
+ci_job = "python"
+dependabot = { ecosystem = "uv", order = 10 }
+codeql = { language = "python", build_mode = "none", os = "ubuntu-latest", order = 10 }
+docker_priority = 3
+requires = []
+host_os = []
+apps = []
+lockfile = ""
+release = ""
+npm_scripts = {}
+npm_dev = {}

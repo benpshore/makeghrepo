@@ -1,0 +1,25 @@
+
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U app" --health-interval 2s --health-retries 15
+    env:
+      PGHOST: localhost
+      PGUSER: app
+      PGPASSWORD: app
+      PGDATABASE: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Apply migrations in order
+        run: for f in db/migrations/*.sql; do psql -v ON_ERROR_STOP=1 -f "$f"; done
