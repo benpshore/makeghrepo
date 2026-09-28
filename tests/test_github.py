@@ -181,6 +181,35 @@ def test_public_repo_leaves_actions_alone(calls):
     assert "repos/me/r/actions/permissions" not in _paths(calls)
 
 
+def test_public_settings_failure_blocks_push_and_ruleset_but_allows_retry(calls):
+    calls.responses["GET"] = "[]"
+    calls.fail_on = ("api -X PATCH repos/me/r",)
+    pushed = []
+    failed = github.configure_all(
+        "me/r", private=False, project=False, push=lambda: pushed.append(True), log=lambda _: None
+    )
+    assert failed == ["repo settings", "push main"]
+    assert pushed == []
+    assert not any("rulesets" in path for path in _paths(calls))
+    assert "repos/me/r/subscription" in _paths(calls)
+
+    calls.fail_on = ()
+    failed = github.configure_all(
+        "me/r", private=False, project=False, push=lambda: pushed.append(True), log=lambda _: None
+    )
+    assert failed == []
+    assert pushed == [True]
+    assert any("rulesets" in path for path in _paths(calls))
+
+
+def test_public_settings_failure_still_repairs_ruleset_when_main_already_exists(calls):
+    calls.responses["GET"] = "[]"
+    calls.fail_on = ("api -X PATCH repos/me/r",)
+    failed = github.configure_all("me/r", private=False, project=False, log=lambda _: None)
+    assert failed == ["repo settings"]
+    assert any("rulesets" in path for path in _paths(calls))
+
+
 def test_failures_are_collected_and_others_still_run(calls):
     calls.responses["GET"] = "[]"
     calls.fail_on = ("automated-security-fixes",)

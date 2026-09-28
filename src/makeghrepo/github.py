@@ -197,15 +197,11 @@ def configure_all(
     itself — run concurrently; (3) the ruleset, which needs the pushed `main`
     to protect, so it only runs once the push (if any) has actually succeeded.
 
-    Phase 1 running first isn't generally a dependency gate on push succeeding
-    (that's pre-existing: the old sequential version didn't stop for a failed
-    "repo settings" either, only for a failed push itself; kept serial mostly
-    because none of phase 2's other steps need it applied first, not because
-    of a real dependency). The one exception is private repos: if disabling
-    Actions fails there, push is skipped outright rather than attempted — the
-    whole point of disabling Actions first is to guarantee it happens before
-    any code reaches GitHub, so a failure there can't be silently bypassed by
-    pushing anyway.
+    Publishing is gated on the relevant protection step: public repo settings
+    enable secret-scanning push protection; private repos must have Actions
+    disabled. If that prerequisite fails, independent settings still run, but
+    the push and the ruleset for that unpushed main are skipped. A settings-only
+    retry (push=None) can still repair protection on an existing main.
     """
     failed: list[str] = []
 
@@ -227,7 +223,8 @@ def configure_all(
         # gate — the local smoke test is the only gate left for these repos.
         log("  - private repo: skipping ruleset, secret scanning, vuln reporting (need paid plan)")
 
-    report("repo settings", run(lambda: api("PATCH", f"repos/{repo}", settings_body(private))))
+    settings_err = run(lambda: api("PATCH", f"repos/{repo}", settings_body(private)))
+    report("repo settings", settings_err)
     actions_disabled = True  # only meaningful, and only checked below, when private
     if private:
         actions_err = run(lambda: disable_actions(repo))
@@ -256,10 +253,16 @@ def configure_all(
     ]  # fmt: skip
     if project:
         fanout.append(("project board", lambda: configure_project(repo)))
+    push_blocked = bool(push) and (
+        not actions_disabled or (not private and settings_err is not None)
+    )
     if push and not actions_disabled:
         # Refuse to push rather than risk a run: disabling Actions is the one
         # thing standing between a private repo and burning its own minutes.
         log("  - push main: skipped (couldn't disable Actions; refusing to risk a run)")
+        failed.append("push main")
+    elif push_blocked:
+        log("  - push main: skipped (couldn't enable push protection; refusing to publish)")
         failed.append("push main")
     elif push:
         fanout.append(("push main", push))
@@ -274,7 +277,7 @@ def configure_all(
     push_failed = any(
         fn is push and err is not None for (_, fn), err in zip(fanout, errors, strict=True)
     )
-    if not private and not push_failed:
+    if not private and not push_blocked and not push_failed:
         report(f"ruleset '{RULESET_NAME}'", run(lambda: configure_ruleset(repo)))
 
     return failed
