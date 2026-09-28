@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Regenerate tests/golden/*.golden from the current templates.
 
-Run from the repo root:  uv run scripts/regen-golden
+Run from the repo root:  uv run scripts/regen-golden [--check] [--out DIR]
 Then review `git diff tests/golden` before committing. Never edit .golden files by hand.
+CI runs this with --out and uploads the result as the `golden` artifact.
 """
 
+import argparse
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
@@ -14,7 +17,40 @@ import golden_snapshots  # noqa: E402
 
 
 def main() -> int:
-    raise NotImplementedError("TODO(opus): F1 #81")
+    parser = argparse.ArgumentParser(description="Regenerate the golden snapshots.")
+    parser.add_argument(
+        "--check", action="store_true", help="write nothing; exit 1 if anything would change"
+    )
+    parser.add_argument(
+        "--out", type=Path, default=golden_snapshots.GOLDEN_DIR, help="output directory"
+    )
+    args = parser.parse_args()
+
+    wanted: dict[str, bytes] = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        for name in golden_snapshots.COMBOS:
+            parent = Path(tmp) / name
+            parent.mkdir()
+            rendered = golden_snapshots.render_combo(name, parent / "quiet-otter")
+            wanted[f"{name}.golden"] = golden_snapshots.serialize(rendered).encode("utf-8")
+
+    out: Path = args.out
+    existing = {p.name: p.read_bytes() for p in out.glob("*.golden")} if out.is_dir() else {}
+    changed = [n for n, data in wanted.items() if existing.get(n) != data]
+    stale = sorted(set(existing) - set(wanted))
+
+    if args.check:
+        for name in [*changed, *stale]:
+            print(f"would change: {name}")
+        return 1 if changed or stale else 0
+
+    out.mkdir(parents=True, exist_ok=True)
+    for name in changed:
+        (out / name).write_bytes(wanted[name])
+    for name in stale:
+        (out / name).unlink()
+    print(f"{len(changed)} written, {len(wanted) - len(changed)} unchanged, {len(stale)} removed")
+    return 0
 
 
 if __name__ == "__main__":

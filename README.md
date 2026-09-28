@@ -92,6 +92,10 @@ uv run scripts/regen-golden
 git diff tests/golden
 ```
 
-Never edit or hand-merge a `.golden` file. On a conflict, rebase and regenerate.
+Never edit or hand-merge a `.golden` file. On a conflict, rebase and regenerate. CI also renders them on every run and uploads them as the `golden` artifact, so they can be regenerated without a local toolchain:
+
+```sh
+gh run download <run-id> -n golden -D tests/golden
+```
 
 To add a language: add its files to `templates/project/template/` behind a `[% if flag %]` name, a flag in `copier.yml`, its jobs in `ci.yml.jinja` and `codeql`/`dependabot`, its line in `_checks.jinja`, and its entries in `LANGUAGES` and `CHECKS` in `scaffold.py`.

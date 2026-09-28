@@ -7,6 +7,9 @@ and the diff gets reviewed. Never edit or hand-merge a `.golden` file.
 
 from __future__ import annotations
 
+import base64
+import difflib
+import stat
 from pathlib import Path
 
 from makeghrepo import scaffold
@@ -63,14 +66,53 @@ def golden_path(name: str) -> Path:
 
 def render_combo(name: str, dest: Path) -> Path:
     """Render COMBOS[name] (over DATA) into dest, which must not exist yet; return dest."""
-    raise NotImplementedError("TODO(opus): F1 #81")
+    scaffold.render(dest, {**DATA, **COMBOS[name]})
+    return dest
 
 
 def serialize(root: Path) -> str:
     """One deterministic text document describing every file under root.
 
-    TODO(opus): F1 #81. Format, per file, sorted by POSIX relative path:
-    a header line with the path, exec bit and byte length, then the exact
-    content (base64 when not valid UTF-8), then an end marker.
+    Per file, sorted by POSIX relative path: a header line with the path, the
+    owner-exec bit (full modes depend on umask), the exact byte length (so a
+    trailing-newline change shows) and the encoding; then the content, as-is
+    if UTF-8, else one line of base64; then an end marker.
     """
-    raise NotImplementedError("TODO(opus): F1 #81")
+    parts: list[str] = []
+    entries = [p for p in root.rglob("*") if p.is_symlink() or not p.is_dir()]
+    for path in sorted(entries, key=lambda p: p.relative_to(root).as_posix()):
+        rel = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            raise ValueError(f"symlink in rendered output: {rel}")
+        data = path.read_bytes()
+        executable = int(bool(path.stat().st_mode & stat.S_IXUSR))
+        try:
+            text, encoding = data.decode("utf-8"), "utf-8"
+        except UnicodeDecodeError:
+            text, encoding = base64.b64encode(data).decode("ascii"), "base64"
+        header = f"### FILE {rel} exec={executable} bytes={len(data)} encoding={encoding}"
+        parts.append(f"{header}\n{text}\n### END\n")
+    return "".join(parts)
+
+
+def read_golden(name: str) -> str:
+    # Bytes, not read_text(): universal-newline translation would hide a \r\n change.
+    return golden_path(name).read_bytes().decode("utf-8")
+
+
+def diff_report(name: str, expected: str, actual: str, limit: int = 80) -> str:
+    lines = list(
+        difflib.unified_diff(
+            expected.splitlines(keepends=True),
+            actual.splitlines(keepends=True),
+            fromfile=f"golden/{name}.golden",
+            tofile="rendered",
+        )
+    )
+    if len(lines) > limit:
+        lines = [*lines[:limit], "... (truncated)\n"]
+    return (
+        f"rendered output for combo {name!r} differs from tests/golden/{name}.golden\n"
+        + "".join(lines)
+        + "\nIf this change is intended, run `uv run scripts/regen-golden` and review the diff."
+    )
