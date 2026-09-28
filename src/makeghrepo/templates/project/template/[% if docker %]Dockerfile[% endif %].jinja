@@ -43,6 +43,16 @@ ENV APP_DATA=/data
 VOLUME ["/data"]
 USER 65532:65532
 CMD ["/app"]
+[% elif ts %]
+FROM node:24-slim
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY src ./src
+ENV APP_DATA=/data
+VOLUME ["/data"]
+USER 1000:1000
+CMD ["node", "-e", "import('./src/index.ts').then(m => console.log(m.greeting()))"]
 [% else %]
 FROM alpine:3
 WORKDIR /app

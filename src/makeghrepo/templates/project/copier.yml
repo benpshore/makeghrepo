@@ -47,7 +47,7 @@ rs: {type: bool, when: false, default: "[[ 'rust' in languages ]]"}
 swift: {type: bool, when: false, default: "[[ 'swift' in languages ]]"}
 js: {type: bool, when: false, default: "[[ 'js' in languages ]]"}
 css: {type: bool, when: false, default: "[[ 'css' in languages ]]"}
-npm: {type: bool, when: false, default: "[[ js or css ]]"}
+npm: {type: bool, when: false, default: "[[ js or css or ('ts' in languages) ]]"}
 c: {type: bool, when: false, default: "[[ 'c' in languages ]]"}
 cpp: {type: bool, when: false, default: "[[ 'cpp' in languages ]]"}
 objc: {type: bool, when: false, default: "[[ 'objc' in languages ]]"}
@@ -59,6 +59,7 @@ sql: {type: bool, when: false, default: "[[ 'sql' in languages ]]"}
 docker: {type: bool, when: false, default: "[[ 'docker' in languages ]]"}
 sh: {type: bool, when: false, default: "[[ 'shell' in languages ]]"}
 go: {type: bool, when: false, default: "[[ 'go' in languages ]]"}
+ts: {type: bool, when: false, default: "[[ 'ts' in languages ]]"}
 
 # Registry-derived data: makeghrepo computes these from src/makeghrepo/langs/*.toml
 # (registry.derived) and passes them in. They are never asked.

@@ -1,0 +1,29 @@
+# ts: registry entry (schema 1). See src/makeghrepo/registry.py for field meanings.
+schema = 1
+id = "ts"
+order = 16
+aliases = ["typescript"]
+kind = "language"
+flag = "ts"
+groups = ["npm"]
+marker = "tsconfig.json"
+checks = [
+  ["npm", "install", "--no-fund", "--ignore-scripts"],
+  ["npm", "run", "typecheck"],
+  ["npm", "run", "test:ts"],
+]
+setup_len = 1
+required_tool = true
+ci_job = "ts"
+dependabot = { ecosystem = "npm", order = 40 }
+codeql = { language = "javascript-typescript", build_mode = "none", os = "ubuntu-latest", order = 20 }
+docker_priority = 0
+requires = []
+host_os = []
+probe = []
+leading_letter = false
+apps = []
+lockfile = ""
+release = ""
+npm_scripts = { "typecheck" = "tsc --noEmit", "test:ts" = "node --test \"test/**/*.test.ts\"" }
+npm_dev = { "typescript" = "^5.9", "@types/node" = "^24" }

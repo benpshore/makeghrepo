@@ -23,7 +23,7 @@ makeghrepo quiet-otter --private
 makeghrepo quiet-otter python --lib # library layout, no console script (like `uv init --lib`)
 ```
 
-Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `postgres` `sql` `docker` `shell` `go`. Aliases like `c++`, `objc++`, `rest`, `pg` and `golang` also work.
+Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `postgres` `sql` `docker` `shell` `go` `ts`. Aliases like `c++`, `objc++`, `rest`, `pg`, `golang` and `typescript` also work.
 
 If anything fails, fix it and run the same command again. The repo already exists, so makeghrepo skips creating it and only finishes what's missing: pushing `main` and re-applying settings. Every setting is safe to re-apply.
 
@@ -67,7 +67,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 - `ci.yml`: one job per language, plus a final `ci` job that passes only if all of them passed. That `ci` job is the one required check.
 - `codeql.yml` (public repos): actions, plus python, js, rust, go, c-cpp and swift as chosen.
 - `dependabot.yml`: GitHub Actions, plus uv, cargo, gomod, swift, npm, docker and docker-compose as chosen; weekly and grouped, with a 7-day cooldown.
-- `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python the version *is* the tag (hatchling + uv-dynamic-versioning, nothing to bump by hand): it checks the tag against the computed version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`. For Rust it checks the tag against `Cargo.toml`, tests, builds a release binary and attaches it with a `SHA256SUMS` file. For Go it tests and attaches static linux amd64 and arm64 binaries with `SHA256SUMS`.
+- `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python the version *is* the tag (hatchling + uv-dynamic-versioning, nothing to bump by hand): it checks the tag against the computed version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`. For Rust it checks the tag against `Cargo.toml`, tests, builds a release binary and attaches it with a `SHA256SUMS` file. For Go it tests and attaches static linux amd64 and arm64 binaries with `SHA256SUMS`. For js/ts/css it attaches the `npm pack` tarball.
 - `auto-release.yml` (public Python repos): every merge to `main` waits for that commit's `ci` check, then tags the next minor version and publishes the release. The same design makeghrepo itself uses.
 
 | language | files | checks (locally and in CI) |
@@ -77,6 +77,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 | rust | `Cargo.toml`, `src/main.rs` | `cargo fmt --check`, `clippy -D warnings` (pedantic), `cargo test` |
 | swift | `Package.swift`, `Sources/`, `Tests/` | `swift build`, `swift test` (CI runs them in the pinned `swift:6.4.0-noble` image, so the Ubuntu 26.04 runner change can't break them) |
 | js | `package.json`, `eslint.config.js`, `src/`, `test/` | eslint, `node --test`, `npm audit` (CI) |
+| ts | `tsconfig.json`, `src/index.ts`, `test/index.test.ts` (shares `package.json` with js/css) | `tsc --noEmit`, `node --test` on `.ts` (Node 24 strips types natively); Node Docker runtime; release attaches the `npm pack` tarball |
 | css | `styles/`, `.stylelintrc.json` | stylelint |
 | c, cpp, objc, objcpp | one `CMakeLists.txt`, `src/main.{c,cpp,m,mm}` | CMake build with `-Wall -Wextra -Werror`, ctest (macOS runner if ObjC) |
 | go | `go.mod`, `main.go`, `main_test.go` | `go vet`, `go test` (CI adds `gofmt -l` and `-race`); distroless static Docker runtime; release builds linux amd64 + arm64 binaries |
