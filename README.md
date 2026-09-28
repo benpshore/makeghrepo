@@ -23,7 +23,7 @@ makeghrepo quiet-otter --private
 makeghrepo quiet-otter python --lib # library layout, no console script (like `uv init --lib`)
 ```
 
-Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `postgres` `sql` `docker` `shell` `go` `ts` `ruby`. Aliases like `c++`, `objc++`, `rest`, `pg`, `golang`, `typescript` and `rb` also work.
+Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `postgres` `sql` `docker` `shell` `go` `ts` `ruby` `sqlite`. Aliases like `c++`, `objc++`, `rest`, `pg`, `golang`, `typescript` and `rb` also work.
 
 If anything fails, fix it and run the same command again. The repo already exists, so makeghrepo skips creating it and only finishes what's missing: pushing `main` and re-applying settings. Every setting is safe to re-apply.
 
@@ -85,6 +85,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 | api | `openapi.yaml` | Spectral |
 | postgres | `compose.yaml` (db service, `pgdata` volume), `db/migrations/` | CI applies the migrations to a real Postgres 17 |
 | sql | `sql/`, `.sqlfluff` | sqlfluff (Postgres dialect with `postgres`) |
+| sqlite | `sqlite/schema.sql` (idempotent, WAL, `schema_version`); the app opens `${APP_DATA:-.}/app.db`, on the `appdata` volume with Docker | schema applied to an in-memory database with `sqlite3 -bail` |
 | docker | `Dockerfile` for your language (non-root, `/data` volume), `compose.yaml` (app service, `appdata` volume), `.dockerignore` | hadolint, `docker build` (CI) |
 | shell | `scripts/hello.sh` | shellcheck |
 

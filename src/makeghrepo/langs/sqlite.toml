@@ -1,0 +1,27 @@
+# sqlite: registry entry (schema 1). See src/makeghrepo/registry.py for field meanings.
+schema = 1
+id = "sqlite"
+order = 18
+aliases = ["sqlite3"]
+kind = "component"
+flag = "sqlite"
+groups = []
+marker = "sqlite/schema.sql"
+checks = [
+  ["sqlite3", "-bail", ":memory:", ".read sqlite/schema.sql"],
+]
+setup_len = 0
+required_tool = false
+ci_job = "sqlite"
+dependabot = {}
+codeql = {}
+docker_priority = 0
+requires = []
+host_os = []
+probe = []
+leading_letter = false
+apps = []
+lockfile = ""
+release = ""
+npm_scripts = {}
+npm_dev = {}
