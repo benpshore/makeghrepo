@@ -11,7 +11,9 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a PR branch supersedes its run. Pushes to main don't: every
+  # merge commit must get its own complete ci result (auto-release waits for it).
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   test:
