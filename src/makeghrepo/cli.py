@@ -88,9 +88,7 @@ def main(
         want_private = bool(marker.get("private"))
         recorded = [str(lang) for lang in marker.get("languages") or []]
         if langs and langs != recorded:
-            typer.echo(
-                f"note: ignoring languages on resume; using {', '.join(recorded) or 'none'}"
-            )
+            typer.echo(f"note: ignoring languages on resume; using {', '.join(recorded) or 'none'}")
         langs = recorded
         typer.echo(f"resuming {dest}")
     elif on_github:
