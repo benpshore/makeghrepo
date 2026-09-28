@@ -148,11 +148,80 @@ jobs:
           uv run scripts/render-check --all rendered
           ./actionlint rendered/*/.github/workflows/*.yml
 
+  # The Rust port (rust/): built and checked here, never on a dev host. Its
+  # parity gate renders every tests/golden combo and compares byte for byte
+  # with the Python renderer's snapshots.
+  rust:
+    name: rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+          cargo --version && rustc --version
+      - name: Lockfile
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            echo "::warning::rust/Cargo.lock is missing; generating it (commit the artifact)"
+            cargo generate-lockfile
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cargo-lock
+          path: rust/Cargo.lock
+      - name: Format
+        id: fmt
+        run: |
+          if ! cargo fmt --check; then
+            cargo fmt
+            git diff -- . > "$RUNNER_TEMP/rustfmt.patch"
+            echo "::error::rustfmt wants changes; apply the rustfmt-patch artifact"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && steps.fmt.outcome == 'failure'
+        with:
+          name: rustfmt-patch
+          path: ${{ runner.temp }}/rustfmt.patch
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --release --locked
+      - name: Parity with the Python renderer (every golden snapshot)
+        run: |
+          set -euo pipefail
+          n=0
+          for f in ../tests/golden/*.golden; do
+            combo=$(basename "$f" .golden)
+            if ! ./target/release/makeghrepo --snapshot --combo "$combo" | cmp - "$f"; then
+              echo "::error::rust render differs from tests/golden/$combo.golden"
+              ./target/release/makeghrepo --snapshot --combo "$combo" | diff -u "$f" - | head -80 || true
+              exit 1
+            fi
+            n=$((n + 1))
+          done
+          echo "$n golden snapshots reproduced byte for byte by the Rust build"
+      - name: Dry run
+        run: |
+          ./target/release/makeghrepo quiet-otter rust docker --render "$RUNNER_TEMP/dry" >/dev/null
+          test -f "$RUNNER_TEMP/dry/Cargo.toml" && test -f "$RUNNER_TEMP/dry/Dockerfile"
+          ./target/release/makeghrepo --version
+
   # The single required check in the branch ruleset ("ci"): passes only if every job above passed.
   ci:
     name: ci
     if: always()
-    needs: [test, plan, templates, actionlint]
+    needs: [test, plan, templates, actionlint, rust]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

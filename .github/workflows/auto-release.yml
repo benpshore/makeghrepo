@@ -87,6 +87,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -145,3 +147,46 @@ jobs:
           set -euo pipefail
           git push origin "refs/tags/v$VERSION"
           gh release create "v$VERSION" dist/* --verify-tag --generate-notes
+
+  # The Rust port's prebuilt binaries, attached to the release just published:
+  # Linux x86_64, Linux aarch64 (the Pi) and macOS arm64, each with a sha256 file.
+  # Compiled here so no development host ever has to.
+  binaries:
+    name: binaries (${{ matrix.target }})
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "$TARGET"
+      - name: Build
+        working-directory: rust
+        run: MAKEGHREPO_VERSION="$VERSION" cargo build --release --locked --target "$TARGET"
+      - name: Checksum and attach to the release
+        run: |
+          set -euo pipefail
+          bin="makeghrepo-$TARGET"
+          cp "rust/target/$TARGET/release/makeghrepo" "$bin"
+          shasum -a 256 "$bin" | tee "$bin.sha256"
+          "./$bin" --version
+          gh release upload "v$VERSION" "$bin" "$bin.sha256" --clobber
