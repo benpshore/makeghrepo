@@ -7,7 +7,8 @@ import pytest
 
 from makeghrepo import registry, scaffold
 
-# Frozen copies of the hand-written tables that the registry replaced (v0.11.0).
+# Frozen copies of the hand-written tables the registry replaced (v0.11.0), updated in F3
+# for npm --ignore-scripts and pinned npx/uvx tool versions.
 _UV_AUDIT = ("uv", "audit", "--locked", "--preview-features", "audit-command")
 _CMAKE = (("cmake", "-S", ".", "-B", "build"), ("cmake", "--build", "build"),
           ("ctest", "--test-dir", "build", "--output-on-failure"))  # fmt: skip
@@ -26,12 +27,13 @@ BEFORE = {
                  ("cargo", "clippy", "--all-targets", "--", "-D", "warnings"),
                  ("cargo", "test", "-q")),
         "swift": (("swift", "build"), ("swift", "test")),
-        "js": (("npm", "install", "--no-fund"), ("npm", "run", "lint"), ("npm", "test")),
-        "css": (("npm", "install", "--no-fund"), ("npm", "run", "lint:css")),
+        "js": (("npm", "install", "--no-fund", "--ignore-scripts"), ("npm", "run", "lint"),
+               ("npm", "test")),
+        "css": (("npm", "install", "--no-fund", "--ignore-scripts"), ("npm", "run", "lint:css")),
         "c": _CMAKE, "cpp": _CMAKE, "objc": _CMAKE, "objcpp": _CMAKE,
-        "api": (("npx", "--yes", "@stoplight/spectral-cli", "lint", "openapi.yaml",
+        "api": (("npx", "--yes", "@stoplight/spectral-cli@6.16.3", "lint", "openapi.yaml",
                  "--fail-severity=warn"),),
-        "sql": (("uvx", "sqlfluff", "lint", "sql"),),
+        "sql": (("uvx", "sqlfluff==4.3.0", "lint", "sql"),),
         "docker": (("hadolint", "Dockerfile"),),
         "shell": (("shellcheck", "scripts/hello.sh"),),
     },
@@ -76,6 +78,8 @@ codeql = {}
 docker_priority = 0
 requires = []
 host_os = []
+probe = []
+leading_letter = false
 apps = []
 lockfile = ""
 release = ""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import subprocess
 import threading
@@ -50,6 +51,41 @@ REQUIRED_TOOLS = {lang.id: lang.checks[0][0] for lang in LANGS.values() if lang.
 # which share a build cache a concurrent invocation of the same tool would
 # fight over) would otherwise silently become "fully poolable" by omission.
 SETUP_LEN = {lang.id: lang.setup_len for lang in LANGS.values() if lang.setup_len}
+
+
+# Local checks run third-party code; keep it away from gh's token, the keyring and the ssh agent.
+_SCRUBBED_PREFIXES = ("GH_", "GITHUB_")
+_SCRUBBED_NAMES = {"DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS"}
+
+
+def check_env() -> dict[str, str]:
+    """The environment local checks run in: the user's, minus credential channels."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(_SCRUBBED_PREFIXES) and key not in _SCRUBBED_NAMES
+    }
+
+
+def _probe_ok(probe: tuple[str, ...], env: dict[str, str]) -> bool:
+    if shutil.which(probe[0]) is None:
+        return False
+    try:
+        return subprocess.run(probe, capture_output=True, env=env, timeout=30).returncode == 0
+    except OSError, subprocess.TimeoutExpired:
+        return False
+
+
+def unavailable(languages: list[str], env: dict[str, str]) -> dict[str, str]:
+    """Chosen languages whose local checks can't run on this host, with the reason."""
+    reasons: dict[str, str] = {}
+    for lang in languages:
+        entry = LANGS[lang]
+        if entry.host_os and platform.system() not in entry.host_os:
+            reasons[lang] = f"needs {' or '.join(entry.host_os)}"
+        elif entry.probe and not _probe_ok(entry.probe, env):
+            reasons[lang] = f"`{' '.join(entry.probe)}` failed"
+    return reasons
 
 
 def language(word: str) -> str | None:
@@ -102,6 +138,12 @@ def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> 
         if lang in languages and shutil.which(tool) is None:
             raise RuntimeError(f"{lang} needs {tool} installed locally to create its lockfile")
     lockfile_cmds = {CHECKS[lang][0] for lang in REQUIRED_TOOLS}
+    env = check_env()
+    # One CMake project serves c/cpp/objc/objcpp, so an unrunnable objc blocks all of it.
+    blocked: dict[tuple[str, ...], str] = {}
+    for lang, reason in unavailable(languages, env).items():
+        for cmd in CHECKS.get(lang, ()):
+            blocked[cmd] = f"{lang} {reason}"
 
     seen: set[tuple[str, ...]] = set()
     setup: list[tuple[str, ...]] = []
@@ -109,7 +151,7 @@ def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> 
     for lang in languages:
         cmds = CHECKS.get(lang, ())
         if lang == "sql" and "postgres" in languages:
-            cmds = tuple((*c, "db") if c[:2] == ("uvx", "sqlfluff") else c for c in cmds)
+            cmds = tuple((*c, "db") if c[1].startswith("sqlfluff") else c for c in cmds)
         if lang not in SETUP_LEN:
             whole = tuple(c for c in cmds if c not in seen)
             seen.update(whole)
@@ -143,6 +185,8 @@ def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> 
         """A skip message if cmd won't actually run, else None."""
         if skip and cmd not in lockfile_cmds:
             return f"  - skip {' '.join(cmd)} (MAKEGHREPO_SKIP_LOCAL_CHECKS set; CI will run it)"
+        if cmd in blocked:
+            return f"  - skip {' '.join(cmd)} ({blocked[cmd]}; CI will run it)"
         missing = missing_tool(cmd)
         if missing is not None:
             return f"  - skip {' '.join(cmd)} ({missing} not installed; CI will run it)"
@@ -151,7 +195,7 @@ def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> 
     def execute(cmd: tuple[str, ...]) -> None:
         """Run cmd for real (already past the skip checks). Raises RuntimeError."""
         run_cmd = run_cmd_for(cmd)
-        result = subprocess.run(run_cmd, cwd=dest, capture_output=True, text=True)
+        result = subprocess.run(run_cmd, cwd=dest, capture_output=True, text=True, env=env)
         if result.returncode != 0:
             raise RuntimeError(f"failed: {' '.join(run_cmd)}\n{result.stdout}{result.stderr}")
 

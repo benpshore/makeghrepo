@@ -19,6 +19,8 @@ codeql = { language = "swift", build_mode = "autobuild", os = "macos-latest", or
 docker_priority = 0
 requires = []
 host_os = []
+probe = []
+leading_letter = false
 apps = []
 lockfile = ""
 release = ""

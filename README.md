@@ -33,6 +33,14 @@ Projects go in `~/code/GitHub/<name>`. Set `MAKEGHREPO_DIR` to use another folde
 
 No git identity or GitHub auth setup needed beyond `gh auth login`: makeghrepo falls back to a `users.noreply.github.com` commit identity if none is configured, and never touches your global git config.
 
+Local checks run third-party code: npm packages, pinned `npx`/`uvx` tools, and the new project's own tests. So they run with GitHub credentials out of reach: no `GH_*`/`GITHUB_*` variables, no keyring session, no ssh agent. npm installs use `--ignore-scripts`. Checks that can't work on this machine are skipped and left to CI, which runs them on GitHub:
+
+- ObjC/ObjC++ need macOS.
+- Docker needs a daemon that answers `docker info`.
+- `cargo fmt`/`clippy` need their rustup components.
+
+Before the first commit, makeghrepo refuses to commit anything CI would reject: `.env` files, private keys, databases, OS junk. Rust needs a project name that starts with a letter.
+
 On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOCAL_CHECKS=1` to skip local lint/test/build even for tools that are installed — CI runs the same checks anyway. Lockfiles (`uv.lock`, `package-lock.json`) are still generated locally, since CI and the Dockerfiles depend on them.
 
 ## What it does

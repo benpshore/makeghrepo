@@ -20,8 +20,12 @@ same files. Field meanings (schema 1):
   order}``, or ``{}``; ``order`` fixes their position in the generated files.
 - ``docker_priority``: which runtime the Dockerfile uses when several are chosen.
 - ``npm_scripts``/``npm_dev``: what it adds to a shared package.json.
-- ``requires``/``host_os``/``apps``/``lockfile``/``release``: reserved for later
-  issues (capability probes, app kinds, release artifacts).
+- ``host_os``: platforms (``platform.system()`` values) its local checks can run
+  on; elsewhere they're skipped and CI runs them (e.g. ObjC needs macOS).
+- ``probe``: a command that must succeed before its local checks run (e.g.
+  ``docker info``: the binary can exist while the daemon is unreachable).
+- ``leading_letter``: its toolchain rejects package names that start with a digit.
+- ``requires``/``apps``/``lockfile``/``release``: reserved for later issues.
 """
 
 from __future__ import annotations
@@ -53,6 +57,8 @@ class Lang:
     docker_priority: int
     requires: tuple[str, ...]
     host_os: tuple[str, ...]
+    probe: tuple[str, ...]
+    leading_letter: bool
     apps: tuple[str, ...]
     lockfile: str
     release: str
@@ -78,7 +84,7 @@ def _parse(name: str, text: str) -> Lang:
     if data["required_tool"] and not data["checks"]:
         raise ValueError(f"{name}: required_tool without any checks")
     del data["schema"]
-    for key in ("aliases", "groups", "requires", "host_os", "apps"):
+    for key in ("aliases", "groups", "requires", "host_os", "probe", "apps"):
         data[key] = tuple(data[key])
     data["checks"] = tuple(tuple(cmd) for cmd in data["checks"])
     return Lang(**data)

@@ -94,6 +94,12 @@ def main(
     elif on_github:
         raise fail(f"{repo} already exists on GitHub")
     else:
+        strict = [lang for lang in langs if scaffold.LANGS[lang].leading_letter]
+        if strict and not name[0].isalpha():
+            raise fail(
+                f"{name!r} can't be a {strict[0]} package name: it must start with a letter. "
+                "Pick another name"
+            )
         typer.echo(f"creating {dest} [{', '.join(langs) or 'any language'}]")
         author_name = gitops.author_from_git_config()[0] or owner
         scaffold.render(dest, {

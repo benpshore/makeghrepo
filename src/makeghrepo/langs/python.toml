@@ -24,6 +24,8 @@ codeql = { language = "python", build_mode = "none", os = "ubuntu-latest", order
 docker_priority = 3
 requires = []
 host_os = []
+probe = []
+leading_letter = false
 apps = []
 lockfile = ""
 release = ""

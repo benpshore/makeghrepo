@@ -218,3 +218,17 @@ def test_resume_uses_the_marker_languages(tmp_path, gh, monkeypatch):
     assert result.exit_code == 1
     assert "ignoring languages on resume; using python" in result.output
     assert seen == [["python"], ["python"]]
+
+
+def test_rust_refuses_a_name_starting_with_a_digit(tmp_path, gh):
+    result = runner.invoke(app, ["7up", "rust"])
+    assert result.exit_code == 1
+    assert "must start with a letter" in result.output
+    assert not (tmp_path / "7up").exists()
+    assert gh["calls"] == []
+
+
+def test_python_accepts_a_name_starting_with_a_digit(tmp_path, gh):
+    assert runner.invoke(app, ["7up", "python"]).exit_code == 0
+    assert (tmp_path / "7up" / "src" / "_7up").is_dir()
+
