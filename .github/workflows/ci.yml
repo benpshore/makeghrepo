@@ -145,12 +145,16 @@ jobs:
             https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
           tar -xzf actionlint.tar.gz actionlint
+      # actionlint 1.7.12 (latest release) predates GitHub's concurrency.queue.
+      # Ignore only this exact unknown-key diagnostic; test_workflows.py checks
+      # the queue policy on this repo and every generated auto-release workflow.
+      # Remove the exception when a released actionlint supports queue.
       - name: Lint makeghrepo's own workflows
-        run: ./actionlint
+        run: ./actionlint -ignore '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'
       - name: Lint every generated workflow
         run: |
           uv run scripts/render-check --all rendered
-          ./actionlint rendered/*/.github/workflows/*.yml
+          ./actionlint -ignore '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$' rendered/*/.github/workflows/*.yml
 
   # The Rust port (rust/): built and checked here, never on a dev host. Its
   # parity gate renders every tests/golden combo and compares byte for byte

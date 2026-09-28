@@ -14,7 +14,13 @@ def workflows(request, tmp_path):
         if request.param == "makeghrepo"
         else gs.render_combo(request.param, tmp_path / "quiet-otter")
     )
-    return root / ".github/workflows"
+    directory = root / ".github/workflows"
+    has_release = request.param == "makeghrepo" or (
+        "python" in gs.COMBOS[request.param]["languages"]
+        and not gs.COMBOS[request.param].get("private", False)
+    )
+    assert (directory / "auto-release.yml").exists() is has_release
+    return directory
 
 
 def test_ci_preserves_running_and_pending_main_runs(workflows):
