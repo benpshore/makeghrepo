@@ -8,7 +8,8 @@ import pytest
 from makeghrepo import registry, scaffold
 
 # Frozen copies of the hand-written tables the registry replaced (v0.11.0), updated in F3
-# for npm --ignore-scripts and pinned npx/uvx tool versions, and extended per new token (go: E3-1, ts: E2-1).
+# for npm --ignore-scripts and pinned npx/uvx tool versions, and extended per new token
+# (go: E3-1, ts: E2-1).
 _UV_AUDIT = ("uv", "audit", "--locked", "--preview-features", "audit-command")
 _CMAKE = (("cmake", "-S", ".", "-B", "build"), ("cmake", "--build", "build"),
           ("ctest", "--test-dir", "build", "--output-on-failure"))  # fmt: skip

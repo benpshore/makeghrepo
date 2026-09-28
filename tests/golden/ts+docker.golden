@@ -1,3 +1,18 @@
+### FILE .dockerignore exec=0 bytes=84 encoding=utf-8
+.git
+.github
+.venv
+node_modules
+target
+.build
+build
+dist
+*.db
+*.sqlite*
+.env
+.env.*
+
+### END
 ### FILE .editorconfig exec=0 bytes=192 encoding=utf-8
 root = true
 
@@ -84,7 +99,7 @@ body:
         - [ ]
 
 ### END
-### FILE .github/dependabot.yml exec=0 bytes=370 encoding=utf-8
+### FILE .github/dependabot.yml exec=0 bytes=540 encoding=utf-8
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -105,6 +120,15 @@ updates:
     groups:
       npm:
         patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      docker:
+        patterns: ["*"]
 
 ### END
 ### FILE .github/pull_request_template.md exec=0 bytes=276 encoding=utf-8
@@ -124,7 +148,7 @@ Closes #
 <!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
 
 ### END
-### FILE .github/workflows/ci.yml exec=0 bytes=1358 encoding=utf-8
+### FILE .github/workflows/ci.yml exec=0 bytes=1771 encoding=utf-8
 name: CI
 
 on:
@@ -153,22 +177,34 @@ jobs:
           bad=$(git ls-files | grep -Ei '(^|/)(\.DS_Store|\.env(\..+)?|[^/]+\.(db|sqlite3?|duckdb|pem|key|p12|pfx))$' | grep -v '\.env\.example$' || true)
           if [ -n "$bad" ]; then echo "::error::remove from git: $bad"; exit 1; fi
 
-  js:
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker run --rm -i hadolint/hadolint < Dockerfile
+      - run: docker build -t quiet-otter .
+
+  ts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
       - run: npm ci
-      - run: npm run lint
-      - run: npm test
-      - run: npm audit --audit-level=high
+      - run: npm run typecheck
+      - run: npm run test:ts
 
   # The single required check in the branch ruleset. It passes only if every job above passed.
   ci:
     if: always()
-    needs: [repo, js]
+    needs: [repo, docker, ts]
     runs-on: ubuntu-latest
     steps:
       - run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = false
@@ -411,7 +447,7 @@ postgres-data/
 .docker/
 
 ### END
-### FILE AGENTS.md exec=0 bytes=282 encoding=utf-8
+### FILE AGENTS.md exec=0 bytes=383 encoding=utf-8
 # quiet-otter
 
 - `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
@@ -419,12 +455,25 @@ postgres-data/
 - Before committing, run:
 
 ```sh
-npm run lint && npm test
+docker build -t quiet-otter . && docker compose up -d app   # data volume: appdata:/data
+npm run typecheck && npm run test:ts
 ```
 
 ### END
 ### FILE CLAUDE.md exec=0 bytes=11 encoding=utf-8
 @AGENTS.md
+
+### END
+### FILE Dockerfile exec=0 bytes=242 encoding=utf-8
+FROM node:24-slim
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY src ./src
+ENV APP_DATA=/data
+VOLUME ["/data"]
+USER 1000:1000
+CMD ["node", "-e", "import('./src/index.ts').then(m => console.log(m.greeting()))"]
 
 ### END
 ### FILE LICENSE exec=0 bytes=1066 encoding=utf-8
@@ -451,7 +500,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ### END
-### FILE README.md exec=0 bytes=220 encoding=utf-8
+### FILE README.md exec=0 bytes=321 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -461,7 +510,8 @@ a test project
 Run these before opening a PR. CI runs the same ones.
 
 ```sh
-npm run lint && npm test
+docker build -t quiet-otter . && docker compose up -d app   # data volume: appdata:/data
+npm run typecheck && npm run test:ts
 ```
 
 `main` is protected: open a PR; the `ci` check must pass before merging (squash only).
@@ -475,18 +525,19 @@ Please report vulnerabilities privately via
 Do not open public issues for security problems.
 
 ### END
-### FILE eslint.config.js exec=0 bytes=269 encoding=utf-8
-import js from "@eslint/js";
-import globals from "globals";
+### FILE compose.yaml exec=0 bytes=146 encoding=utf-8
+# Local development only. Credentials here are not secrets.
+services:
+  app:
+    build: .
+    volumes:
+      - appdata:/data
 
-export default [
-  { ignores: ["node_modules/", "dist/", "build/", ".build/", "target/", ".venv/"] },
-  js.configs.recommended,
-  { languageOptions: { globals: { ...globals.node, ...globals.browser } } },
-];
+volumes:
+  appdata:
 
 ### END
-### FILE package.json exec=0 bytes=355 encoding=utf-8
+### FILE package.json exec=0 bytes=327 encoding=utf-8
 {
   "name": "quiet-otter",
   "version": "0.1.0",
@@ -495,31 +546,47 @@ export default [
   "private": true,
   "type": "module",
   "scripts": {
-    "lint": "eslint src test eslint.config.js",
-    "test": "node --test \"test/**/*.test.js\""
+    "typecheck": "tsc --noEmit",
+    "test:ts": "node --test \"test/**/*.test.ts\""
   },
   "devDependencies": {
-    "@eslint/js": "^10",
-    "eslint": "^10",
-    "globals": "^17"
+    "typescript": "^5.9",
+    "@types/node": "^24"
   }
 }
 
 ### END
-### FILE src/index.js exec=0 bytes=67 encoding=utf-8
-export function greeting() {
+### FILE src/index.ts exec=0 bytes=75 encoding=utf-8
+export function greeting(): string {
   return "Hello from quiet-otter!";
 }
 
 ### END
-### FILE test/index.test.js exec=0 bytes=191 encoding=utf-8
+### FILE test/index.test.ts exec=0 bytes=191 encoding=utf-8
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { greeting } from "../src/index.js";
+import { greeting } from "../src/index.ts";
 
 test("greets", () => {
   assert.match(greeting(), /quiet-otter/);
 });
+
+### END
+### FILE tsconfig.json exec=0 bytes=315 encoding=utf-8
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "types": ["node"]
+  },
+  "include": ["src", "test"]
+}
 
 ### END
