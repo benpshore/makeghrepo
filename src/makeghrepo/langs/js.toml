@@ -25,5 +25,5 @@ leading_letter = false
 apps = []
 lockfile = ""
 release = ""
-npm_scripts = { "lint" = "eslint .", "test" = "node --test" }
+npm_scripts = { "lint" = "eslint src test eslint.config.js", "test" = "node --test \"test/**/*.test.js\"" }
 npm_dev = { "@eslint/js" = "^10", "eslint" = "^10", "globals" = "^17" }

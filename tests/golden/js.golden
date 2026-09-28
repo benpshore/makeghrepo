@@ -477,7 +477,7 @@ export default [
 ];
 
 ### END
-### FILE package.json exec=0 bytes=309 encoding=utf-8
+### FILE package.json exec=0 bytes=355 encoding=utf-8
 {
   "name": "quiet-otter",
   "version": "0.1.0",
@@ -486,8 +486,8 @@ export default [
   "private": true,
   "type": "module",
   "scripts": {
-    "lint": "eslint .",
-    "test": "node --test"
+    "lint": "eslint src test eslint.config.js",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "devDependencies": {
     "@eslint/js": "^10",

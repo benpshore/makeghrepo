@@ -547,7 +547,7 @@ paths:
                     const: ok
 
 ### END
-### FILE package.json exec=0 bytes=415 encoding=utf-8
+### FILE package.json exec=0 bytes=468 encoding=utf-8
 {
   "name": "quiet-otter",
   "version": "0.1.0",
@@ -556,9 +556,9 @@ paths:
   "private": true,
   "type": "module",
   "scripts": {
-    "lint": "eslint .",
-    "test": "node --test",
-    "lint:css": "stylelint \"**/*.css\""
+    "lint": "eslint src test eslint.config.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "lint:css": "stylelint \"styles/**/*.css\""
   },
   "devDependencies": {
     "@eslint/js": "^10",

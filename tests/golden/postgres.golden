@@ -478,8 +478,8 @@ Please report vulnerabilities privately via
 Do not open public issues for security problems.
 
 ### END
-### FILE compose.yaml exec=0 bytes=472 encoding=utf-8
-# Local development database only. Credentials here are not secrets.
+### FILE compose.yaml exec=0 bytes=463 encoding=utf-8
+# Local development only. Credentials here are not secrets.
 services:
   db:
     image: postgres:17

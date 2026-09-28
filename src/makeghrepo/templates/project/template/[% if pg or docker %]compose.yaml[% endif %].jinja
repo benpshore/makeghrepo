@@ -1,5 +1,17 @@
-# Local development database only. Credentials here are not secrets.
+# Local development only. Credentials here are not secrets.
 services:
+[% if docker %]
+  app:
+    build: .
+    volumes:
+      - appdata:/data
+[% if pg %]
+    depends_on:
+      db:
+        condition: service_healthy
+[% endif %]
+[% endif %]
+[% if pg %]
   db:
     image: postgres:17
     environment:
@@ -15,6 +27,12 @@ services:
       test: ["CMD-SHELL", "pg_isready -U app"]
       interval: 2s
       retries: 15
+[% endif %]
 
 volumes:
+[% if docker %]
+  appdata:
+[% endif %]
+[% if pg %]
   pgdata:
+[% endif %]

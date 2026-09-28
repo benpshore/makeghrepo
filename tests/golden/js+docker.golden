@@ -436,7 +436,7 @@ postgres-data/
 .docker/
 
 ### END
-### FILE AGENTS.md exec=0 bytes=312 encoding=utf-8
+### FILE AGENTS.md exec=0 bytes=371 encoding=utf-8
 # quiet-otter
 
 - `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
@@ -445,7 +445,7 @@ postgres-data/
 
 ```sh
 npm run lint && npm test
-docker build -t quiet-otter .
+docker build -t quiet-otter . && docker compose up -d app   # data volume: appdata:/data
 ```
 
 ### END
@@ -453,12 +453,14 @@ docker build -t quiet-otter .
 @AGENTS.md
 
 ### END
-### FILE Dockerfile exec=0 bytes=206 encoding=utf-8
+### FILE Dockerfile exec=0 bytes=242 encoding=utf-8
 FROM node:24-slim
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY src ./src
+ENV APP_DATA=/data
+VOLUME ["/data"]
 USER 1000:1000
 CMD ["node", "-e", "import('./src/index.js').then(m => console.log(m.greeting()))"]
 
@@ -487,7 +489,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ### END
-### FILE README.md exec=0 bytes=250 encoding=utf-8
+### FILE README.md exec=0 bytes=309 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -498,7 +500,7 @@ Run these before opening a PR. CI runs the same ones.
 
 ```sh
 npm run lint && npm test
-docker build -t quiet-otter .
+docker build -t quiet-otter . && docker compose up -d app   # data volume: appdata:/data
 ```
 
 `main` is protected: open a PR; the `ci` check must pass before merging (squash only).
@@ -512,6 +514,18 @@ Please report vulnerabilities privately via
 Do not open public issues for security problems.
 
 ### END
+### FILE compose.yaml exec=0 bytes=146 encoding=utf-8
+# Local development only. Credentials here are not secrets.
+services:
+  app:
+    build: .
+    volumes:
+      - appdata:/data
+
+volumes:
+  appdata:
+
+### END
 ### FILE eslint.config.js exec=0 bytes=269 encoding=utf-8
 import js from "@eslint/js";
 import globals from "globals";
@@ -523,7 +537,7 @@ export default [
 ];
 
 ### END
-### FILE package.json exec=0 bytes=309 encoding=utf-8
+### FILE package.json exec=0 bytes=355 encoding=utf-8
 {
   "name": "quiet-otter",
   "version": "0.1.0",
@@ -532,8 +546,8 @@ export default [
   "private": true,
   "type": "module",
   "scripts": {
-    "lint": "eslint .",
-    "test": "node --test"
+    "lint": "eslint src test eslint.config.js",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "devDependencies": {
     "@eslint/js": "^10",
