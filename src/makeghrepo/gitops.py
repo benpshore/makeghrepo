@@ -19,7 +19,7 @@ def read_marker(path: Path) -> dict[str, object] | None:
     """The marker written by write_marker, or None if missing, unreadable or not schema 1."""
     try:
         data = json.loads((path / ".git" / MARKER).read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     if not isinstance(data, dict) or data.get("schema") != 1:
         return None
