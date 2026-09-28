@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Render golden combos for CI (never run locally on the dev host).
+
+  uv run scripts/render-check <combo>     render it, then run its real local checks
+  uv run scripts/render-check --all DIR   render every combo into DIR/<combo>, no checks
+"""
+
+import argparse
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
+
+import golden_snapshots  # noqa: E402
+
+from makeghrepo import scaffold  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Render golden combos for CI.")
+    parser.add_argument("combo", nargs="?", help="one combo to render and check")
+    parser.add_argument("--all", type=Path, metavar="DIR", help="render every combo, no checks")
+    args = parser.parse_args()
+
+    if args.all is not None:
+        args.all.mkdir(parents=True, exist_ok=True)
+        for name in golden_snapshots.COMBOS:
+            golden_snapshots.render_combo(name, args.all / name)
+        return 0
+
+    if args.combo not in golden_snapshots.COMBOS:
+        parser.error(f"unknown combo {args.combo!r}; choose from {sorted(golden_snapshots.COMBOS)}")
+    languages = list(golden_snapshots.COMBOS[args.combo]["languages"])
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = golden_snapshots.render_combo(args.combo, Path(tmp) / "quiet-otter")
+        try:
+            scaffold.smoke_test(dest, languages, lambda line: print(line, flush=True))
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+    print(f"{args.combo}: checks passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
