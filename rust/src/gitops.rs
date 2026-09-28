@@ -118,6 +118,42 @@ pub fn push_main(path: &Path) -> Result<(), String> {
     git(path, &["push", "-q", "-u", "origin", "main"]).map(|_| ())
 }
 
+/// Refuse a resume whose effective fetch or push URLs target another repo (#116).
+/// A missing origin is normal after a failed create. Unexpected URLs are never
+/// printed: they could contain embedded credentials.
+pub fn validate_origin(path: &Path, full_name: &str) -> Result<(), String> {
+    let remotes = git(path, &["remote"])?;
+    if !remotes.lines().any(|r| r == "origin") {
+        return Ok(());
+    }
+    let lower = full_name.to_lowercase();
+    let allowed: Vec<String> = [
+        "https://github.com/",
+        "git@github.com:",
+        "ssh://git@github.com/",
+        "ssh://git@github.com:22/",
+        "ssh://git@ssh.github.com:443/",
+    ]
+    .iter()
+    .flat_map(|prefix| [format!("{prefix}{lower}"), format!("{prefix}{lower}.git")])
+    .collect();
+    for options in [vec!["--all"], vec!["--push", "--all"]] {
+        let mut args = vec!["remote", "get-url"];
+        args.extend(options);
+        args.push("origin");
+        let urls: Vec<String> = git(path, &args)?
+            .lines()
+            .map(|u| u.trim_end_matches('/').to_lowercase())
+            .collect();
+        if urls.is_empty() || urls.iter().any(|u| !allowed.contains(u)) {
+            return Err(format!(
+                "origin does not match {full_name}; restore its GitHub fetch and push URLs before resuming"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn remote_has_main(path: &Path) -> bool {
     git(path, &["ls-remote", "--heads", "origin", "main"])
         .map(|s| !s.trim().is_empty())
@@ -155,5 +191,61 @@ mod tests {
                 "SECRETS.KEY"
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use std::process::Command;
+
+    fn repo_with_origin(url: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "makeghrepo-origin-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        init(&dir).expect("git init");
+        assert!(Command::new("git").args(["-C"]).arg(&dir).args(["remote", "add", "origin", url]).status().expect("git").success());
+        dir
+    }
+
+    #[test]
+    fn accepts_matching_urls() {
+        for url in [
+            "https://github.com/me/sample.git",
+            "https://github.com/me/sample",
+            "git@github.com:me/sample.git",
+            "ssh://git@github.com/me/sample.git",
+            "ssh://git@ssh.github.com:443/me/sample.git",
+            "https://github.com/ME/SAMPLE.git/",
+        ] {
+            let dir = repo_with_origin(url);
+            assert!(validate_origin(&dir, "me/sample").is_ok(), "{url}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn refuses_other_repos_and_push_overrides() {
+        let dir = repo_with_origin("https://github.com/other/public.git");
+        assert!(validate_origin(&dir, "me/sample").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+        let dir = repo_with_origin("https://github.com/me/sample.git");
+        assert!(Command::new("git").args(["-C"]).arg(&dir).args(["config", "--add", "remote.origin.pushurl", "git@github.com:other/public.git"]).status().expect("git").success());
+        assert!(validate_origin(&dir, "me/sample").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_origin_is_allowed() {
+        let dir = repo_with_origin("https://github.com/me/sample.git");
+        assert!(Command::new("git").args(["-C"]).arg(&dir).args(["remote", "remove", "origin"]).status().expect("git").success());
+        assert!(validate_origin(&dir, "me/sample").is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

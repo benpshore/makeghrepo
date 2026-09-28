@@ -245,6 +245,16 @@ fn main() -> ExitCode {
                 dest.display()
             ));
         };
+        if marker["owner"] != owner.as_str() || marker["name"] != name.as_str() {
+            return fail(&format!(
+                "{}'s recorded owner/name does not match {repo}; \
+                 restore the original account and folder name before resuming",
+                dest.display()
+            ));
+        }
+        if let Err(e) = gitops::validate_origin(&dest, &repo) {
+            return fail(&e);
+        }
         let marker_private = marker["private"].as_bool().unwrap_or(false);
         if cli.private && !marker_private {
             return fail(&format!(
@@ -351,9 +361,13 @@ fn main() -> ExitCode {
             Ok(p) => p,
             Err(e) => return fail(&format!("{e}\nLocal project is intact; re-run to retry.")),
         };
-        if cli.private && !actual {
+        // want_private carries the marker's intent on a retry, so a project created
+        // private can never be published to a remote that has become public (#110).
+        if want_private && !actual {
             return fail(&format!(
-                "{repo} is public on GitHub; makeghrepo never changes visibility. Re-run without --private"
+                "{repo} is public on GitHub, but this project was created private. \
+                 Refusing to publish; makeghrepo never changes visibility. \
+                 Restore the remote's private visibility before retrying"
             ));
         }
         private = actual;

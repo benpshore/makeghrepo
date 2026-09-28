@@ -301,15 +301,14 @@ pub fn configure_all(
         log("  - private repo: skipping ruleset, secret scanning, vuln reporting (need paid plan)");
     }
     let repo_s = repo.to_string();
-    report(
-        "repo settings",
-        api(
-            "PATCH",
-            &format!("repos/{repo}"),
-            Some(&settings_body(private)),
-        )
-        .map(|_| ()),
-    );
+    let settings = api(
+        "PATCH",
+        &format!("repos/{repo}"),
+        Some(&settings_body(private)),
+    )
+    .map(|_| ());
+    let settings_ok = settings.is_ok();
+    report("repo settings", settings);
     let mut actions_disabled = true;
     if private {
         let result = disable_actions(repo);
@@ -382,10 +381,18 @@ pub fn configure_all(
             Box::new(move || configure_project(&r)),
         ));
     }
+    // Publishing is gated on the relevant protection step: public repos need the
+    // settings PATCH (secret-scanning push protection) applied, private repos need
+    // Actions disabled. Independent settings still run either way (#111).
+    let push_blocked = push.is_some() && (!actions_disabled || (!private && !settings_ok));
     let mut push_index: Option<usize> = None;
     match push {
         Some(_) if !actions_disabled => {
             log("  - push main: skipped (couldn't disable Actions; refusing to risk a run)");
+            failed.lock().expect("lock").push("push main".into());
+        }
+        Some(_) if push_blocked => {
+            log("  - push main: skipped (couldn't enable push protection; refusing to publish)");
             failed.lock().expect("lock").push("push main".into());
         }
         Some(step) => {
@@ -413,7 +420,7 @@ pub fn configure_all(
         report(name, result);
     }
 
-    if !private && !push_failed {
+    if !private && !push_blocked && !push_failed {
         report(
             &format!("ruleset '{RULESET_NAME}'"),
             configure_ruleset(repo),
