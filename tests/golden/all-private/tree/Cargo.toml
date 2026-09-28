@@ -1,0 +1,11 @@
+[package]
+name = "quiet-otter"
+version = "0.1.0"
+edition = "2024"
+description = "quiet-otter"
+license = "MIT"
+
+[dependencies]
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

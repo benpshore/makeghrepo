@@ -1,0 +1,15 @@
+{
+  "name": "quiet-otter",
+  "version": "0.1.0",
+  "description": "quiet-otter",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint:css": "stylelint \"**/*.css\""
+  },
+  "devDependencies": {
+    "stylelint": "^17",
+    "stylelint-config-standard": "^40"
+  }
+}

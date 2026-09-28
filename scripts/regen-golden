@@ -1,16 +1,20 @@
-#!/bin/bash
-# Regenerate golden snapshots.
-# TODO(opus): implement this skeleton. The real implementation should:
-# - Run pytest in "update" mode to regenerate tests/golden/<id>/ directories
-# - This is a thin wrapper around the test suite, keeping the combo list in
-#   tests/test_golden.py as the single source of truth.
-# Suggestion: add a pytest plugin or conftest.py with an --update-golden flag,
-# or use an environment variable like GOLDEN_UPDATE=1 to trigger update mode.
+#!/usr/bin/env bash
+# Regenerate the golden snapshots in tests/golden/ from the current templates, then check
+# them. Run this whenever you intend to change rendered output, and review the diff.
+# Never edit or merge golden files by hand: on a conflict, rebase and re-run this.
+# Extra arguments go to pytest, e.g. `scripts/regen-golden -k python`.
+set -euo pipefail
+cd "$(dirname "$0")/.."
 
-cat >&2 << 'EOF'
-TODO(opus): Implement scripts/regen-golden for issue #81.
-The script should regenerate tests/golden/* snapshots by running pytest in update mode.
-Keep the combo list in tests/test_golden.py as the source of truth.
-EOF
+uv run pytest tests/test_golden.py -q --update-golden "$@"
+uv run pytest tests/test_golden.py -q "$@"
 
-exit 1
+# A .gitignore (ours, or one inside a rendered project) would keep a golden file out of
+# commits, and CI would then fail on the missing file.
+ignored=$(git ls-files --others --ignored --exclude-standard -- tests/golden)
+if [[ -n "$ignored" ]]; then
+    printf 'these golden files are gitignored, so they would never be committed:\n%s\n' \
+        "$ignored" >&2
+    exit 1
+fi
+echo "tests/golden is up to date. Review it with: git status tests/golden; git diff tests/golden"

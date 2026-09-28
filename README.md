@@ -83,8 +83,17 @@ uv run pytest              # includes slow end-to-end tests for python and rust 
 uv run pytest -m "not slow"
 ```
 
+To add a language: add its files to `templates/project/template/` behind a `[% if flag %]` name, a flag in `copier.yml`, its jobs in `ci.yml.jinja` and `codeql`/`dependabot`, its line in `_checks.jinja`, and its entries in `LANGUAGES` and `CHECKS` in `scaffold.py`. Then run `scripts/regen-golden` and review the diff.
+
 ### Golden snapshots
 
-To add a language: add its files to `templates/project/template/` behind a `[% if flag %]` name, a flag in `copier.yml`, its jobs in `ci.yml.jinja` and `codeql`/`dependabot`, its line in `_checks.jinja`, and its entries in `LANGUAGES` and `CHECKS` in `scaffold.py`.
+`tests/golden/<combo>/` holds the exact rendered output for each language combo: `tree/` is the project byte for byte, and `manifest.txt` lists every file with its mode (so exec bits count). `tests/test_golden.py` renders every combo with fixed data (including the year) and fails on any difference, so every change to rendered output shows up as a diff in the PR.
 
-TODO(opus): describe how to regenerate golden snapshots when templates change (issue #81). The test suite should have deterministic output; `scripts/regen-golden` regenerates the snapshots under `tests/golden/`.
+When you change the output on purpose, regenerate the snapshots and review what changed:
+
+```sh
+scripts/regen-golden             # all combos; extra args go to pytest, e.g. -k python
+git diff --stat tests/golden
+```
+
+Never edit or hand-merge golden files. On a conflict, rebase and run `scripts/regen-golden` again.

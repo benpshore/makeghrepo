@@ -1,0 +1,2 @@
+# Golden snapshots are compared byte for byte, so git must never rewrite line endings.
+tests/golden/** -text

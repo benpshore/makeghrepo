@@ -1,5 +1,16 @@
 import pytest
 
+# tests/golden/ holds rendered projects (with their own tests/), not tests of ours.
+collect_ignore = ["golden"]
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--update-golden",
+        action="store_true",
+        help="rewrite tests/golden/ from the current templates (scripts/regen-golden uses this)",
+    )
+
 
 @pytest.fixture(autouse=True)
 def isolated_git(tmp_path_factory, monkeypatch):

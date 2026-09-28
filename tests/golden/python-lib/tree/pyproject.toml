@@ -1,0 +1,29 @@
+[project]
+name = "quiet-otter"
+version = "0.1.0"
+description = "quiet-otter"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Test User" }]
+requires-python = ">=3.14"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.9,<1"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.14"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers"]

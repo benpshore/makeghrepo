@@ -1,0 +1,34 @@
+openapi: 3.1.0
+info:
+  title: quiet-otter
+  description: "quiet-otter"
+  version: 0.1.0
+  license:
+    name: MIT
+    identifier: MIT
+  contact:
+    url: https://github.com/someone/quiet-otter
+servers:
+  - url: http://localhost:8000
+tags:
+  - name: health
+    description: Liveness checks
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Liveness check
+      description: Returns ok when the service is up.
+      tags: [health]
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok

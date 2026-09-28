@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: No junk, databases or secrets committed
+        run: |
+          bad=$(git ls-files | grep -Ei '(^|/)(\.DS_Store|\.env(\..+)?|[^/]+\.(db|sqlite3?|duckdb|pem|key|p12|pfx))$' | grep -v '\.env\.example$' || true)
+          if [ -n "$bad" ]; then echo "::error::remove from git: $bad"; exit 1; fi
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker run --rm -i hadolint/hadolint < Dockerfile
+      - run: docker build -t quiet-otter .
+
+  # The single required check in the branch ruleset. It passes only if every job above passed.
+  ci:
+    if: always()
+    needs: [repo, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = false

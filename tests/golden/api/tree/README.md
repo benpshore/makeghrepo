@@ -1,0 +1,13 @@
+# quiet-otter
+
+quiet-otter
+
+## Checks
+
+Run these before opening a PR. CI runs the same ones.
+
+```sh
+npx @stoplight/spectral-cli lint openapi.yaml
+```
+
+`main` is protected: open a PR; the `ci` check must pass before merging (squash only).
