@@ -67,7 +67,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 - `ci.yml`: one job per language, plus a final `ci` job that passes only if all of them passed. That `ci` job is the one required check.
 - `codeql.yml` (public repos): actions, plus python, js, rust, go, ruby, c-cpp and swift as chosen.
 - `dependabot.yml`: GitHub Actions, plus uv, cargo, gomod, bundler, swift, npm, docker and docker-compose as chosen; weekly and grouped, with a 7-day cooldown.
-- `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python the version *is* the tag (hatchling + uv-dynamic-versioning, nothing to bump by hand): it checks the tag against the computed version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`. For Rust it checks the tag against `Cargo.toml`, tests, builds a release binary and attaches it with a `SHA256SUMS` file. For Go it tests and attaches static linux amd64 and arm64 binaries with `SHA256SUMS`. For js/ts/css it attaches the `npm pack` tarball.
+- `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python the version *is* the tag (hatchling + uv-dynamic-versioning, nothing to bump by hand): it checks the tag against the computed version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`. For Rust it checks the tag against `Cargo.toml`, tests, builds a release binary and attaches it with a `SHA256SUMS` file. For Go it tests and attaches static linux amd64 and arm64 binaries with `SHA256SUMS`. For C/C++ (without ObjC) it builds Release, runs ctest and attaches the linux x86_64 binaries with `SHA256SUMS`. For js/ts/css it attaches the `npm pack` tarball.
 - `auto-release.yml` (public Python repos): every merge to `main` waits for that commit's `ci` check, then tags the next minor version and publishes the release. The same design makeghrepo itself uses.
 
 | language | files | checks (locally and in CI) |
@@ -80,7 +80,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 | ts | `tsconfig.json`, `src/index.ts`, `test/index.test.ts` (shares `package.json` with js/css) | `tsc --noEmit`, `node --test` on `.ts` (Node 24 strips types natively); Node Docker runtime; release attaches the `npm pack` tarball |
 | css | `styles/`, `.stylelintrc.json` | stylelint |
 | ruby | `Gemfile` (+ multi-platform `Gemfile.lock`), `Rakefile`, `.rubocop.yml`, `lib/<pkg>.rb`, `test/<pkg>_test.rb`; gems install to `vendor/bundle` | rubocop, minitest via `rake test`; Ruby 3.4 slim Docker runtime |
-| c, cpp, objc, objcpp | one `CMakeLists.txt`, `src/main.{c,cpp,m,mm}` | CMake build with `-Wall -Wextra -Werror`, ctest (macOS runner if ObjC) |
+| c, cpp, objc, objcpp | one `CMakeLists.txt`, `src/main.{c,cpp,m,mm}` | CMake build with `-Wall -Wextra -Werror`, ctest (macOS runner if ObjC); c/cpp: Debian slim Docker runtime with a Release build, release attaches linux x86_64 binaries with `SHA256SUMS` |
 | go | `go.mod`, `main.go`, `main_test.go` | `go vet`, `go test` (CI adds `gofmt -l` and `-race`); distroless static Docker runtime; release builds linux amd64 + arm64 binaries |
 | api | `openapi.yaml` | Spectral |
 | postgres | `compose.yaml` (db service, `pgdata` volume), `db/migrations/` | CI applies the migrations to a real Postgres 17 |

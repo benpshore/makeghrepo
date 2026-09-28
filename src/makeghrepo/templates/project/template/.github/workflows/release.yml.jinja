@@ -42,6 +42,16 @@ jobs:
           cp "target/release/[[ project_name ]]" "dist/[[ project_name ]]-$(uname -m)-linux"
           (cd dist && sha256sum -- * > SHA256SUMS)
 [% endif %]
+[% if cmake and not objc and not objcpp %]
+      - name: Build release binaries (Release, linux x86_64)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+          mkdir -p dist
+          for bin in build/[[ package_name ]]_*; do cp "$bin" "dist/$(basename "$bin")-linux-x86_64"; done
+          (cd dist && sha256sum -- * > SHA256SUMS)
+[% endif %]
 [% if go %]
       - run: go test ./...
       - name: Build release binaries (linux amd64 + arm64, static)
@@ -73,4 +83,4 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes[[ ' dist/*' if py or rs or go or npm else '' ]]
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes[[ ' dist/*' if py or rs or go or npm or (cmake and not objc and not objcpp) else '' ]]
