@@ -84,6 +84,19 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 | docker | `Dockerfile` for your language (non-root, `/data` volume), `compose.yaml` (app service, `appdata` volume), `.dockerignore` | hadolint, `docker build` (CI) |
 | shell | `scripts/hello.sh` | shellcheck |
 
+## Rust build
+
+`rust/` holds a Rust port of the same tool: same template, same registry, same steps, and it must render every `tests/golden` combo byte for byte (CI's `rust` job checks). Every release attaches prebuilt binaries for Linux x86_64, Linux aarch64 (Raspberry Pi) and macOS arm64, each with a `.sha256` file:
+
+```sh
+v=$(gh release view --repo benpshore/makeghrepo --json tagName --jq .tagName)
+gh release download "$v" --repo benpshore/makeghrepo -p "makeghrepo-aarch64-unknown-linux-gnu*"
+shasum -a 256 -c makeghrepo-aarch64-unknown-linux-gnu.sha256
+install -m 755 makeghrepo-aarch64-unknown-linux-gnu ~/.local/bin/makeghrepo
+```
+
+The Rust binary adds two offline modes: `makeghrepo NAME LANG... --render DIR` renders the project into `DIR` and stops (no checks, no git, no GitHub), and `--snapshot [--combo NAME]` prints the rendered project in golden-snapshot format. Nothing in this repo compiles Rust on a development machine: CI builds, tests and checks it.
+
 ## Develop
 
 ```sh
