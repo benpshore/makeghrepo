@@ -1,6 +1,6 @@
 [project]
 name = "[[ project_name ]]"
-version = "0.1.0"
+dynamic = ["version"]
 description = [[ description | to_json(ensure_ascii=False) ]]
 readme = "README.md"
 license = "MIT"
@@ -13,9 +13,19 @@ dependencies = []
 [[ project_name ]] = "[[ package_name ]]:main"
 
 [% endif %]
+# The version is the git tag (v1.2.3 -> 1.2.3); nothing to bump by hand.
 [build-system]
-requires = ["uv_build>=0.9,<1"]
-build-backend = "uv_build"
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/[[ package_name ]]"]
+
+[tool.uv-dynamic-versioning]
+fallback-version = "0.0.0"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.14"]

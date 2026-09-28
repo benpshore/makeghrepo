@@ -4,6 +4,10 @@
 - Never commit secrets, `.env` files, databases or `.DS_Store` (see `.gitignore`; CI rejects them).
 [% if py %]
 - Python: use **uv** only (`uv add`, `uv run`). Never pip.
+- The version is the git tag; never edit a version field by hand.
+[% endif %]
+[% if py and not private %]
+- Every merge to `main` is released automatically (next minor version, wheel and sdist attached).
 [% endif %]
 - Before committing, run:
 

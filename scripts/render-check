@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
 import golden_snapshots  # noqa: E402
 
-from makeghrepo import scaffold  # noqa: E402
+from makeghrepo import gitops, scaffold  # noqa: E402
 
 
 def main() -> int:
@@ -34,6 +34,9 @@ def main() -> int:
     languages = list(golden_snapshots.COMBOS[args.combo]["languages"])
     with tempfile.TemporaryDirectory() as tmp:
         dest = golden_snapshots.render_combo(args.combo, Path(tmp) / "quiet-otter")
+        # Exactly the state the CLI runs its checks in: a fresh repo, no commits, no tags
+        # (dynamic versions must fall back cleanly here).
+        gitops.init(dest)
         try:
             scaffold.smoke_test(dest, languages, lambda line: print(line, flush=True))
         except RuntimeError as exc:
