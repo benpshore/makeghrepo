@@ -25,6 +25,12 @@ ALIASES = {
     "sh": "shell", "bash": "shell",
 }  # fmt: skip
 
+# Ship as separate, sometimes-missing plugin binaries (cargo-fmt, cargo-clippy)
+# rather than being built into cargo itself — `cargo <name>` fails outright
+# with "no such command" if `cargo-<name>` isn't on PATH, even though `cargo`
+# itself is (e.g. an apt-installed rustc/cargo with no rustup components).
+CARGO_PLUGIN_SUBCOMMANDS = {"fmt", "clippy"}
+
 UV_AUDIT = ("uv", "audit", "--locked", "--preview-features", "audit-command")
 CMAKE = (("cmake", "-S", ".", "-B", "build"), ("cmake", "--build", "build"),
          ("ctest", "--test-dir", "build", "--output-on-failure"))  # fmt: skip
@@ -145,12 +151,22 @@ def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> 
         # (or wait on another concurrent check) whether the venv is in sync.
         return (cmd[0], cmd[1], "--no-sync", *cmd[2:]) if cmd[:2] == ("uv", "run") else cmd
 
+    def missing_tool(cmd: tuple[str, ...]) -> str | None:
+        """The binary name cmd actually needs, if it's not on PATH, else None."""
+        if shutil.which(cmd[0]) is None:
+            return cmd[0]
+        if cmd[0] == "cargo" and len(cmd) > 1 and cmd[1] in CARGO_PLUGIN_SUBCOMMANDS:
+            plugin = f"cargo-{cmd[1]}"
+            return plugin if shutil.which(plugin) is None else None
+        return None
+
     def announce(cmd: tuple[str, ...]) -> str | None:
         """A skip message if cmd won't actually run, else None."""
         if skip and cmd not in lockfile_cmds:
             return f"  - skip {' '.join(cmd)} (MAKEGHREPO_SKIP_LOCAL_CHECKS set; CI will run it)"
-        if shutil.which(cmd[0]) is None:
-            return f"  - skip {' '.join(cmd)} ({cmd[0]} not installed; CI will run it)"
+        missing = missing_tool(cmd)
+        if missing is not None:
+            return f"  - skip {' '.join(cmd)} ({missing} not installed; CI will run it)"
         return None
 
     def execute(cmd: tuple[str, ...]) -> None:

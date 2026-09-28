@@ -215,6 +215,29 @@ def test_lockfile_tools_are_required(tmp_path, monkeypatch, lang, tool):
         scaffold.smoke_test(tmp_path, [lang], lambda _: None)
 
 
+def test_cargo_plugin_subcommands_skip_when_only_cargo_itself_is_installed(tmp_path, monkeypatch):
+    """cargo on PATH doesn't mean cargo-fmt/cargo-clippy are (e.g. an apt-installed
+    rustc/cargo with no rustup components) — those must skip gracefully instead of
+    hitting cargo's own "no such command" failure."""
+    calls = _fake_run(monkeypatch)
+    monkeypatch.setattr(
+        scaffold.shutil, "which", lambda t: None if t in ("cargo-fmt", "cargo-clippy") else "/bin/x"
+    )
+    scaffold.smoke_test(tmp_path, ["rust"], lambda _: None)
+    assert ("cargo", "fmt", "--check") not in calls
+    assert ("cargo", "clippy", "--all-targets", "--", "-D", "warnings") not in calls
+    assert ("cargo", "test", "-q") in calls
+
+
+def test_cargo_itself_missing_skips_everything_not_just_the_plugins(tmp_path, monkeypatch):
+    """The plugin-binary check must not shadow the base "is cargo even here" check —
+    a stray cargo-fmt/cargo-clippy on PATH with no cargo itself must still skip."""
+    calls = _fake_run(monkeypatch)
+    monkeypatch.setattr(scaffold.shutil, "which", lambda t: None if t == "cargo" else "/bin/x")
+    scaffold.smoke_test(tmp_path, ["rust"], lambda _: None)
+    assert calls == []
+
+
 def _fake_run(monkeypatch, handler=None):
     """Replace subprocess.run; `handler(cmd) -> int | None` picks the exit code (default 0)."""
     calls: list[tuple[str, ...]] = []
