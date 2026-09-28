@@ -67,21 +67,21 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 - `ci.yml`: one job per language, plus a final `ci` job that passes only if all of them passed. That `ci` job is the one required check.
 - `codeql.yml` (public repos): actions, plus python, js, rust, c-cpp and swift as chosen.
 - `dependabot.yml`: GitHub Actions, plus uv, cargo, swift, npm, docker and docker-compose as chosen; weekly and grouped, with a 7-day cooldown.
-- `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python it first checks that the tag matches the version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`.
+- `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python it first checks that the tag matches the version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`. For Rust it checks the tag against `Cargo.toml`, tests, builds a release binary and attaches it with a `SHA256SUMS` file.
 
 | language | files | checks (locally and in CI) |
 |---|---|---|
 | python | `pyproject.toml`, `src/<pkg>/`, `tests/` | ruff format + check, pytest, `uv audit`, `uv build` |
 | python --lib | same, minus the console script; adds `py.typed` | same checks |
 | rust | `Cargo.toml`, `src/main.rs` | `cargo fmt --check`, `clippy -D warnings` (pedantic), `cargo test` |
-| swift | `Package.swift`, `Sources/`, `Tests/` | `swift build`, `swift test` |
+| swift | `Package.swift`, `Sources/`, `Tests/` | `swift build`, `swift test` (CI runs them in the pinned `swift:6.4.0-noble` image, so the Ubuntu 26.04 runner change can't break them) |
 | js | `package.json`, `eslint.config.js`, `src/`, `test/` | eslint, `node --test`, `npm audit` (CI) |
 | css | `styles/`, `.stylelintrc.json` | stylelint |
 | c, cpp, objc, objcpp | one `CMakeLists.txt`, `src/main.{c,cpp,m,mm}` | CMake build with `-Wall -Wextra -Werror`, ctest (macOS runner if ObjC) |
 | api | `openapi.yaml` | Spectral |
-| postgres | `compose.yaml`, `db/migrations/` | CI applies the migrations to a real Postgres 17 |
+| postgres | `compose.yaml` (db service, `pgdata` volume), `db/migrations/` | CI applies the migrations to a real Postgres 17 |
 | sql | `sql/`, `.sqlfluff` | sqlfluff (Postgres dialect with `postgres`) |
-| docker | `Dockerfile` for your language, `.dockerignore` | hadolint, `docker build` (CI) |
+| docker | `Dockerfile` for your language (non-root, `/data` volume), `compose.yaml` (app service, `appdata` volume), `.dockerignore` | hadolint, `docker build` (CI) |
 | shell | `scripts/hello.sh` | shellcheck |
 
 ## Develop
