@@ -98,7 +98,7 @@ pub fn language<'a>(langs: &'a [Lang], word: &str) -> Option<&'a str> {
     let word = word.to_lowercase();
     langs
         .iter()
-        .find(|l| l.id == word || l.aliases.iter().any(|a| *a == word))
+        .find(|l| l.id == word || l.aliases.contains(&word))
         .map(|l| l.id.as_str())
 }
 
