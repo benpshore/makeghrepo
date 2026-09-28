@@ -28,7 +28,18 @@ jobs:
       - run: uv audit --locked --preview-features audit-command
       - run: uv build
 [% endif %]
+[% if rs %]
+      - name: Tag matches Cargo.toml version
+        run: test "v$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')" = "$GITHUB_REF_NAME"
+      - run: cargo test
+      - name: Build release binary
+        run: |
+          cargo build --release
+          mkdir -p dist
+          cp "target/release/[[ project_name ]]" "dist/[[ project_name ]]-$(uname -m)-linux"
+          (cd dist && sha256sum -- * > SHA256SUMS)
+[% endif %]
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes[[ ' dist/*' if py else '' ]]
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes[[ ' dist/*' if py or rs else '' ]]
