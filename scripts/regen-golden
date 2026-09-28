@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Regenerate tests/golden/*.golden from the current templates.
+
+Run from the repo root:  uv run scripts/regen-golden
+Then review `git diff tests/golden` before committing. Never edit .golden files by hand.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
+
+import golden_snapshots  # noqa: E402
+
+
+def main() -> int:
+    raise NotImplementedError("TODO(opus): F1 #81")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
