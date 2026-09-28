@@ -1,3 +1,18 @@
+### FILE .dockerignore exec=0 bytes=84 encoding=utf-8
+.git
+.github
+.venv
+node_modules
+target
+.build
+build
+dist
+*.db
+*.sqlite*
+.env
+.env.*
+
+### END
 ### FILE .editorconfig exec=0 bytes=192 encoding=utf-8
 root = true
 
@@ -84,7 +99,7 @@ body:
         - [ ]
 
 ### END
-### FILE .github/dependabot.yml exec=0 bytes=206 encoding=utf-8
+### FILE .github/dependabot.yml exec=0 bytes=376 encoding=utf-8
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -95,6 +110,15 @@ updates:
       default-days: 7
     groups:
       github-actions:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      docker:
         patterns: ["*"]
 
 ### END
@@ -115,7 +139,7 @@ Closes #
 <!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
 
 ### END
-### FILE .github/workflows/ci.yml exec=0 bytes=1376 encoding=utf-8
+### FILE .github/workflows/ci.yml exec=0 bytes=1695 encoding=utf-8
 name: CI
 
 on:
@@ -155,10 +179,20 @@ jobs:
       - run: cmake --build build
       - run: ctest --test-dir build --output-on-failure
 
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker run --rm -i hadolint/hadolint < Dockerfile
+      - run: docker build -t quiet-otter .
+
   # The single required check in the branch ruleset. It passes only if every job above passed.
   ci:
     if: always()
-    needs: [repo, cmake]
+    needs: [repo, cmake, docker]
     runs-on: ubuntu-latest
     steps:
       - run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = false
@@ -404,7 +438,7 @@ postgres-data/
 .docker/
 
 ### END
-### FILE AGENTS.md exec=0 bytes=326 encoding=utf-8
+### FILE AGENTS.md exec=0 bytes=415 encoding=utf-8
 # quiet-otter
 
 - `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
@@ -413,6 +447,7 @@ postgres-data/
 
 ```sh
 cmake -S . -B build && cmake --build build && ctest --test-dir build
+docker build -t quiet-otter . && docker compose up -d app   # data volume: appdata:/data
 ```
 
 ### END
@@ -436,6 +471,23 @@ function(add_program target source)
 endfunction()
 
 add_program(quiet_otter_cpp src/main.cpp)
+
+### END
+### FILE Dockerfile exec=0 bytes=436 encoding=utf-8
+FROM debian:bookworm-slim AS build
+# hadolint ignore=DL3008
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY . .
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+
+FROM debian:bookworm-slim
+COPY --from=build /app/build/quiet_otter_cpp /usr/local/bin/app
+ENV APP_DATA=/data
+VOLUME ["/data"]
+USER 65534:65534
+CMD ["app"]
 
 ### END
 ### FILE LICENSE exec=0 bytes=1066 encoding=utf-8
@@ -462,7 +514,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ### END
-### FILE README.md exec=0 bytes=264 encoding=utf-8
+### FILE README.md exec=0 bytes=353 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -473,6 +525,7 @@ Run these before opening a PR. CI runs the same ones.
 
 ```sh
 cmake -S . -B build && cmake --build build && ctest --test-dir build
+docker build -t quiet-otter . && docker compose up -d app   # data volume: appdata:/data
 ```
 
 `main` is protected: open a PR; the `ci` check must pass before merging (squash only).
@@ -484,6 +537,18 @@ cmake -S . -B build && cmake --build build && ctest --test-dir build
 Please report vulnerabilities privately via
 **Security → Report a vulnerability** on this repository (GitHub private vulnerability reporting).
 Do not open public issues for security problems.
+
+### END
+### FILE compose.yaml exec=0 bytes=146 encoding=utf-8
+# Local development only. Credentials here are not secrets.
+services:
+  app:
+    build: .
+    volumes:
+      - appdata:/data
+
+volumes:
+  appdata:
 
 ### END
 ### FILE src/main.cpp exec=0 bytes=96 encoding=utf-8
