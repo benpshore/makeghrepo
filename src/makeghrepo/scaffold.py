@@ -153,10 +153,12 @@ def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> 
 
     def missing_tool(cmd: tuple[str, ...]) -> str | None:
         """The binary name cmd actually needs, if it's not on PATH, else None."""
+        if shutil.which(cmd[0]) is None:
+            return cmd[0]
         if cmd[0] == "cargo" and len(cmd) > 1 and cmd[1] in CARGO_PLUGIN_SUBCOMMANDS:
             plugin = f"cargo-{cmd[1]}"
             return plugin if shutil.which(plugin) is None else None
-        return cmd[0] if shutil.which(cmd[0]) is None else None
+        return None
 
     def announce(cmd: tuple[str, ...]) -> str | None:
         """A skip message if cmd won't actually run, else None."""
