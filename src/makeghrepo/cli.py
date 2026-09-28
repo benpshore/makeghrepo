@@ -83,6 +83,15 @@ def main(
                 f"{dest} is a git repo makeghrepo didn't create "
                 "(no .git/makeghrepo.json); pick another name"
             )
+        if marker.get("owner") != owner or marker.get("name") != name:
+            raise fail(
+                f"{dest}'s recorded owner/name does not match {repo}; "
+                "restore the original account and folder name before resuming"
+            )
+        try:
+            gitops.validate_origin(dest, repo)
+        except (RuntimeError, git.GitCommandError) as exc:
+            raise fail(str(exc)) from exc
         if private and not marker.get("private"):
             raise fail(f"{repo} was created public; re-run without --private or pick another name")
         want_private = bool(marker.get("private"))
