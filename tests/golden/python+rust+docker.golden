@@ -278,7 +278,7 @@ jobs:
           category: "/language:${{ matrix.language }}"
 
 ### END
-### FILE .github/workflows/release.yml exec=0 bytes=939 encoding=utf-8
+### FILE .github/workflows/release.yml exec=0 bytes=1419 encoding=utf-8
 name: Release
 
 # Publish: bump the version, merge the PR, then push a tag, e.g.
@@ -307,6 +307,15 @@ jobs:
       - run: uv run pytest
       - run: uv audit --locked --preview-features audit-command
       - run: uv build
+      - name: Tag matches Cargo.toml version
+        run: test "v$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')" = "$GITHUB_REF_NAME"
+      - run: cargo test
+      - name: Build release binary
+        run: |
+          cargo build --release
+          mkdir -p dist
+          cp "target/release/quiet-otter" "dist/quiet-otter-$(uname -m)-linux"
+          (cd dist && sha256sum -- * > SHA256SUMS)
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -474,7 +483,7 @@ postgres-data/
 3.14
 
 ### END
-### FILE AGENTS.md exec=0 bytes=517 encoding=utf-8
+### FILE AGENTS.md exec=0 bytes=576 encoding=utf-8
 # quiet-otter
 
 - `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
@@ -485,7 +494,7 @@ postgres-data/
 ```sh
 uv run ruff format && uv run ruff check && uv run pytest && uv audit --preview-features audit-command
 cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
-docker build -t quiet-otter .
+docker build -t quiet-otter . && docker compose up -d app   # data volume: appdata:/data
 ```
 
 ### END
@@ -507,13 +516,15 @@ license = "MIT"
 pedantic = { level = "warn", priority = -1 }
 
 ### END
-### FILE Dockerfile exec=0 bytes=246 encoding=utf-8
+### FILE Dockerfile exec=0 bytes=282 encoding=utf-8
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 RUN uv sync --locked --no-dev
+ENV APP_DATA=/data
+VOLUME ["/data"]
 USER 65534:65534
 CMD ["/app/.venv/bin/quiet-otter"]
 
@@ -542,7 +553,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ### END
-### FILE README.md exec=0 bytes=396 encoding=utf-8
+### FILE README.md exec=0 bytes=455 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -554,7 +565,7 @@ Run these before opening a PR. CI runs the same ones.
 ```sh
 uv run ruff format && uv run ruff check && uv run pytest && uv audit --preview-features audit-command
 cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
-docker build -t quiet-otter .
+docker build -t quiet-otter . && docker compose up -d app   # data volume: appdata:/data
 ```
 
 `main` is protected: open a PR; the `ci` check must pass before merging (squash only).
@@ -566,6 +577,18 @@ docker build -t quiet-otter .
 Please report vulnerabilities privately via
 **Security → Report a vulnerability** on this repository (GitHub private vulnerability reporting).
 Do not open public issues for security problems.
+
+### END
+### FILE compose.yaml exec=0 bytes=146 encoding=utf-8
+# Local development only. Credentials here are not secrets.
+services:
+  app:
+    build: .
+    volumes:
+      - appdata:/data
+
+volumes:
+  appdata:
 
 ### END
 ### FILE pyproject.toml exec=0 bytes=632 encoding=utf-8
