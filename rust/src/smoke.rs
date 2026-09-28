@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use crate::registry::Lang;
 
 pub type Cmd = Vec<String>;
+/// A unit's log lines and its error, if any.
+type UnitResult = (Vec<String>, Option<String>);
 
 /// Plugin subcommands shipped as separate, sometimes-missing binaries.
 const CARGO_PLUGIN_SUBCOMMANDS: &[&str] = &["fmt", "clippy"];
@@ -267,9 +269,9 @@ pub fn smoke_test(
 
     let stop = AtomicBool::new(false);
     let next = AtomicUsize::new(0);
-    let results: Vec<Mutex<Option<(Vec<String>, Option<String>)>>> =
+    let results: Vec<Mutex<Option<UnitResult>>> =
         units.iter().map(|_| Mutex::new(None)).collect();
-    let run_unit = |unit: &[Cmd]| -> (Vec<String>, Option<String>) {
+    let run_unit = |unit: &[Cmd]| -> UnitResult {
         let mut lines = Vec::new();
         for cmd in unit {
             if stop.load(Ordering::SeqCst) {

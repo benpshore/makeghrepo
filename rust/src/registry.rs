@@ -122,7 +122,7 @@ pub fn derived(langs: &[Lang], chosen: &[String]) -> Map<String, Value> {
     let mut npm_scripts = Map::new();
     let mut npm_dev = Map::new();
     for lang in langs {
-        if !chosen.iter().any(|c| *c == lang.id) {
+        if !chosen.contains(&lang.id) {
             continue;
         }
         if !lang.ci_job.is_empty() && !ci_jobs.contains(&lang.ci_job) {
@@ -187,7 +187,7 @@ pub fn flags(langs: &[Lang], chosen: &[String]) -> Map<String, Value> {
     let mut out = Map::new();
     let mut groups: Vec<String> = Vec::new();
     for lang in langs {
-        let on = chosen.iter().any(|c| *c == lang.id);
+        let on = chosen.contains(&lang.id);
         out.insert(lang.flag.clone(), Value::Bool(on));
         for g in &lang.groups {
             if !groups.contains(g) {
@@ -198,7 +198,7 @@ pub fn flags(langs: &[Lang], chosen: &[String]) -> Map<String, Value> {
     for g in groups {
         let on = langs
             .iter()
-            .any(|l| l.groups.contains(&g) && chosen.iter().any(|c| *c == l.id));
+            .any(|l| l.groups.contains(&g) && chosen.contains(&l.id));
         out.insert(g, Value::Bool(on));
     }
     out

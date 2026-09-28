@@ -398,7 +398,7 @@ pub fn configure_all(
     let results: Vec<Result<(), String>> = std::thread::scope(|s| {
         let handles: Vec<_> = fanout
             .iter()
-            .map(|(_, step)| s.spawn(move || step()))
+            .map(|(_, step)| s.spawn(step))
             .collect();
         handles
             .into_iter()

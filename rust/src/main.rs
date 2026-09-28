@@ -230,7 +230,7 @@ fn main() -> ExitCode {
         Err(e) => return fail(&e),
     };
 
-    let mut private = cli.private;
+    let private: bool;
     let mut want_private = cli.private;
     if resume {
         if !dest.join(".git").is_dir() {

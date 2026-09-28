@@ -177,8 +177,6 @@ jobs:
         with:
           name: cargo-lock
           path: rust/Cargo.lock
-      - name: Clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --locked
       - name: Build
@@ -202,6 +200,8 @@ jobs:
           ./target/release/makeghrepo quiet-otter rust docker --render "$RUNNER_TEMP/dry" >/dev/null
           test -f "$RUNNER_TEMP/dry/Cargo.toml" && test -f "$RUNNER_TEMP/dry/Dockerfile"
           ./target/release/makeghrepo --version
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
       # Last, so one cloud round reports compile, test and parity results together
       # with the format patch (nothing is formatted on a dev host).
       - name: Format
