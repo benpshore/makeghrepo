@@ -13,6 +13,9 @@ on:
 concurrency:
   group: auto-release
   cancel-in-progress: false
+  # Keep up to 100 pending releases instead of replacing the previous pending
+  # run. FIFO is by queue entry, not commit order; overflow runs are canceled.
+  queue: max
 
 permissions:
   contents: read

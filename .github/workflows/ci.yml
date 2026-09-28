@@ -10,10 +10,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # A newer push to a PR branch supersedes its run. Pushes to main don't: every
-  # merge commit must get its own complete ci result (auto-release waits for it).
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  # Only PR runs share a group. Every push/dispatch gets its own group so a
+  # newer merge cannot replace a pending ci run that auto-release needs.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
