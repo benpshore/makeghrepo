@@ -8,17 +8,17 @@ import pytest
 from makeghrepo import registry, scaffold
 
 # Frozen copies of the hand-written tables the registry replaced (v0.11.0), updated in F3
-# for npm --ignore-scripts and pinned npx/uvx tool versions.
+# for npm --ignore-scripts and pinned npx/uvx tool versions, and extended per new token (go: E3-1).
 _UV_AUDIT = ("uv", "audit", "--locked", "--preview-features", "audit-command")
 _CMAKE = (("cmake", "-S", ".", "-B", "build"), ("cmake", "--build", "build"),
           ("ctest", "--test-dir", "build", "--output-on-failure"))  # fmt: skip
 BEFORE = {
     "LANGUAGES": ("python", "rust", "swift", "js", "css", "c", "cpp", "objc", "objcpp",
-                  "api", "postgres", "sql", "docker", "shell"),
+                  "api", "postgres", "sql", "docker", "shell", "go"),
     "ALIASES": {"py": "python", "rs": "rust", "javascript": "js", "node": "js",
                 "c++": "cpp", "cxx": "cpp", "objective-c": "objc", "objc++": "objcpp",
                 "rest": "api", "openapi": "api", "pg": "postgres", "postgresql": "postgres",
-                "sh": "shell", "bash": "shell"},
+                "sh": "shell", "bash": "shell", "golang": "go"},
     "CHECKS": {
         "python": (("uv", "lock"), ("uv", "sync", "--locked"),
                    ("uv", "run", "ruff", "format", "--check"), ("uv", "run", "ruff", "check"),
@@ -36,6 +36,7 @@ BEFORE = {
         "sql": (("uvx", "sqlfluff==4.3.0", "lint", "sql"),),
         "docker": (("hadolint", "Dockerfile"),),
         "shell": (("shellcheck", "scripts/hello.sh"),),
+        "go": (("go", "vet", "./..."), ("go", "test", "./..."), ("go", "build", "./...")),
     },
     "REQUIRED_TOOLS": {"python": "uv", "js": "npm", "css": "npm"},
     "SETUP_LEN": {"python": 2, "js": 1, "css": 1},
@@ -49,7 +50,7 @@ def test_derived_tables_equal_the_originals(table):
 
 def test_language_order_is_stable():
     assert list(scaffold.LANGUAGES) == [lang.id for lang in scaffold.LANGS.values()]
-    assert [lang.order for lang in scaffold.LANGS.values()] == list(range(1, 15))
+    assert [lang.order for lang in scaffold.LANGS.values()] == list(range(1, 16))
 
 
 def _copy_langs(tmp_path: Path) -> Path:
@@ -129,3 +130,15 @@ def test_derived_orders_shared_entries_once():
 def test_packaged_langs_dir_has_only_registry_files():
     names = [e.name for e in (files("makeghrepo") / "langs").iterdir()]
     assert sorted(names) == sorted(f"{lang}.toml" for lang in scaffold.LANGUAGES)
+
+
+def test_every_registry_flag_and_group_is_a_copier_flag():
+    """copier.yml still declares each derived boolean; a new token must add its line there
+    (the Rust port derives the same flags from the registry, so both must agree)."""
+    copier_yml = (files("makeghrepo") / "templates" / "project" / "copier.yml").read_text()
+    declared = {
+        line.split(":", 1)[0] for line in copier_yml.splitlines() if ": {type: bool" in line
+    }
+    wanted = {lang.flag for lang in scaffold.LANGS.values()}
+    wanted |= {group for lang in scaffold.LANGS.values() for group in lang.groups}
+    assert wanted <= declared, sorted(wanted - declared)
