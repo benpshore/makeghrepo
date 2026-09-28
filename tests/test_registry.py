@@ -136,7 +136,9 @@ def test_every_registry_flag_and_group_is_a_copier_flag():
     """copier.yml still declares each derived boolean; a new token must add its line there
     (the Rust port derives the same flags from the registry, so both must agree)."""
     copier_yml = (files("makeghrepo") / "templates" / "project" / "copier.yml").read_text()
-    declared = {line.split(":", 1)[0] for line in copier_yml.splitlines() if ": {type: bool" in line}
+    declared = {
+        line.split(":", 1)[0] for line in copier_yml.splitlines() if ": {type: bool" in line
+    }
     wanted = {lang.flag for lang in scaffold.LANGS.values()}
     wanted |= {group for lang in scaffold.LANGS.values() for group in lang.groups}
     assert wanted <= declared, sorted(wanted - declared)
