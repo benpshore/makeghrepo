@@ -1,7 +1,9 @@
 name: Release
 
-# Publish: bump the version, merge the PR, then push a tag, e.g.
-#   git tag v0.1.1 && git push --tags
+# Publish: push a tag, e.g. `git tag v0.1.1 && git push --tags`.
+[% if py and not private %]
+# Every merge to main is also released automatically by auto-release.yml.
+[% endif %]
 on:
   push:
     tags: ["v*"]
@@ -18,11 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 [% if py %]
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - name: Tag matches project version
-        run: test "v$(uv version --short)" = "$GITHUB_REF_NAME"
+      - name: Tag matches computed project version
+        run: test "$(uvx uv-dynamic-versioning)" = "${GITHUB_REF_NAME#v}"
       - run: uv sync --locked
       - run: uv run pytest
       - run: uv audit --locked --preview-features audit-command

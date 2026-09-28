@@ -217,11 +217,10 @@ jobs:
           category: "/language:${{ matrix.language }}"
 
 ### END
-### FILE .github/workflows/release.yml exec=0 bytes=599 encoding=utf-8
+### FILE .github/workflows/release.yml exec=0 bytes=586 encoding=utf-8
 name: Release
 
-# Publish: bump the version, merge the PR, then push a tag, e.g.
-#   git tag v0.1.1 && git push --tags
+# Publish: push a tag, e.g. `git tag v0.1.1 && git push --tags`.
 on:
   push:
     tags: ["v*"]
@@ -238,6 +237,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Publish GitHub release
         env:
