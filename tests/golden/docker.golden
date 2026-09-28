@@ -430,11 +430,11 @@ docker build -t quiet-otter .
 @AGENTS.md
 
 ### END
-### FILE Dockerfile exec=0 bytes=88 encoding=utf-8
+### FILE Dockerfile exec=0 bytes=93 encoding=utf-8
 FROM alpine:3
 WORKDIR /app
 COPY . .
-USER nobody
+USER 65534:65534
 CMD ["echo", "Hello from quiet-otter!"]
 
 ### END
