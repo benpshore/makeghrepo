@@ -83,4 +83,8 @@ uv run pytest              # includes slow end-to-end tests for python and rust 
 uv run pytest -m "not slow"
 ```
 
+### Golden snapshots
+
 To add a language: add its files to `templates/project/template/` behind a `[% if flag %]` name, a flag in `copier.yml`, its jobs in `ci.yml.jinja` and `codeql`/`dependabot`, its line in `_checks.jinja`, and its entries in `LANGUAGES` and `CHECKS` in `scaffold.py`.
+
+TODO(opus): describe how to regenerate golden snapshots when templates change (issue #81). The test suite should have deterministic output; `scripts/regen-golden` regenerates the snapshots under `tests/golden/`.

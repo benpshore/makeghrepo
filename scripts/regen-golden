@@ -1,0 +1,16 @@
+#!/bin/bash
+# Regenerate golden snapshots.
+# TODO(opus): implement this skeleton. The real implementation should:
+# - Run pytest in "update" mode to regenerate tests/golden/<id>/ directories
+# - This is a thin wrapper around the test suite, keeping the combo list in
+#   tests/test_golden.py as the single source of truth.
+# Suggestion: add a pytest plugin or conftest.py with an --update-golden flag,
+# or use an environment variable like GOLDEN_UPDATE=1 to trigger update mode.
+
+cat >&2 << 'EOF'
+TODO(opus): Implement scripts/regen-golden for issue #81.
+The script should regenerate tests/golden/* snapshots by running pytest in update mode.
+Keep the combo list in tests/test_golden.py as the source of truth.
+EOF
+
+exit 1
