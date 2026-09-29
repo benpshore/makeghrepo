@@ -206,7 +206,13 @@ pub fn smoke_test(
     let env = check_env();
     // One CMake project serves c/cpp/objc/objcpp, so an unrunnable objc blocks all of it.
     let mut blocked: Vec<(Cmd, String)> = Vec::new();
-    for (id, reason) in unavailable(langs, languages, &env) {
+    // Probes (notably `docker info`) are checks too. Required lockfile
+    // commands still run when checks are skipped; daemon probes need not.
+    for (id, reason) in if skip {
+        Vec::new()
+    } else {
+        unavailable(langs, languages, &env)
+    } {
         let lang = langs.iter().find(|l| l.id == id).expect("known");
         for cmd in &lang.checks {
             blocked.push((cmd.clone(), format!("{id} {reason}")));

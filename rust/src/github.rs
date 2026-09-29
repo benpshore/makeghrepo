@@ -277,8 +277,8 @@ pub fn settings_body(private: bool) -> Value {
 type Step = Box<dyn Fn() -> Result<(), String> + Send + Sync>;
 
 /// Apply every setting; return the names of failed steps (the rest still run).
-/// Three phases: repo settings (serial), every independent step including the
-/// push (concurrent), then the ruleset, which needs the pushed `main`.
+/// Repo settings settle before the push. Independent steps run concurrently;
+/// the ruleset starts after the push, without waiting for Project setup.
 pub fn configure_all(
     repo: &str,
     private: bool,
@@ -402,26 +402,52 @@ pub fn configure_all(
         None => {}
     }
 
-    let results: Vec<Result<(), String>> = std::thread::scope(|s| {
-        let handles: Vec<_> = fanout.iter().map(|(_, step)| s.spawn(step)).collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().unwrap_or_else(|_| Err("step panicked".into())))
-            .collect()
-    });
-    let mut push_failed = false;
-    for (i, ((name, _), result)) in fanout.iter().zip(results).enumerate() {
-        if Some(i) == push_index && result.is_err() {
-            push_failed = true;
+    let (results, ruleset_result) = std::thread::scope(|s| {
+        let mut handles: Vec<_> = (0..fanout.len()).map(|_| None).collect();
+        // Start the push first, so slow independent operations cannot delay it.
+        if let Some(i) = push_index {
+            handles[i] = Some(s.spawn(&*fanout[i].1));
         }
+        for (i, (_, step)) in fanout.iter().enumerate() {
+            if Some(i) != push_index {
+                handles[i] = Some(s.spawn(&**step));
+            }
+        }
+        let mut push_result = push_index.map(|i| {
+            handles[i]
+                .take()
+                .expect("push handle")
+                .join()
+                .unwrap_or_else(|_| Err("step panicked".into()))
+        });
+        let ruleset_result =
+            if !private && !push_blocked && push_result.as_ref().is_none_or(Result::is_ok) {
+                Some(configure_ruleset(repo))
+            } else {
+                None
+            };
+        let results: Vec<Result<(), String>> = handles
+            .into_iter()
+            .enumerate()
+            .map(|(i, handle)| {
+                if Some(i) == push_index {
+                    push_result.take().expect("push result")
+                } else {
+                    handle
+                        .expect("step handle")
+                        .join()
+                        .unwrap_or_else(|_| Err("step panicked".into()))
+                }
+            })
+            .collect();
+        (results, ruleset_result)
+    });
+    for ((name, _), result) in fanout.iter().zip(results) {
         report(name, result);
     }
 
-    if !private && !push_blocked && !push_failed {
-        report(
-            &format!("ruleset '{RULESET_NAME}'"),
-            configure_ruleset(repo),
-        );
+    if let Some(result) = ruleset_result {
+        report(&format!("ruleset '{RULESET_NAME}'"), result);
     }
     failed.into_inner().expect("lock")
 }

@@ -141,7 +141,9 @@ def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> 
     env = check_env()
     # One CMake project serves c/cpp/objc/objcpp, so an unrunnable objc blocks all of it.
     blocked: dict[tuple[str, ...], str] = {}
-    for lang, reason in unavailable(languages, env).items():
+    # Probes (notably `docker info`) are checks too. When checks are skipped,
+    # only required lockfile commands still run; no daemon probe is needed.
+    for lang, reason in ({} if skip else unavailable(languages, env)).items():
         for cmd in CHECKS.get(lang, ()):
             blocked[cmd] = f"{lang} {reason}"
 

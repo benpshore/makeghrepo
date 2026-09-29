@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Offline bootstrap timing/ordering probe for the release Rust binary.
+
+Fake gh/git/docker executables never contact GitHub or push anything. A slow
+Project lookup and ruleset call make accidental serialization visible in CI.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+FAKE = '''#!{python}
+import json, os, sys, time
+from pathlib import Path
+
+name = Path(sys.argv[0]).name
+args = sys.argv[1:]
+
+def log(event):
+    with open(os.environ['PROBE_LOG'], 'a') as out:
+        out.write(json.dumps({{'event': event, 'time': time.monotonic()}}) + '\\n')
+
+if name == 'docker':
+    log('docker-probe')
+    time.sleep(0.2)
+    sys.exit(1)
+if name == 'git':
+    if 'init' in args:
+        (Path(args[args.index('-C') + 1]) / '.git').mkdir(exist_ok=True)
+    if 'config' in args:
+        print('Probe User')
+    if 'push' in args:
+        log('push')
+    sys.exit(0)
+if args[:2] == ['api', 'user']:
+    print('probe-user')
+elif args[:2] == ['repo', 'view']:
+    print('Could not resolve to a Repository', file=sys.stderr)
+    sys.exit(1)
+elif args[:2] == ['api', 'graphql']:
+    log('project-start')
+    time.sleep(0.4)
+    log('project-done')
+    print(json.dumps({{'data': {{'user': {{'projectsV2': {{'nodes': [{{'number': 1, 'title': 'probe-case'}}]}}}}}}}}))
+elif args[:1] == ['api']:
+    if any('rulesets' in arg for arg in args):
+        log('ruleset')
+        time.sleep(0.2)
+    print('[]')
+'''
+
+
+def probe(runner, root, languages, baseline=False):
+    with tempfile.TemporaryDirectory(prefix="makeghrepo-perf-") as temporary:
+        temp = Path(temporary)
+        fake_dir = temp / "bin"
+        fake_dir.mkdir()
+        log = temp / "calls.jsonl"
+        for name in ("gh", "git", "docker"):
+            path = fake_dir / name
+            path.write_text(FAKE.format(python=sys.executable))
+            path.chmod(0o755)
+        env = os.environ.copy()
+        env.update(
+            PATH=f"{fake_dir}:{env['PATH']}",
+            PROBE_LOG=str(log),
+            MAKEGHREPO_DIR=str(temp / "repos"),
+            MAKEGHREPO_SKIP_LOCAL_CHECKS="1",
+        )
+        start = time.monotonic()
+        result = subprocess.run(
+            [*runner, "probe-case", *languages], cwd=root, env=env,
+            capture_output=True, text=True, timeout=20,
+        )
+        elapsed = time.monotonic() - start
+        if result.returncode:
+            raise RuntimeError(result.stdout + result.stderr)
+        events = [json.loads(line) for line in log.read_text().splitlines()]
+        def when(event):
+            return next(item["time"] for item in events if item["event"] == event)
+        overlaps = when("push") < when("ruleset") < when("project-done")
+        probed = any(item["event"] == "docker-probe" for item in events)
+        print(f"{'+'.join(languages) or 'base'}: {elapsed:.3f}s offline; "
+              f"ruleset overlaps Project lookup: {overlaps}; daemon probed: {probed}")
+        if not baseline:
+            assert overlaps and not probed, events
+
+
+if __name__ == "__main__":
+    baseline = len(sys.argv) > 1 and sys.argv[1] == "--baseline"
+    runner = sys.argv[2:] if baseline else sys.argv[1:]
+    if not runner:
+        raise SystemExit("usage: perf-probe [--baseline] path/to/binary")
+    if "/" in runner[0]:
+        runner[0] = str(Path(runner[0]).resolve())
+    for langs in ((), ("docker",)):
+        probe(runner, Path(__file__).resolve().parents[1], langs, baseline)

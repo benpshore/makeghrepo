@@ -188,6 +188,16 @@ def test_skip_local_checks_still_makes_lockfiles(tmp_path, monkeypatch):
     assert any("MAKEGHREPO_SKIP_LOCAL_CHECKS" in line for line in lines)
 
 
+def test_skip_local_checks_does_not_probe_docker(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAKEGHREPO_SKIP_LOCAL_CHECKS", "1")
+    monkeypatch.setattr(scaffold, "_probe_ok", lambda *args: pytest.fail("daemon was probed"))
+    calls = _fake_run(monkeypatch)
+    lines = []
+    scaffold.smoke_test(tmp_path, ["docker"], lines.append)
+    assert calls == []
+    assert any("MAKEGHREPO_SKIP_LOCAL_CHECKS" in line for line in lines)
+
+
 @pytest.mark.slow
 def test_python_project_passes_its_own_checks(tmp_path):
     """End-to-end: uv lock/sync, ruff, pytest, uv audit and uv build inside a new project."""

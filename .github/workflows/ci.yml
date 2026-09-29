@@ -189,6 +189,8 @@ jobs:
         run: cargo test --locked
       - name: Build
         run: cargo build --release --locked
+      - name: Offline bootstrap latency and ordering probe
+        run: python3 ../scripts/perf-probe ./target/release/makeghrepo
       - name: Parity with the Python renderer (every golden snapshot)
         run: |
           set -euo pipefail
