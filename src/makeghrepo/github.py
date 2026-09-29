@@ -64,12 +64,13 @@ def create_repo(repo: str, source: Path, description: str, private: bool) -> Non
 
 
 def ruleset_body() -> dict[str, Any]:
-    """PRs only, CI must pass, no force-push/delete. Zero approvals: you can't
+    """PRs only, up-to-date CI must pass, no force-push/delete. Zero approvals: you can't
     approve your own PR on a solo repo."""
     return {
         "name": RULESET_NAME,
         "target": "branch",
         "enforcement": "active",
+        "bypass_actors": [],
         "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
         "rules": [
             {"type": "deletion"},
@@ -89,7 +90,9 @@ def ruleset_body() -> dict[str, Any]:
             {
                 "type": "required_status_checks",
                 "parameters": {
-                    "strict_required_status_checks_policy": False,
+                    # Retain the strict live gate on configure reruns (#126).
+                    "strict_required_status_checks_policy": True,
+                    "do_not_enforce_on_create": False,
                     "required_status_checks": [
                         {"context": REQUIRED_CHECK, "integration_id": GITHUB_ACTIONS_APP_ID}
                     ],
@@ -161,6 +164,7 @@ def disable_actions(repo: str) -> None:
 def settings_body(private: bool) -> dict[str, Any]:
     body: dict[str, Any] = {
         "has_wiki": False,
+        "allow_squash_merge": True,
         "allow_merge_commit": False,
         "allow_rebase_merge": False,
         # Requested either way, but confirmed live (GET after PATCH) that this
