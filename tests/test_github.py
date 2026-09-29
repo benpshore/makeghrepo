@@ -1,9 +1,54 @@
 import json
 import time
+from pathlib import Path
 
 import pytest
 
 from makeghrepo import github
+
+
+@pytest.fixture
+def github_defaults():
+    # The Rust tests read this same policy contract; it is not a rendered snapshot.
+    return json.loads((Path(__file__).parent / "fixtures/github_defaults.json").read_text())
+
+
+def test_ruleset_matches_shared_policy(github_defaults):
+    assert github.ruleset_body() == github_defaults["ruleset"]
+
+
+@pytest.mark.parametrize("private", [False, True])
+def test_settings_match_shared_policy(private, github_defaults):
+    expected = github_defaults["settings"].copy()
+    if not private:
+        expected["security_and_analysis"] = github_defaults["public_security_and_analysis"]
+    assert github.settings_body(private) == expected
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_configure_ruleset_retains_strict_policy_on_rerun(calls, github_defaults, existing):
+    policy = github_defaults["ruleset"]
+    # Both a new repository and an already-strict ruleset must converge to the
+    # same policy, including on a second configure call. Never touch another rule.
+    listing = [{"id": 7, "name": "another-rule"}]
+    if existing:
+        listing.append({"id": 42, **policy})
+    calls.responses["GET"] = json.dumps(listing)
+    github.configure_ruleset("me/r")
+    method = "PUT" if existing else "POST"
+    path = "repos/me/r/rulesets/42" if existing else "repos/me/r/rulesets"
+    assert calls == [
+        (("api", "-X", "GET", "repos/me/r/rulesets?includes_parents=false"), None),
+        (("api", "-X", method, path), policy),
+    ]
+
+    calls.clear()
+    calls.responses["GET"] = json.dumps([*listing[:1], {"id": 42, **policy}])
+    github.configure_ruleset("me/r")
+    assert calls == [
+        (("api", "-X", "GET", "repos/me/r/rulesets?includes_parents=false"), None),
+        (("api", "-X", "PUT", "repos/me/r/rulesets/42"), policy),
+    ]
 
 
 class Calls(list):

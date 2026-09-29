@@ -102,13 +102,14 @@ pub fn create_repo(
     .map(|_| ())
 }
 
-/// PRs only, CI must pass, no force-push/delete. Zero approvals: you can't
+/// PRs only, up-to-date CI must pass, no force-push/delete. Zero approvals: you can't
 /// approve your own PR on a solo repo.
 pub fn ruleset_body() -> Value {
     json!({
         "name": RULESET_NAME,
         "target": "branch",
         "enforcement": "active",
+        "bypass_actors": [],
         "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
         "rules": [
             {"type": "deletion"},
@@ -123,7 +124,9 @@ pub fn ruleset_body() -> Value {
                 "allowed_merge_methods": ["squash"],
             }},
             {"type": "required_status_checks", "parameters": {
-                "strict_required_status_checks_policy": false,
+                // Retain the strict live gate on configure reruns (#126).
+                "strict_required_status_checks_policy": true,
+                "do_not_enforce_on_create": false,
                 "required_status_checks": [
                     {"context": REQUIRED_CHECK, "integration_id": GITHUB_ACTIONS_APP_ID}
                 ],
@@ -133,6 +136,13 @@ pub fn ruleset_body() -> Value {
 }
 
 pub fn configure_ruleset(repo: &str) -> Result<(), String> {
+    configure_ruleset_with(repo, api)
+}
+
+fn configure_ruleset_with(
+    repo: &str,
+    mut api: impl FnMut(&str, &str, Option<&Value>) -> Result<Value, String>,
+) -> Result<(), String> {
     let existing = api(
         "GET",
         &format!("repos/{repo}/rulesets?includes_parents=false"),
@@ -257,6 +267,7 @@ pub fn disable_actions(repo: &str) -> Result<(), String> {
 pub fn settings_body(private: bool) -> Value {
     let mut body = json!({
         "has_wiki": false,
+        "allow_squash_merge": true,
         "allow_merge_commit": false,
         "allow_rebase_merge": false,
         "allow_auto_merge": true,
@@ -424,4 +435,79 @@ pub fn configure_all(
         );
     }
     failed.into_inner().expect("lock")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn defaults() -> Value {
+        // Shared with tests/test_github.py: both implementations must obey it.
+        serde_json::from_str(include_str!("../../tests/fixtures/github_defaults.json"))
+            .expect("valid policy fixture")
+    }
+
+    #[test]
+    fn ruleset_matches_shared_policy() {
+        assert_eq!(ruleset_body(), defaults()["ruleset"]);
+    }
+
+    #[test]
+    fn settings_match_shared_policy() {
+        let policy = defaults();
+        for private in [false, true] {
+            let mut expected = policy["settings"].clone();
+            if !private {
+                expected["security_and_analysis"] = policy["public_security_and_analysis"].clone();
+            }
+            assert_eq!(settings_body(private), expected);
+        }
+    }
+
+    #[test]
+    fn configure_ruleset_retains_strict_policy_on_rerun() {
+        let policy = defaults()["ruleset"].clone();
+        for existing in [false, true] {
+            let mut listing = json!([{"id": 7, "name": "another-rule"}]);
+            let mut saved = policy.clone();
+            saved["id"] = json!(42);
+            if existing {
+                listing.as_array_mut().unwrap().push(saved.clone());
+            }
+            for rerun in [false, true] {
+                let mut calls = Vec::new();
+                configure_ruleset_with("me/r", |method, path, body| {
+                    calls.push((method.to_string(), path.to_string(), body.cloned()));
+                    if method == "GET" {
+                        Ok(listing.clone())
+                    } else {
+                        Ok(Value::Null)
+                    }
+                })
+                .unwrap();
+                let update = existing || rerun;
+                assert_eq!(
+                    calls,
+                    vec![
+                        (
+                            "GET".to_string(),
+                            "repos/me/r/rulesets?includes_parents=false".to_string(),
+                            None,
+                        ),
+                        (
+                            if update { "PUT" } else { "POST" }.to_string(),
+                            if update {
+                                "repos/me/r/rulesets/42"
+                            } else {
+                                "repos/me/r/rulesets"
+                            }
+                            .to_string(),
+                            Some(policy.clone()),
+                        ),
+                    ]
+                );
+                listing = json!([{"id": 7, "name": "another-rule"}, saved]);
+            }
+        }
+    }
 }

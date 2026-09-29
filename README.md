@@ -49,11 +49,11 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). If a check fails, nothing is published.
 3. Runs `git init -b main`, `git add --all`, `git commit -m setup`.
 4. Creates the GitHub repo empty, then configures it:
-   - squash-merge only, auto-merge on, delete branches after merge, wiki off
+   - squash-merge only (explicitly enabled; merge commits and rebase merges disabled), auto-merge and branch updates on, delete branches after merge, wiki off
    - Dependabot alerts and security fixes
    - public repos: secret scanning, push protection, private vulnerability reporting
    - **pushes `main`**, after public push protection is on or private Actions are disabled
-   - public repos: a `protect-main` ruleset. PRs are required (0 approvals, because you can't approve your own PR), the `ci` check from GitHub Actions must pass, history stays linear, and force-push and deletion are blocked.
+   - public repos: a `protect-main` ruleset. PRs are required (0 approvals, because you can't approve your own PR), the branch must be up to date and the `ci` check from GitHub Actions must pass, history stays linear, and force-push and deletion are blocked. Only squash merges are allowed, with no bypass actors. Configuration reruns retain this strict status-check policy.
    - labels `epic` and `task`, and a Project board linked to the repo
    - notifications set to **Ignore**, and no CODEOWNERS file, so nothing pings you
 
