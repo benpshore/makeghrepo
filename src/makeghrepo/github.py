@@ -192,10 +192,9 @@ def configure_all(
 ) -> list[str]:
     """Apply every setting; return the names of failed steps (the rest still run).
 
-    Three phases, so independent configuration doesn't wait on itself: (1)
-    repo settings, serial; (2) every independent step — including the push
-    itself — run concurrently; (3) the ruleset, which needs the pushed `main`
-    to protect, so it only runs once the push (if any) has actually succeeded.
+    Repo settings settle before the push. Independent steps then run concurrently;
+    the ruleset starts as soon as the push succeeds, without waiting for Project
+    board lookup or other unrelated steps to finish.
 
     Publishing is gated on the relevant protection step: public repo settings
     enable secret-scanning push protection; private repos must have Actions
@@ -267,17 +266,28 @@ def configure_all(
     elif push:
         fanout.append(("push main", push))
 
+    # Submit the push first so a slow Project lookup cannot occupy its slot.
+    # Reporting remains in declared order after every in-flight step settles.
     with ThreadPoolExecutor(max_workers=min(4, len(fanout))) as pool:
-        errors = list(pool.map(lambda item: run(item[1]), fanout))  # declared order, not completion
+        futures = {}
+        push_index = None
+        if push and not push_blocked:
+            push_index = next(i for i, (_, fn) in enumerate(fanout) if fn is push)
+            futures[push_index] = pool.submit(run, push)
+        for i, (_, fn) in enumerate(fanout):
+            if i not in futures:
+                futures[i] = pool.submit(run, fn)
+        push_failed = push_index is not None and futures[push_index].result() is not None
+        ruleset_err = (
+            run(lambda: configure_ruleset(repo))
+            if not private and not push_blocked and not push_failed
+            else None
+        )
+        errors = [futures[i].result() for i in range(len(fanout))]
     for (name, _), err in zip(fanout, errors, strict=True):
         report(name, err)
 
-    # Identity, not the step's display name, so renaming a step (as this diff
-    # already does for the dependabot pair) can't silently break this check.
-    push_failed = any(
-        fn is push and err is not None for (_, fn), err in zip(fanout, errors, strict=True)
-    )
     if not private and not push_blocked and not push_failed:
-        report(f"ruleset '{RULESET_NAME}'", run(lambda: configure_ruleset(repo)))
+        report(f"ruleset '{RULESET_NAME}'", ruleset_err)
 
     return failed
