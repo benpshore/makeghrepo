@@ -428,7 +428,7 @@ pub fn configure_all(
         } else {
             None
         };
-        let results = handles
+        let results: Vec<Result<(), String>> = handles
             .into_iter()
             .enumerate()
             .map(|(i, handle)| {
@@ -453,3 +453,4 @@ pub fn configure_all(
     }
     failed.into_inner().expect("lock")
 }
+
