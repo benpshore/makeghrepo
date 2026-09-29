@@ -95,5 +95,7 @@ if __name__ == "__main__":
     runner = sys.argv[2:] if baseline else sys.argv[1:]
     if not runner:
         raise SystemExit("usage: perf-probe [--baseline] path/to/binary")
+    if "/" in runner[0]:
+        runner[0] = str(Path(runner[0]).resolve())
     for langs in ((), ("docker",)):
         probe(runner, Path(__file__).resolve().parents[1], langs, baseline)
