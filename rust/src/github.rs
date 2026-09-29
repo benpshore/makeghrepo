@@ -420,14 +420,12 @@ pub fn configure_all(
                 .join()
                 .unwrap_or_else(|_| Err("step panicked".into()))
         });
-        let ruleset_result = if !private
-            && !push_blocked
-            && push_result.as_ref().is_none_or(Result::is_ok)
-        {
-            Some(configure_ruleset(repo))
-        } else {
-            None
-        };
+        let ruleset_result =
+            if !private && !push_blocked && push_result.as_ref().is_none_or(Result::is_ok) {
+                Some(configure_ruleset(repo))
+            } else {
+                None
+            };
         let results: Vec<Result<(), String>> = handles
             .into_iter()
             .enumerate()
