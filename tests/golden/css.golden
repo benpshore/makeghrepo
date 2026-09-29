@@ -216,7 +216,7 @@ jobs:
           category: "/language:${{ matrix.language }}"
 
 ### END
-### FILE .github/workflows/release.yml exec=0 bytes=909 encoding=utf-8
+### FILE .github/workflows/release.yml exec=0 bytes=1387 encoding=utf-8
 name: Release
 
 # Publish: push a tag, e.g. `git tag v0.1.1 && git push --tags`.
@@ -228,11 +228,11 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -247,9 +247,25 @@ jobs:
           mkdir -p dist
           npm pack --pack-destination dist
           (cd dist && sha256sum -- * > SHA256SUMS)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dist
+          path: dist/
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: release-dist
+          path: dist/
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*
 
 ### END
