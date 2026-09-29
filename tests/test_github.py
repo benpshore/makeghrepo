@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -156,15 +157,14 @@ def _paths(calls):
 
 
 def test_public_settles_settings_before_fanout_before_ruleset(calls):
-    """repo settings (push protection) precedes every independent step, which all
-    precede the ruleset — but the independent steps run concurrently, so their
-    order *relative to each other* isn't (and shouldn't be) asserted here."""
+    """Push protection precedes the push and ruleset. Other steps are independent."""
     calls.responses.update({"GET": "[]", "graphql": _graphql_projects({"number": 1, "title": "r"})})
     failed = github.configure_all("me/r", private=False, push=lambda: None, log=lambda _: None)
     assert failed == []
     paths = _paths(calls)
     settings_idx = paths.index("repos/me/r")
     ruleset_idx = paths.index("repos/me/r/rulesets?includes_parents=false")
+    assert settings_idx < ruleset_idx
     fanout_paths = {
         "repos/me/r/vulnerability-alerts",
         "repos/me/r/automated-security-fixes",
@@ -173,11 +173,52 @@ def test_public_settles_settings_before_fanout_before_ruleset(calls):
     }
     fanout_indices = [i for i, p in enumerate(paths) if p in fanout_paths]
     assert len(fanout_indices) == len(fanout_paths)  # sanity: all of them actually ran
-    assert all(settings_idx < i < ruleset_idx for i in fanout_indices)
+    assert all(settings_idx < i for i in fanout_indices)
     patch = next(b for a, b in calls if a[2] == "PATCH")
     assert "secret_scanning_push_protection" in patch["security_and_analysis"]
     mute = next(b for a, b in calls if a[3].endswith("/subscription"))
     assert mute == {"subscribed": False, "ignored": True}
+
+
+def test_ruleset_does_not_wait_for_slow_project(calls, monkeypatch):
+    project_started = threading.Event()
+    project_finished = threading.Event()
+    ruleset_started = threading.Event()
+
+    def slow_project(_):
+        project_started.set()
+        ruleset_started.wait(0.5)
+        project_finished.set()
+
+    def check_ruleset(_):
+        assert project_started.wait(0.5)
+        assert not project_finished.is_set()
+        ruleset_started.set()
+
+    monkeypatch.setattr(github, "configure_project", slow_project)
+    monkeypatch.setattr(github, "configure_ruleset", check_ruleset)
+    failed = github.configure_all("me/r", private=False, push=lambda: None, log=lambda _: None)
+    assert failed == []
+    assert project_finished.is_set()
+
+
+def test_push_failure_skips_ruleset_even_with_slow_project(calls, monkeypatch):
+    project_started = threading.Event()
+
+    def slow_project(_):
+        project_started.set()
+        time.sleep(0.1)
+
+    monkeypatch.setattr(github, "configure_project", slow_project)
+    failed = github.configure_all(
+        "me/r",
+        private=False,
+        push=lambda: (_ for _ in ()).throw(RuntimeError("rejected")),
+        log=lambda _: None,
+    )
+    assert failed == ["push main"]
+    assert project_started.is_set()
+    assert not any("rulesets" in path for path in _paths(calls))
 
 
 def test_private_skips_paid_features(calls):
