@@ -56,13 +56,13 @@ def test_auto_release_keeps_exact_sha_checkout_and_ci_gate(workflows):
     if not path.exists():
         return
     release = yaml.safe_load(path.read_text())
-    steps = release["jobs"]["release"]["steps"]
+    steps = release["jobs"]["validate"]["steps"]
     wait_index, wait = next(
         (i, step)
         for i, step in enumerate(steps)
         if step.get("name") == "Wait for this commit's ci check"
     )
-    env = release["jobs"]["release"].get("env", {}) | wait.get("env", {})
+    env = release["jobs"]["validate"].get("env", {}) | wait.get("env", {})
     assert env["SHA"] == "${{ github.sha }}"
     assert "commits/$SHA/check-runs?check_name=ci" in wait["run"]
     assert '.app.slug == "github-actions"' in wait["run"]
@@ -72,3 +72,28 @@ def test_auto_release_keeps_exact_sha_checkout_and_ci_gate(workflows):
             assert i > wait_index
             assert step["with"]["ref"] == "${{ github.sha }}"
             assert step["with"]["fetch-depth"] == 0
+
+
+def test_auto_release_isolates_project_code_from_write_token(workflows):
+    path = workflows / "auto-release.yml"
+    if not path.exists():
+        return
+    jobs = yaml.safe_load(path.read_text())["jobs"]
+    validation = jobs.get("validate")
+    assert validation is not None
+    assert validation["permissions"]["contents"] == "read"
+    assert any("uv run pytest" in step.get("run", "") for step in validation["steps"])
+    assert any("uv build" in step.get("run", "") for step in validation["steps"])
+    for step in validation["steps"]:
+        if step.get("uses", "").startswith("actions/checkout@"):
+            assert step["with"]["persist-credentials"] is False
+
+    privileged = [
+        job for job in jobs.values() if job.get("permissions", {}).get("contents") == "write"
+    ]
+    assert privileged
+    for job in privileged:
+        commands = "\n".join(step.get("run", "") for step in job["steps"])
+        assert "uv sync" not in commands
+        assert "pytest" not in commands
+        assert "uv build" not in commands
