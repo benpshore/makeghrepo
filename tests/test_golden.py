@@ -74,5 +74,6 @@ def test_serialize_refuses_symlinks(tmp_path):
 
 
 def test_no_stale_golden_files():
-    on_disk = {p.stem for p in gs.GOLDEN_DIR.glob("*.golden")}
-    assert on_disk == set(gs.COMBOS)
+    entries = list(gs.GOLDEN_DIR.iterdir())
+    assert {p.name for p in entries} == {f"{name}.golden" for name in gs.COMBOS}
+    assert all(p.is_file() and not p.is_symlink() for p in entries)

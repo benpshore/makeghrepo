@@ -7,13 +7,14 @@ CI runs this with --out and uploads the result as the `golden` artifact.
 """
 
 import argparse
+import shutil
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
-import golden_snapshots  # noqa: E402
+import golden_snapshots
 
 
 def main() -> int:
@@ -35,21 +36,28 @@ def main() -> int:
             wanted[f"{name}.golden"] = golden_snapshots.serialize(rendered).encode("utf-8")
 
     out: Path = args.out
-    existing = {p.name: p.read_bytes() for p in out.glob("*.golden")} if out.is_dir() else {}
+    entries = list(out.iterdir()) if out.is_dir() and not out.is_symlink() else []
+    unexpected = sorted(
+        p.name for p in entries if p.name not in wanted or p.is_symlink() or not p.is_file()
+    )
+    existing = {
+        p.name: p.read_bytes() for p in entries if p.name in wanted and p.name not in unexpected
+    }
     changed = [n for n, data in wanted.items() if existing.get(n) != data]
-    stale = sorted(set(existing) - set(wanted))
 
     if args.check:
-        for name in [*changed, *stale]:
+        for name in [*changed, *unexpected]:
             print(f"would change: {name}")
-        return 1 if changed or stale else 0
+        return 1 if changed or unexpected else 0
 
-    out.mkdir(parents=True, exist_ok=True)
-    for name in changed:
-        (out / name).write_bytes(wanted[name])
-    for name in stale:
-        (out / name).unlink()
-    print(f"{len(changed)} written, {len(wanted) - len(changed)} unchanged, {len(stale)} removed")
+    if out.is_symlink() or out.is_file():
+        out.unlink()
+    elif out.is_dir():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    for name, data in wanted.items():
+        (out / name).write_bytes(data)
+    print(f"{len(wanted)} written, {len(unexpected)} unexpected entries removed")
     return 0
 
 
