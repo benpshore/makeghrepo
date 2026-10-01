@@ -124,7 +124,7 @@ Closes #
 <!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
 
 ### END
-### FILE .github/workflows/auto-release.yml exec=0 bytes=4186 encoding=utf-8
+### FILE .github/workflows/auto-release.yml exec=0 bytes=4297 encoding=utf-8
 name: Auto-release
 
 # Every merge to main is a release: once this commit's `ci` check has passed,
@@ -149,13 +149,15 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      checks: read
     outputs:
+      version: ${{ steps.build.outputs.version }}
       skip: ${{ steps.guard.outputs.skip }}
-    env:
-      GH_TOKEN: ${{ github.token }}
-      SHA: ${{ github.sha }}
     steps:
       - name: Wait for this commit's ci check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           for _ in $(seq 1 75); do
@@ -181,6 +183,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         if: steps.guard.outputs.skip != 'true'
       - name: Test and build
+        id: build
         if: steps.guard.outputs.skip != 'true'
         run: |
           set -euo pipefail
@@ -194,6 +197,7 @@ jobs:
           uv run pytest
           uv audit --locked --preview-features audit-command
           uv build
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: steps.guard.outputs.skip != 'true'
         with:
@@ -215,15 +219,15 @@ jobs:
           persist-credentials: false
       - name: Tag
         id: tag
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          latest="$(git tag --list 'v*' --sort=-v:refname | head -1)"
-          IFS=. read -r major minor _patch <<<"${latest#v}"
-          version="${major:-0}.$((${minor:-0} + 1)).0"
+          printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$version" -m "v$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Push tag
         env:
           VERSION: ${{ steps.tag.outputs.version }}

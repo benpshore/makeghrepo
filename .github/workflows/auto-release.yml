@@ -94,12 +94,16 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      checks: read
+    outputs:
+      version: ${{ steps.build.outputs.version }}
     steps:
       # A merge to main runs ci.yml and this workflow at the same time. Never
       # tag a commit whose required `ci` check hasn't passed: a release is a
       # promise that CI was green on exactly this commit.
       - name: Wait for this commit's ci check
         env:
+          GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -129,6 +133,7 @@ jobs:
       - name: Audit dependencies
         run: uv audit --locked --preview-features audit-command
       - name: Build
+        id: build
         run: |
           set -euo pipefail
           latest="$(git tag --list 'v*' --sort=-v:refname | head -1)"
@@ -141,6 +146,7 @@ jobs:
           # "vX.Y.Z", not a "+devN" snapshot version.
           git tag -a "v$version" -m "v$version"
           uv build
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-dist
@@ -163,15 +169,15 @@ jobs:
           persist-credentials: false
       - name: Tag
         id: tag
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          latest="$(git tag --list 'v*' --sort=-v:refname | head -1)"
-          IFS=. read -r major minor _patch <<<"${latest#v}"
-          version="${major:-0}.$((${minor:-0} + 1)).0"
+          printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$version" -m "v$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Push tag
         env:
           VERSION: ${{ steps.tag.outputs.version }}
@@ -241,6 +247,7 @@ jobs:
   publish-binaries:
     name: publish binaries
     needs: [release, binaries]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
