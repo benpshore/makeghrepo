@@ -7,7 +7,6 @@ CI runs this with --out and uploads the result as the `golden` artifact.
 """
 
 import argparse
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -50,14 +49,19 @@ def main() -> int:
             print(f"would change: {name}")
         return 1 if changed or unexpected else 0
 
-    if out.is_symlink() or out.is_file():
-        out.unlink()
-    elif out.is_dir():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
-    for name, data in wanted.items():
-        (out / name).write_bytes(data)
-    print(f"{len(wanted)} written, {len(unexpected)} unexpected entries removed")
+    # Only a dedicated snapshot directory may be updated. Never delete a
+    # caller-supplied tree, or follow a directory/file symlink during writes.
+    if out.is_symlink() or (out.exists() and not out.is_dir()) or unexpected:
+        print(f"refusing to replace non-dedicated snapshot directory: {out}", file=sys.stderr)
+        return 1
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".golden-", dir=out.parent) as staging:
+        for name, data in wanted.items():
+            (Path(staging) / name).write_bytes(data)
+        out.mkdir(exist_ok=True)
+        for name in wanted:
+            (Path(staging) / name).replace(out / name)
+    print(f"{len(wanted)} written")
     return 0
 
 
