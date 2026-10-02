@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
-import golden_snapshots  # noqa: E402
+import golden_snapshots
 
 
 def main() -> int:
@@ -35,21 +35,33 @@ def main() -> int:
             wanted[f"{name}.golden"] = golden_snapshots.serialize(rendered).encode("utf-8")
 
     out: Path = args.out
-    existing = {p.name: p.read_bytes() for p in out.glob("*.golden")} if out.is_dir() else {}
+    entries = list(out.iterdir()) if out.is_dir() and not out.is_symlink() else []
+    unexpected = sorted(
+        p.name for p in entries if p.name not in wanted or p.is_symlink() or not p.is_file()
+    )
+    existing = {
+        p.name: p.read_bytes() for p in entries if p.name in wanted and p.name not in unexpected
+    }
     changed = [n for n, data in wanted.items() if existing.get(n) != data]
-    stale = sorted(set(existing) - set(wanted))
 
     if args.check:
-        for name in [*changed, *stale]:
+        for name in [*changed, *unexpected]:
             print(f"would change: {name}")
-        return 1 if changed or stale else 0
+        return 1 if changed or unexpected else 0
 
-    out.mkdir(parents=True, exist_ok=True)
-    for name in changed:
-        (out / name).write_bytes(wanted[name])
-    for name in stale:
-        (out / name).unlink()
-    print(f"{len(changed)} written, {len(wanted) - len(changed)} unchanged, {len(stale)} removed")
+    # Only a dedicated snapshot directory may be updated. Never delete a
+    # caller-supplied tree, or follow a directory/file symlink during writes.
+    if out.is_symlink() or (out.exists() and not out.is_dir()) or unexpected:
+        print(f"refusing to replace non-dedicated snapshot directory: {out}", file=sys.stderr)
+        return 1
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".golden-", dir=out.parent) as staging:
+        for name, data in wanted.items():
+            (Path(staging) / name).write_bytes(data)
+        out.mkdir(exist_ok=True)
+        for name in wanted:
+            (Path(staging) / name).replace(out / name)
+    print(f"{len(wanted)} written")
     return 0
 
 

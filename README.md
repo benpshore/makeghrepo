@@ -133,11 +133,21 @@ git diff tests/golden
 
 The multi-language combos include every Dockerfile branch (`python+docker`, `js+docker`, `rust+docker`, `python+rust+docker`) and `all`, which CI checks three times in a row to flush out ordering races between concurrent checks.
 
-Never edit or hand-merge a `.golden` file. On a conflict, rebase and regenerate. CI also renders them on every run and uploads them as the `golden` artifact, so they can be regenerated without a local toolchain:
+Regeneration accepts only a dedicated directory containing expected regular snapshot files. It refuses symlinks, subdirectories, and unrelated or obsolete entries without deleting them; review and move those entries aside before regenerating.
+
+Never edit or hand-merge a `.golden` file. On a conflict, rebase and regenerate. CI renders and uploads the `golden` artifact only for trusted `main` pushes and manual runs, never for pull requests. Download only an artifact from a trusted run, validate its complete contents in a staging directory, and then replace the snapshots:
 
 ```sh
-gh run download <run-id> -n golden -D tests/golden
+staging=$(mktemp -d) &&
+gh run download <trusted-run-id> -n golden -D "$staging" &&
+uv run scripts/regen-golden --check --out "$staging" &&
+rm -rf tests/golden &&
+mv "$staging" tests/golden &&
+git status --short tests/golden &&
+git diff -- tests/golden
 ```
+
+The validation rejects missing, changed, non-regular, and unexpected files. Do not copy an artifact into `tests/` before it passes validation.
 
 To add a language or component, add only files it owns:
 
