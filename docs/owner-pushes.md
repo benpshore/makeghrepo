@@ -8,9 +8,9 @@ Public personal repositories use two rulesets on the default branch:
 | `require-pr-and-ci` | Squash PR, resolved review threads, up-to-date passing GitHub Actions `ci`; zero required approvals | Exact repository owner: `User`, numeric owner ID, `always` |
 
 The owner can push their own work without opening a PR or waiting for CI. CI
-still runs on pushes and PRs, and release workflows still require successful
-validation. Secret scanning and push protection are unchanged. Local bootstrap
-checks still run before makeghrepo publishes a new repository.
+still runs on pushes and PRs. Existing release validation is unchanged; Python
+auto-releases still wait for CI. Secret scanning and push protection are unchanged.
+Local bootstrap checks still run before makeghrepo publishes a new repository.
 
 GitHub authorizes the **pushing account**, not the commit's author name or email.
 An agent using the owner's credentials has the same server-side bypass. Generated
