@@ -19,6 +19,7 @@ def gh(tmp_path, monkeypatch):
     monkeypatch.setattr(github, "repo_exists", lambda r: r in state["existing"])
     monkeypatch.setattr(github, "is_private", lambda r: False)
     monkeypatch.setattr(github, "create_repo", lambda *a: state["calls"].append(("create", *a)))
+    monkeypatch.setattr(gitops, "remote_has_main", lambda _: False)
 
     def configure_all(repo, *, private, push, log):
         state["calls"].append(("configure", repo, private, push is not None))
@@ -255,3 +256,23 @@ def test_rust_refuses_a_name_starting_with_a_digit(tmp_path, gh):
 def test_python_accepts_a_name_starting_with_a_digit(tmp_path, gh):
     assert runner.invoke(app, ["7up", "python"]).exit_code == 0
     assert (tmp_path / "7up" / "src" / "_7up").is_dir()
+
+
+def test_resume_lookup_failure_never_pushes_or_configures(tmp_path, gh, monkeypatch):
+    assert runner.invoke(app, ["again"]).exit_code == 0
+    gh["existing"].add("me/again")
+    gh["calls"].clear()
+    dest = tmp_path / "again"
+    (dest / "later.txt").write_text("local work that must not be published")
+    gitops.commit_all(dest, "later local work")
+    before = git.Repo(dest).head.commit.hexsha
+
+    def unreachable(_):
+        raise git.GitCommandError("git ls-remote", 128, stderr="temporary connection failure")
+
+    monkeypatch.setattr(gitops, "remote_has_main", unreachable)
+    result = runner.invoke(app, ["again"])
+    assert result.exit_code == 1
+    assert "Could not check remote main; refusing to push" in result.output
+    assert gh["calls"] == []
+    assert git.Repo(dest).head.commit.hexsha == before

@@ -163,7 +163,13 @@ def main(
         raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
 
     # Bootstrap only: a configuration rerun must never publish subsequent local work.
-    pushed = on_github and gitops.remote_has_main(dest)
+    try:
+        pushed = on_github and gitops.remote_has_main(dest)
+    except git.GitCommandError as exc:
+        raise fail(
+            f"{exc}\nCould not check remote main; refusing to push. "
+            "Local project is intact; re-run to retry."
+        ) from exc
     push = None if pushed else lambda: gitops.push_main(dest)
     failed = github.configure_all(repo, private=private, push=push, log=typer.echo)
     typer.echo(f"\nhttps://github.com/{repo}\ncd {dest}")

@@ -124,7 +124,10 @@ def validate_origin(path: Path, full_name: str) -> None:
 
 
 def remote_has_main(path: Path) -> bool:
-    try:
-        return bool(git.Repo(path).git.ls_remote("--heads", "origin", "main").strip())
-    except git.GitCommandError:  # no origin yet, or unreachable
-        return False
+    """Check main without treating a failed lookup as an empty remote.
+
+    A successful empty response permits the bootstrap push. Missing origins,
+    authentication failures and unreachable remotes must stop a configuration
+    retry, otherwise it could publish subsequent local commits.
+    """
+    return bool(git.Repo(path).git.ls_remote("--heads", "origin", "main").strip())

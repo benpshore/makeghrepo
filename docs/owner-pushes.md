@@ -31,8 +31,10 @@ Actions disabled, and local checks only.
 Installing or merging this code does **not** update live rules. After review and
 approval of the policy change, upgrade the existing uv tool installation and
 rerun `makeghrepo NAME` for a project it created. A rerun reapplies configuration
-but never pushes subsequent local commits. Copier and the Rust distribution are
-retained; both implementations use the same policy contract.
+but never pushes subsequent local commits. A failed remote-branch lookup stops
+the rerun before configuration or a push; restore access and retry. Copier and
+the Rust distribution are retained; both implementations use the same policy
+contract.
 
 Migration creates or updates `require-pr-and-ci` before removing PR/CI rules from
 `protect-main`. Extra checks and PR parameters are copied intact, and unrelated

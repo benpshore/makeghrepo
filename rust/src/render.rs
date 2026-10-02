@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use base64::Engine;
 use include_dir::{Dir, File, include_dir};
@@ -13,6 +13,7 @@ use minijinja::value::Kwargs;
 use minijinja::{AutoEscape, Environment, Error, ErrorKind, Value};
 use serde_json::{Map, Value as Json};
 
+use crate::names;
 use crate::registry::{self, Lang};
 
 static TEMPLATE_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../src/makeghrepo/templates/project");
@@ -127,6 +128,11 @@ fn context(langs: &[Lang], data: &Data) -> Value {
 
 /// Render the template into `dest` (which must not exist or must be empty).
 pub fn render(dest: &Path, langs: &[Lang], data: &Data) -> Result<(), String> {
+    names::validate_name(&data.project_name)?;
+    names::validate_owner(&data.github_owner)?;
+    if data.package_name != names::package_name(&data.project_name) {
+        return Err("package name does not match the validated project name".into());
+    }
     if dest.exists()
         && fs::read_dir(dest)
             .map_err(|e| e.to_string())?
@@ -158,6 +164,14 @@ pub fn render(dest: &Path, langs: &[Lang], data: &Data) -> Result<(), String> {
             if rendered.is_empty() {
                 skip = true;
                 break;
+            }
+            if rendered.contains(['/', '\\'])
+                || !matches!(
+                    Path::new(&rendered).components().next(),
+                    Some(Component::Normal(_))
+                )
+            {
+                return Err(format!("{raw}: unsafe rendered path component"));
             }
             out.push(rendered);
         }
