@@ -16,6 +16,7 @@ def github_defaults():
 
 def test_ruleset_matches_shared_policy(github_defaults):
     assert github.ruleset_body() == github_defaults["ruleset"]
+    assert github.review_ruleset_body(123) == github_defaults["review_ruleset"]
 
 
 @pytest.mark.parametrize("private", [False, True])
@@ -24,32 +25,6 @@ def test_settings_match_shared_policy(private, github_defaults):
     if not private:
         expected["security_and_analysis"] = github_defaults["public_security_and_analysis"]
     assert github.settings_body(private) == expected
-
-
-@pytest.mark.parametrize("existing", [False, True])
-def test_configure_ruleset_retains_strict_policy_on_rerun(calls, github_defaults, existing):
-    policy = github_defaults["ruleset"]
-    # Both a new repository and an already-strict ruleset must converge to the
-    # same policy, including on a second configure call. Never touch another rule.
-    listing = [{"id": 7, "name": "another-rule"}]
-    if existing:
-        listing.append({"id": 42, **policy})
-    calls.responses["GET"] = json.dumps(listing)
-    github.configure_ruleset("me/r")
-    method = "PUT" if existing else "POST"
-    path = "repos/me/r/rulesets/42" if existing else "repos/me/r/rulesets"
-    assert calls == [
-        (("api", "-X", "GET", "repos/me/r/rulesets?includes_parents=false"), None),
-        (("api", "-X", method, path), policy),
-    ]
-
-    calls.clear()
-    calls.responses["GET"] = json.dumps([*listing[:1], {"id": 42, **policy}])
-    github.configure_ruleset("me/r")
-    assert calls == [
-        (("api", "-X", "GET", "repos/me/r/rulesets?includes_parents=false"), None),
-        (("api", "-X", "PUT", "repos/me/r/rulesets/42"), policy),
-    ]
 
 
 class Calls(list):
@@ -69,7 +44,10 @@ def calls(monkeypatch):
         joined = " ".join(args)
         if any(f in joined for f in recorded.fail_on):
             raise github.GhError(f"boom: {joined}")
-        return next((v for k, v in recorded.responses.items() if k in joined), "")
+        if args == ("api", "-X", "GET", "repos/me/r"):
+            return '{"owner": {"type": "User", "login": "me", "id": 123}}'
+        fallback = "[]" if "rulesets?" in joined else ""
+        return next((v for k, v in recorded.responses.items() if k in joined), fallback)
 
     monkeypatch.setattr(github, "gh", fake_gh)
     return recorded
@@ -83,26 +61,23 @@ def test_create_repo_adds_remote_without_pushing(calls, tmp_path):
     assert args[args.index("--source") + 1] == str(tmp_path)
 
 
-def test_ruleset_created_when_absent(calls):
-    calls.responses["GET"] = "[]"
-    github.configure_ruleset("me/r")
-    assert [a[2] for a, _ in calls] == ["GET", "POST"]
-    assert calls[1][1]["name"] == github.RULESET_NAME
-
-
-def test_ruleset_updated_when_present(calls):
-    calls.responses["GET"] = json.dumps([{"id": 42, "name": github.RULESET_NAME}])
-    github.configure_ruleset("me/r")
-    assert calls[1][0][2:] == ("PUT", "repos/me/r/rulesets/42")
-
-
-def test_ruleset_is_solo_friendly_and_tied_to_actions():
-    rules = {r["type"]: r.get("parameters") for r in github.ruleset_body()["rules"]}
+def test_rulesets_keep_history_protected_and_only_exempt_owner_from_review():
+    history = github.ruleset_body()
+    review = github.review_ruleset_body(123)
+    assert history["bypass_actors"] == []
+    assert {r["type"] for r in history["rules"]} == {
+        "deletion", "non_fast_forward", "required_linear_history"
+    }
+    assert review["bypass_actors"] == [
+        {"actor_type": "User", "actor_id": 123, "bypass_mode": "always"}
+    ]
+    rules = {r["type"]: r["parameters"] for r in review["rules"]}
+    assert set(rules) == {"pull_request", "required_status_checks"}
     assert rules["pull_request"]["required_approving_review_count"] == 0
+    assert rules["required_status_checks"]["strict_required_status_checks_policy"] is True
     assert rules["required_status_checks"]["required_status_checks"] == [
         {"context": github.REQUIRED_CHECK, "integration_id": github.GITHUB_ACTIONS_APP_ID}
     ]
-    assert {"deletion", "non_fast_forward"} <= rules.keys()
 
 
 def _graphql_projects(*nodes: dict) -> str:
@@ -163,7 +138,7 @@ def test_public_settles_settings_before_fanout_before_ruleset(calls):
     assert failed == []
     paths = _paths(calls)
     settings_idx = paths.index("repos/me/r")
-    ruleset_idx = paths.index("repos/me/r/rulesets?includes_parents=false")
+    ruleset_idx = paths.index("repos/me/r/rulesets?includes_parents=false&per_page=100&page=1")
     assert settings_idx < ruleset_idx
     fanout_paths = {
         "repos/me/r/vulnerability-alerts",

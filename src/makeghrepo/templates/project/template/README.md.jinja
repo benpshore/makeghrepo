@@ -10,4 +10,10 @@ Run these before opening a PR. CI runs the same ones.
 [% include '_checks.jinja' %]
 ```
 
-`main` is protected: open a PR; the `ci` check must pass before merging (squash only).
+[% if not private %]
+The owner (`[[ github_owner ]]`) may push their own work directly to `main` without a PR or passing CI. CI still runs after a push; releases retain their CI gates. Force-push, deletion, and merge commits remain blocked for everyone.
+
+Other accounts must use a squash PR with passing, up-to-date `ci`. Agents must use PRs and CI even when authenticated as the owner (see `AGENTS.md`). GitHub checks the pushing account, so enforcing a human/agent boundary requires separate credentials.
+[% else %]
+GitHub Actions is disabled and no ruleset is installed for this private repo on GitHub Free. Run checks locally. Agents still work on branches and open PRs (see `AGENTS.md`).
+[% endif %]

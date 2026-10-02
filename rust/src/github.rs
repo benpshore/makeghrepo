@@ -6,9 +6,10 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 pub const RULESET_NAME: &str = "protect-main";
+pub const REVIEW_RULESET_NAME: &str = "require-pr-and-ci";
 pub const REQUIRED_CHECK: &str = "ci";
 pub const GITHUB_ACTIONS_APP_ID: u64 = 15368;
 pub const LABELS: &[(&str, &str)] = &[("epic", "3E4B9E"), ("task", "C5DEF5")];
@@ -102,8 +103,7 @@ pub fn create_repo(
     .map(|_| ())
 }
 
-/// PRs only, up-to-date CI must pass, no force-push/delete. Zero approvals: you can't
-/// approve your own PR on a solo repo.
+/// History protections apply to everyone, including the owner.
 pub fn ruleset_body() -> Value {
     json!({
         "name": RULESET_NAME,
@@ -115,6 +115,18 @@ pub fn ruleset_body() -> Value {
             {"type": "deletion"},
             {"type": "non_fast_forward"},
             {"type": "required_linear_history"},
+        ],
+    })
+}
+
+/// Only the personal repository owner may push without a PR or passing CI.
+pub fn review_ruleset_body(owner_id: u64) -> Value {
+    let mut body = ruleset_body();
+    body["name"] = json!(REVIEW_RULESET_NAME);
+    body["bypass_actors"] = json!([
+        {"actor_type": "User", "actor_id": owner_id, "bypass_mode": "always"}
+    ]);
+    body["rules"] = json!([
             {"type": "pull_request", "parameters": {
                 "required_approving_review_count": 0,
                 "dismiss_stale_reviews_on_push": true,
@@ -131,8 +143,8 @@ pub fn ruleset_body() -> Value {
                     {"context": REQUIRED_CHECK, "integration_id": GITHUB_ACTIONS_APP_ID}
                 ],
             }},
-        ],
-    })
+    ]);
+    body
 }
 
 pub fn configure_ruleset(repo: &str) -> Result<(), String> {
@@ -143,29 +155,96 @@ fn configure_ruleset_with(
     repo: &str,
     mut api: impl FnMut(&str, &str, Option<&Value>) -> Result<Value, String>,
 ) -> Result<(), String> {
-    let existing = api(
-        "GET",
-        &format!("repos/{repo}/rulesets?includes_parents=false"),
-        None,
-    )?;
-    let found = existing
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|r| r["name"] == RULESET_NAME)
-        .and_then(|r| r["id"].as_u64());
-    match found {
-        Some(id) => api(
-            "PUT",
-            &format!("repos/{repo}/rulesets/{id}"),
-            Some(&ruleset_body()),
-        )?,
-        None => api(
-            "POST",
-            &format!("repos/{repo}/rulesets"),
-            Some(&ruleset_body()),
-        )?,
-    };
+    // Resolve the repository owner, never the caller or commit author identity.
+    let metadata = api("GET", &format!("repos/{repo}"), None)?;
+    let owner = &metadata["owner"];
+    let owner_id = owner["id"].as_u64().filter(|id| *id > 0);
+    if owner["type"] != "User"
+        || owner_id.is_none()
+        || !owner["login"]
+            .as_str()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case(repo.split('/').next().unwrap_or_default())
+    {
+        return Err("owner push bypass requires a personal repository with a verified owner ID".into());
+    }
+    let mut bodies = [ruleset_body(), review_ruleset_body(owner_id.unwrap())];
+    let mut existing = Vec::new();
+    for page in 1.. {
+        let batch = api(
+            "GET",
+            &format!("repos/{repo}/rulesets?includes_parents=false&per_page=100&page={page}"),
+            None,
+        )?;
+        let batch = batch.as_array().ok_or("invalid ruleset listing")?;
+        existing.extend(batch.iter().cloned());
+        if batch.len() < 100 {
+            break;
+        }
+    }
+    let mut ids = [None, None];
+    let mut saved_rules = [Map::new(), Map::new()];
+    // Validate both full bodies before writing. Refuse customized scopes or
+    // conflicting gate policies instead of silently widening the owner bypass.
+    for (index, body) in bodies.iter().enumerate() {
+        let name = body["name"].as_str().unwrap();
+        let matches: Vec<_> = existing.iter().filter(|r| r["name"] == name).collect();
+        if matches.len() > 1 {
+            return Err(format!("duplicate ruleset {name:?}; reconcile it manually before configuring"));
+        }
+        if let Some(found) = matches.first() {
+            let id = found["id"].as_u64().ok_or("invalid ruleset ID")?;
+            ids[index] = Some(id);
+            let saved = api("GET", &format!("repos/{repo}/rulesets/{id}"), None)?;
+            if ["target", "enforcement", "conditions"].iter().any(|k| saved[*k] != body[*k])
+                || (saved["bypass_actors"] != json!([])
+                    && saved["bypass_actors"] != body["bypass_actors"])
+            {
+                return Err(format!("customized ruleset {name:?}; review its scope/bypasses manually"));
+            }
+            for rule in saved["rules"].as_array().ok_or("invalid ruleset rules")? {
+                let kind = rule["type"].as_str().ok_or("invalid rule type")?;
+                if saved_rules[index].insert(kind.into(), rule.clone()).is_some() {
+                    return Err(format!("duplicate rule in {name:?}; reconcile it manually"));
+                }
+            }
+        }
+    }
+    let [legacy, gates] = saved_rules;
+    let gate_types = ["pull_request", "required_status_checks"];
+    if gates.keys().any(|k| !gate_types.contains(&k.as_str())) {
+        return Err(format!("customized rules in {REVIEW_RULESET_NAME:?}; cannot grant owner bypass"));
+    }
+    for default in bodies[1]["rules"].as_array_mut().unwrap() {
+        let kind = default["type"].as_str().unwrap();
+        if let (Some(old), Some(new)) = (legacy.get(kind), gates.get(kind)) {
+            if old != new {
+                return Err(format!("conflicting {kind} rules; reconcile them manually before configuring"));
+            }
+        }
+        // Retain extra checks/review parameters, including fields GitHub adds.
+        if let Some(saved) = gates.get(kind).or_else(|| legacy.get(kind)) {
+            *default = saved.clone();
+        }
+    }
+    let history = bodies[0]["rules"].as_array_mut().unwrap();
+    for (kind, rule) in legacy {
+        if !gate_types.contains(&kind.as_str()) {
+            if let Some(existing) = history.iter_mut().find(|r| r["type"] == kind) {
+                *existing = rule;
+            } else {
+                history.push(rule);
+            }
+        }
+    }
+    // The replacement gate must succeed before removing the legacy gate.
+    // A failed migration therefore leaves an existing repo's PR/CI gate intact.
+    for index in [1, 0] {
+        match ids[index] {
+            Some(id) => api("PUT", &format!("repos/{repo}/rulesets/{id}"), Some(&bodies[index]))?,
+            None => api("POST", &format!("repos/{repo}/rulesets"), Some(&bodies[index]))?,
+        };
+    }
     Ok(())
 }
 
@@ -476,6 +555,7 @@ mod tests {
     #[test]
     fn ruleset_matches_shared_policy() {
         assert_eq!(ruleset_body(), defaults()["ruleset"]);
+        assert_eq!(review_ruleset_body(123), defaults()["review_ruleset"]);
     }
 
     #[test]
@@ -490,50 +570,166 @@ mod tests {
         }
     }
 
-    #[test]
-    fn configure_ruleset_retains_strict_policy_on_rerun() {
-        let policy = defaults()["ruleset"].clone();
-        for existing in [false, true] {
-            let mut listing = json!([{"id": 7, "name": "another-rule"}]);
-            let mut saved = policy.clone();
-            saved["id"] = json!(42);
-            if existing {
-                listing.as_array_mut().unwrap().push(saved.clone());
-            }
-            for rerun in [false, true] {
-                let mut calls = Vec::new();
-                configure_ruleset_with("me/r", |method, path, body| {
-                    calls.push((method.to_string(), path.to_string(), body.cloned()));
-                    if method == "GET" {
-                        Ok(listing.clone())
-                    } else {
-                        Ok(Value::Null)
-                    }
-                })
-                .unwrap();
-                let update = existing || rerun;
-                assert_eq!(
-                    calls,
-                    vec![
-                        (
-                            "GET".to_string(),
-                            "repos/me/r/rulesets?includes_parents=false".to_string(),
-                            None,
-                        ),
-                        (
-                            if update { "PUT" } else { "POST" }.to_string(),
-                            if update {
-                                "repos/me/r/rulesets/42"
-                            } else {
-                                "repos/me/r/rulesets"
-                            }
-                            .to_string(),
-                            Some(policy.clone()),
-                        ),
-                    ]
-                );
-                listing = json!([{"id": 7, "name": "another-rule"}, saved]);
+    struct RulesetApi {
+        state: std::collections::BTreeMap<u64, Value>,
+        calls: Vec<(String, String, Option<Value>)>,
+        owner: Value,
+        fail_write: usize,
+    }
+
+    impl RulesetApi {
+        fn new(state: impl IntoIterator<Item = (u64, Value)>) -> Self {
+            Self {
+                state: state.into_iter().collect(),
+                calls: Vec::new(),
+                owner: json!({"login": "me", "id": 123, "type": "User"}),
+                fail_write: 0,
             }
         }
+
+        fn writes(&self) -> Vec<&(String, String, Option<Value>)> {
+            self.calls.iter().filter(|c| c.0 != "GET").collect()
+        }
+
+        fn configure(&mut self) -> Result<(), String> {
+            configure_ruleset_with("me/r", |method, path, body| {
+                self.calls.push((method.into(), path.into(), body.cloned()));
+                if method == "GET" {
+                    if path == "repos/me/r" {
+                        return Ok(json!({"owner": self.owner}));
+                    }
+                    if path.contains('?') {
+                        let page: usize = path.rsplit("page=").next().unwrap().parse().unwrap();
+                        return Ok(json!(self.state.iter().skip((page - 1) * 100).take(100)
+                            .map(|(id, v)| json!({"id": id, "name": v["name"]}))
+                            .collect::<Vec<_>>()));
+                    }
+                    let id = path.rsplit('/').next().unwrap().parse::<u64>().unwrap();
+                    return Ok(self.state[&id].clone());
+                }
+                if self.fail_write > 0 && self.writes().len() == self.fail_write {
+                    return Err("write rejected".into());
+                }
+                let id = if method == "PUT" {
+                    path.rsplit('/').next().unwrap().parse().unwrap()
+                } else {
+                    self.state.keys().last().copied().unwrap_or(0) + 1
+                };
+                self.state.insert(id, body.unwrap().clone());
+                Ok(json!({"id": id}))
+            })
+        }
+    }
+
+    fn legacy_policy() -> Value {
+        let policy = defaults();
+        let mut legacy = policy["ruleset"].clone();
+        legacy["rules"].as_array_mut().unwrap().extend(
+            policy["review_ruleset"]["rules"].as_array().unwrap().iter().cloned(),
+        );
+        legacy
+    }
+
+    #[test]
+    fn owner_only_bypass_survives_reruns() {
+        let policy = defaults();
+        for mode in ["new", "legacy", "split", "partial"] {
+            let mut api = RulesetApi::new([(7, json!({"name": "another-rule"}))]);
+            if mode != "new" {
+                api.state.insert(42, if mode == "split" { policy["ruleset"].clone() } else { legacy_policy() });
+            }
+            if ["split", "partial"].contains(&mode) {
+                api.state.insert(43, policy["review_ruleset"].clone());
+            }
+            for _ in 0..2 {
+                api.calls.clear();
+                api.configure().unwrap();
+                let writes = api.writes();
+                assert_eq!(writes.len(), 2);
+                assert_eq!(writes[0].2, Some(policy["review_ruleset"].clone()));
+                assert_eq!(writes[1].2, Some(policy["ruleset"].clone()));
+                assert_eq!(api.state.len(), 3);
+                assert_eq!(api.state[&7], json!({"name": "another-rule"}));
+            }
+            assert!(api.writes().iter().all(|c| c.0 == "PUT"));
+        }
+    }
+
+    #[test]
+    fn migration_retains_extra_checks_and_unrelated_rules() {
+        let mut legacy = legacy_policy();
+        legacy["rules"][3]["parameters"]["require_extra_approval_for_unattributed_changes"] = json!(true);
+        legacy["rules"][4]["parameters"]["required_status_checks"].as_array_mut().unwrap().push(json!({"context": "security"}));
+        legacy["rules"].as_array_mut().unwrap().push(json!({"type": "required_signatures"}));
+        let mut api = RulesetApi::new([(42, legacy.clone())]);
+        api.configure().unwrap();
+        assert_eq!(api.state[&43]["rules"], json!([legacy["rules"][3], legacy["rules"][4]]));
+        assert_eq!(api.state[&42]["rules"], json!([
+            legacy["rules"][0], legacy["rules"][1], legacy["rules"][2], legacy["rules"][5]
+        ]));
+        assert_eq!(api.state[&42]["bypass_actors"], json!([]));
+        let expected = api.state.clone();
+        api.configure().unwrap();
+        assert_eq!(api.state, expected);
+    }
+
+    #[test]
+    fn failed_migration_retains_legacy_gate() {
+        for failure in [1, 2] {
+            let legacy = legacy_policy();
+            let mut api = RulesetApi::new([(42, legacy.clone())]);
+            api.fail_write = failure;
+            assert_eq!(api.configure().unwrap_err(), "write rejected");
+            assert_eq!(api.state[&42], legacy);
+            assert_eq!(api.writes().len(), failure);
+        }
+    }
+
+    #[test]
+    fn unverified_owner_never_grants_bypass() {
+        for owner in [
+            json!({"type": "Organization", "login": "me", "id": 123}),
+            json!({"type": "User", "login": "someone-else", "id": 123}),
+            json!({"type": "User", "login": "me"}),
+            json!({"type": "User", "login": "me", "id": true}),
+            json!({"type": "User", "login": "me", "id": 0}),
+        ] {
+            let mut api = RulesetApi::new([]);
+            api.owner = owner;
+            assert!(api.configure().unwrap_err().contains("verified owner ID"));
+            assert!(api.writes().is_empty());
+        }
+    }
+
+    #[test]
+    fn ambiguous_policy_refused_before_writes() {
+        for customization in ["scope", "enforcement", "bypass", "hidden_bypass", "duplicate", "conflict", "extra_gate"] {
+            let mut legacy = legacy_policy();
+            let mut review = defaults()["review_ruleset"].clone();
+            match customization {
+                "scope" => legacy["conditions"]["ref_name"]["include"].as_array_mut().unwrap().push(json!("refs/heads/release/*")),
+                "enforcement" => legacy["enforcement"] = json!("disabled"),
+                "bypass" => legacy["bypass_actors"] = json!([{"actor_type": "RepositoryRole", "actor_id": 5}]),
+                "hidden_bypass" => { legacy.as_object_mut().unwrap().remove("bypass_actors"); },
+                "conflict" => review["rules"][0]["parameters"]["required_approving_review_count"] = json!(2),
+                "extra_gate" => review["rules"].as_array_mut().unwrap().push(json!({"type": "required_signatures"})),
+                _ => {},
+            }
+            let mut api = RulesetApi::new([(42, legacy.clone()), (43, review)]);
+            if customization == "duplicate" {
+                api.state.insert(44, legacy);
+            }
+            assert!(api.configure().is_err(), "{customization}");
+            assert!(api.writes().is_empty(), "{customization}");
+        }
+    }
+
+    #[test]
+    fn ruleset_listing_is_paginated() {
+        let mut api = RulesetApi::new((0..100).map(|i| (i, json!({"name": format!("other-{i}")}))));
+        api.state.insert(142, legacy_policy());
+        api.configure().unwrap();
+        assert!(api.calls.iter().any(|c| c.1.ends_with("page=2")));
+        assert_eq!(api.calls.last().unwrap().1, "repos/me/r/rulesets/142");
     }
 }
