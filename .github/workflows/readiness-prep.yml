@@ -1,0 +1,30 @@
+name: Readiness preparation
+on:
+  push:
+    branches: [ci/team-readiness-prep]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+      - run: uv sync --locked
+      - name: Package portable test tools
+        run: |
+          mkdir -p prepared
+          python_root="$(uv python dir)"
+          tar -C "$python_root" -czf prepared/python-runtime.tar.gz .
+          tar -C .venv/lib/python3.14/site-packages -czf prepared/python-packages.tar.gz .
+          cp "$(uv run which ruff)" prepared/ruff
+          printf '%s\n' "$GITHUB_SHA" > prepared/source-sha
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: readiness-test-tools
+          path: prepared/*
+          retention-days: 2
+          if-no-files-found: error
