@@ -542,10 +542,11 @@ postgres-data/
 3.14
 
 ### END
-### FILE AGENTS.md exec=0 bytes=671 encoding=utf-8
+### FILE AGENTS.md exec=0 bytes=850 encoding=utf-8
 # quiet-otter
 
-- `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
+- Agents must work on a branch and open a PR (`gh pr create --fill`); never push directly to `main` or use the owner's bypass, even when authenticated as the owner.
+- The `ci` check must pass for agent-authored work. Only the human owner's own work may use the direct-push exception.
 - Never commit secrets, `.env` files, databases or `.DS_Store` (see `.gitignore`; CI rejects them).
 - Python: use **uv** only (`uv add`, `uv run`). Never pip.
 - The version is the git tag; never edit a version field by hand.
@@ -599,7 +600,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ### END
-### FILE README.md exec=0 bytes=386 encoding=utf-8
+### FILE README.md exec=0 bytes=774 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -613,7 +614,9 @@ uv run ruff format && uv run ruff check && uv run pytest && uv audit --preview-f
 docker build -t quiet-otter . && docker compose up -d app   # data volume: appdata:/data
 ```
 
-`main` is protected: open a PR; the `ci` check must pass before merging (squash only).
+The owner (`someone`) may push their own work directly to `main` without a PR or passing CI. CI still runs after a push; releases retain their CI gates. Force-push, deletion, and merge commits remain blocked for everyone.
+
+Other accounts must use a squash PR with passing, up-to-date `ci`. Agents must use PRs and CI even when authenticated as the owner (see `AGENTS.md`). GitHub checks the pushing account, so enforcing a human/agent boundary requires separate credentials.
 
 ### END
 ### FILE SECURITY.md exec=0 bytes=213 encoding=utf-8

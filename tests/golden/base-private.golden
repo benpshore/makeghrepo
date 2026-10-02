@@ -344,10 +344,11 @@ postgres-data/
 .docker/
 
 ### END
-### FILE AGENTS.md exec=0 bytes=348 encoding=utf-8
+### FILE AGENTS.md exec=0 bytes=510 encoding=utf-8
 # quiet-otter
 
-- `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
+- Agents must work on a branch and open a PR (`gh pr create --fill`); never push directly to `main` or use the owner's bypass, even when authenticated as the owner.
+- GitHub Actions is disabled for this private repo; run the checks below locally before opening a PR.
 - Never commit secrets, `.env` files, databases or `.DS_Store` (see `.gitignore`; CI rejects them).
 - Before committing, run:
 
@@ -384,7 +385,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ### END
-### FILE README.md exec=0 bytes=286 encoding=utf-8
+### FILE README.md exec=0 bytes=374 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -397,7 +398,7 @@ Run these before opening a PR. CI runs the same ones.
 # no language chosen yet: add your toolchain's checks here and to .github/workflows/ci.yml
 ```
 
-`main` is protected: open a PR; the `ci` check must pass before merging (squash only).
+GitHub Actions is disabled and no ruleset is installed for this private repo on GitHub Free. Run checks locally. Agents still work on branches and open PRs (see `AGENTS.md`).
 
 ### END
 ### FILE SECURITY.md exec=0 bytes=213 encoding=utf-8

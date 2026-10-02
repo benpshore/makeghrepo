@@ -162,7 +162,7 @@ def main(
     except github.GhError as exc:
         raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
 
-    # Push only if main isn't on GitHub yet; once protected, main only changes via PRs.
+    # Bootstrap only: a configuration rerun must never publish subsequent local work.
     pushed = on_github and gitops.remote_has_main(dest)
     push = None if pushed else lambda: gitops.push_main(dest)
     failed = github.configure_all(repo, private=private, push=push, log=typer.echo)

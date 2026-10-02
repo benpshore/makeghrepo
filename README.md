@@ -53,7 +53,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
    - Dependabot alerts and security fixes
    - public repos: secret scanning, push protection, private vulnerability reporting
    - **pushes `main`**, after public push protection is on or private Actions are disabled
-   - public repos: a `protect-main` ruleset. PRs are required (0 approvals, because you can't approve your own PR), the branch must be up to date and the `ci` check from GitHub Actions must pass, history stays linear, and force-push and deletion are blocked. Only squash merges are allowed, with no bypass actors. Configuration reruns retain this strict status-check policy.
+   - public personal repos: `protect-main` blocks force-push, deletion, and merge commits for everyone. A separate `require-pr-and-ci` ruleset requires a squash PR (0 approvals) and up-to-date passing `ci` from GitHub Actions, with a bypass for the exact repository owner. The owner's own pushes need neither a PR nor passing CI; agents still use PRs and CI. See [owner pushes and migration](docs/owner-pushes.md) for the credential boundary and existing-repo setup.
    - labels `epic` and `task`, and a Project board linked to the repo
    - notifications set to **Ignore**, and no CODEOWNERS file, so nothing pings you
 

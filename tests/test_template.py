@@ -46,6 +46,24 @@ def test_no_language_is_just_the_base(tmp_path):
     assert files_of(render(tmp_path, [])) == BASE
 
 
+@pytest.mark.parametrize("private", [False, True])
+def test_owner_push_docs_keep_agents_on_prs(tmp_path, private):
+    dest = render(tmp_path, [], private=private)
+    agents = (dest / "AGENTS.md").read_text()
+    readme = (dest / "README.md").read_text()
+    assert "never push directly to `main` or use the owner's bypass" in agents
+    assert "even when authenticated as the owner" in agents
+    assert (dest / ".github/workflows/ci.yml").is_file()
+    if private:
+        assert "GitHub Actions is disabled" in agents
+        assert "no ruleset is installed" in readme
+    else:
+        assert "`ci` check must pass for agent-authored work" in agents
+        assert "owner (`someone`)" in readme
+        assert "without a PR or passing CI" in readme
+        assert "Force-push, deletion, and merge commits remain blocked for everyone" in readme
+
+
 @pytest.mark.parametrize(
     ("lang", "marker"), [(lang.id, lang.marker) for lang in scaffold.LANGS.values()]
 )
