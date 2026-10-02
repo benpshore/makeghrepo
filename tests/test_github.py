@@ -66,7 +66,9 @@ def test_rulesets_keep_history_protected_and_only_exempt_owner_from_review():
     review = github.review_ruleset_body(123)
     assert history["bypass_actors"] == []
     assert {r["type"] for r in history["rules"]} == {
-        "deletion", "non_fast_forward", "required_linear_history"
+        "deletion",
+        "non_fast_forward",
+        "required_linear_history",
     }
     assert review["bypass_actors"] == [
         {"actor_type": "User", "actor_id": 123, "bypass_mode": "always"}

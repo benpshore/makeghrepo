@@ -166,7 +166,9 @@ fn configure_ruleset_with(
             .unwrap_or_default()
             .eq_ignore_ascii_case(repo.split('/').next().unwrap_or_default())
     {
-        return Err("owner push bypass requires a personal repository with a verified owner ID".into());
+        return Err(
+            "owner push bypass requires a personal repository with a verified owner ID".into(),
+        );
     }
     let mut bodies = [ruleset_body(), review_ruleset_body(owner_id.unwrap())];
     let mut existing = Vec::new();
@@ -190,21 +192,30 @@ fn configure_ruleset_with(
         let name = body["name"].as_str().unwrap();
         let matches: Vec<_> = existing.iter().filter(|r| r["name"] == name).collect();
         if matches.len() > 1 {
-            return Err(format!("duplicate ruleset {name:?}; reconcile it manually before configuring"));
+            return Err(format!(
+                "duplicate ruleset {name:?}; reconcile it manually before configuring"
+            ));
         }
         if let Some(found) = matches.first() {
             let id = found["id"].as_u64().ok_or("invalid ruleset ID")?;
             ids[index] = Some(id);
             let saved = api("GET", &format!("repos/{repo}/rulesets/{id}"), None)?;
-            if ["target", "enforcement", "conditions"].iter().any(|k| saved[*k] != body[*k])
+            if ["target", "enforcement", "conditions"]
+                .iter()
+                .any(|k| saved[*k] != body[*k])
                 || (saved["bypass_actors"] != json!([])
                     && saved["bypass_actors"] != body["bypass_actors"])
             {
-                return Err(format!("customized ruleset {name:?}; review its scope/bypasses manually"));
+                return Err(format!(
+                    "customized ruleset {name:?}; review its scope/bypasses manually"
+                ));
             }
             for rule in saved["rules"].as_array().ok_or("invalid ruleset rules")? {
                 let kind = rule["type"].as_str().ok_or("invalid rule type")?;
-                if saved_rules[index].insert(kind.into(), rule.clone()).is_some() {
+                if saved_rules[index]
+                    .insert(kind.into(), rule.clone())
+                    .is_some()
+                {
                     return Err(format!("duplicate rule in {name:?}; reconcile it manually"));
                 }
             }
@@ -213,13 +224,17 @@ fn configure_ruleset_with(
     let [legacy, gates] = saved_rules;
     let gate_types = ["pull_request", "required_status_checks"];
     if gates.keys().any(|k| !gate_types.contains(&k.as_str())) {
-        return Err(format!("customized rules in {REVIEW_RULESET_NAME:?}; cannot grant owner bypass"));
+        return Err(format!(
+            "customized rules in {REVIEW_RULESET_NAME:?}; cannot grant owner bypass"
+        ));
     }
     for default in bodies[1]["rules"].as_array_mut().unwrap() {
         let kind = default["type"].as_str().unwrap();
         if let (Some(old), Some(new)) = (legacy.get(kind), gates.get(kind)) {
             if old != new {
-                return Err(format!("conflicting {kind} rules; reconcile them manually before configuring"));
+                return Err(format!(
+                    "conflicting {kind} rules; reconcile them manually before configuring"
+                ));
             }
         }
         // Retain extra checks/review parameters, including fields GitHub adds.
@@ -241,8 +256,16 @@ fn configure_ruleset_with(
     // A failed migration therefore leaves an existing repo's PR/CI gate intact.
     for index in [1, 0] {
         match ids[index] {
-            Some(id) => api("PUT", &format!("repos/{repo}/rulesets/{id}"), Some(&bodies[index]))?,
-            None => api("POST", &format!("repos/{repo}/rulesets"), Some(&bodies[index]))?,
+            Some(id) => api(
+                "PUT",
+                &format!("repos/{repo}/rulesets/{id}"),
+                Some(&bodies[index]),
+            )?,
+            None => api(
+                "POST",
+                &format!("repos/{repo}/rulesets"),
+                Some(&bodies[index]),
+            )?,
         };
     }
     Ok(())
@@ -600,9 +623,14 @@ mod tests {
                     }
                     if path.contains('?') {
                         let page: usize = path.rsplit("page=").next().unwrap().parse().unwrap();
-                        return Ok(json!(self.state.iter().skip((page - 1) * 100).take(100)
-                            .map(|(id, v)| json!({"id": id, "name": v["name"]}))
-                            .collect::<Vec<_>>()));
+                        return Ok(json!(
+                            self.state
+                                .iter()
+                                .skip((page - 1) * 100)
+                                .take(100)
+                                .map(|(id, v)| json!({"id": id, "name": v["name"]}))
+                                .collect::<Vec<_>>()
+                        ));
                     }
                     let id = path.rsplit('/').next().unwrap().parse::<u64>().unwrap();
                     return Ok(self.state[&id].clone());
@@ -625,7 +653,11 @@ mod tests {
         let policy = defaults();
         let mut legacy = policy["ruleset"].clone();
         legacy["rules"].as_array_mut().unwrap().extend(
-            policy["review_ruleset"]["rules"].as_array().unwrap().iter().cloned(),
+            policy["review_ruleset"]["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
         );
         legacy
     }
@@ -636,7 +668,14 @@ mod tests {
         for mode in ["new", "legacy", "split", "partial"] {
             let mut api = RulesetApi::new([(7, json!({"name": "another-rule"}))]);
             if mode != "new" {
-                api.state.insert(42, if mode == "split" { policy["ruleset"].clone() } else { legacy_policy() });
+                api.state.insert(
+                    42,
+                    if mode == "split" {
+                        policy["ruleset"].clone()
+                    } else {
+                        legacy_policy()
+                    },
+                );
             }
             if ["split", "partial"].contains(&mode) {
                 api.state.insert(43, policy["review_ruleset"].clone());
@@ -658,15 +697,31 @@ mod tests {
     #[test]
     fn migration_retains_extra_checks_and_unrelated_rules() {
         let mut legacy = legacy_policy();
-        legacy["rules"][3]["parameters"]["require_extra_approval_for_unattributed_changes"] = json!(true);
-        legacy["rules"][4]["parameters"]["required_status_checks"].as_array_mut().unwrap().push(json!({"context": "security"}));
-        legacy["rules"].as_array_mut().unwrap().push(json!({"type": "required_signatures"}));
+        legacy["rules"][3]["parameters"]["require_extra_approval_for_unattributed_changes"] =
+            json!(true);
+        legacy["rules"][4]["parameters"]["required_status_checks"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"context": "security"}));
+        legacy["rules"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type": "required_signatures"}));
         let mut api = RulesetApi::new([(42, legacy.clone())]);
         api.configure().unwrap();
-        assert_eq!(api.state[&43]["rules"], json!([legacy["rules"][3], legacy["rules"][4]]));
-        assert_eq!(api.state[&42]["rules"], json!([
-            legacy["rules"][0], legacy["rules"][1], legacy["rules"][2], legacy["rules"][5]
-        ]));
+        assert_eq!(
+            api.state[&43]["rules"],
+            json!([legacy["rules"][3], legacy["rules"][4]])
+        );
+        assert_eq!(
+            api.state[&42]["rules"],
+            json!([
+                legacy["rules"][0],
+                legacy["rules"][1],
+                legacy["rules"][2],
+                legacy["rules"][5]
+            ])
+        );
         assert_eq!(api.state[&42]["bypass_actors"], json!([]));
         let expected = api.state.clone();
         api.configure().unwrap();
@@ -703,17 +758,38 @@ mod tests {
 
     #[test]
     fn ambiguous_policy_refused_before_writes() {
-        for customization in ["scope", "enforcement", "bypass", "hidden_bypass", "duplicate", "conflict", "extra_gate"] {
+        for customization in [
+            "scope",
+            "enforcement",
+            "bypass",
+            "hidden_bypass",
+            "duplicate",
+            "conflict",
+            "extra_gate",
+        ] {
             let mut legacy = legacy_policy();
             let mut review = defaults()["review_ruleset"].clone();
             match customization {
-                "scope" => legacy["conditions"]["ref_name"]["include"].as_array_mut().unwrap().push(json!("refs/heads/release/*")),
+                "scope" => legacy["conditions"]["ref_name"]["include"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!("refs/heads/release/*")),
                 "enforcement" => legacy["enforcement"] = json!("disabled"),
-                "bypass" => legacy["bypass_actors"] = json!([{"actor_type": "RepositoryRole", "actor_id": 5}]),
-                "hidden_bypass" => { legacy.as_object_mut().unwrap().remove("bypass_actors"); },
-                "conflict" => review["rules"][0]["parameters"]["required_approving_review_count"] = json!(2),
-                "extra_gate" => review["rules"].as_array_mut().unwrap().push(json!({"type": "required_signatures"})),
-                _ => {},
+                "bypass" => {
+                    legacy["bypass_actors"] =
+                        json!([{"actor_type": "RepositoryRole", "actor_id": 5}])
+                }
+                "hidden_bypass" => {
+                    legacy.as_object_mut().unwrap().remove("bypass_actors");
+                }
+                "conflict" => {
+                    review["rules"][0]["parameters"]["required_approving_review_count"] = json!(2)
+                }
+                "extra_gate" => review["rules"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"type": "required_signatures"})),
+                _ => {}
             }
             let mut api = RulesetApi::new([(42, legacy.clone()), (43, review)]);
             if customization == "duplicate" {

@@ -69,7 +69,9 @@ class OwnerPushTests(unittest.TestCase):
                         github.configure_ruleset("me/r")
                         assert [c[2] for c in api.writes] == [self.review, self.history]
                         assert {v["name"] for v in api.state.values()} == {
-                            "another-rule", "protect-main", "require-pr-and-ci"
+                            "another-rule",
+                            "protect-main",
+                            "require-pr-and-ci",
                         }
                         assert api.state[7] == existing[7]
                 assert [c[0] for c in api.writes] == ["PUT", "PUT"]
@@ -94,8 +96,9 @@ class OwnerPushTests(unittest.TestCase):
             with self.subTest(failure=failure):
                 legacy = self.legacy()
                 api = RulesetAPI({42: legacy}, fail_write=failure)
-                with patch.object(github, "api", api), self.assertRaisesRegex(
-                    github.GhError, "write rejected"
+                with (
+                    patch.object(github, "api", api),
+                    self.assertRaisesRegex(github.GhError, "write rejected"),
                 ):
                     github.configure_ruleset("me/r")
                 assert api.state[42] == legacy
@@ -112,15 +115,22 @@ class OwnerPushTests(unittest.TestCase):
         for owner in owners:
             with self.subTest(owner=owner):
                 api = RulesetAPI({}, owner=owner)
-                with patch.object(github, "api", api), self.assertRaisesRegex(
-                    github.GhError, "verified owner ID"
+                with (
+                    patch.object(github, "api", api),
+                    self.assertRaisesRegex(github.GhError, "verified owner ID"),
                 ):
                     github.configure_ruleset("me/r")
                 assert not api.writes
 
     def test_ambiguous_policy_refused_before_writes(self):
         for customization in (
-            "scope", "enforcement", "bypass", "hidden_bypass", "duplicate", "conflict", "extra_gate"
+            "scope",
+            "enforcement",
+            "bypass",
+            "hidden_bypass",
+            "duplicate",
+            "conflict",
+            "extra_gate",
         ):
             with self.subTest(customization=customization):
                 legacy = self.legacy()
