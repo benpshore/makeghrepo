@@ -21,10 +21,21 @@ jobs:
           tar -C "$python_root" -czf prepared/python-runtime.tar.gz .
           tar -C .venv/lib/python3.14/site-packages -czf prepared/python-packages.tar.gz .
           cp "$(uv run which ruff)" prepared/ruff
-          printf '%s\n' "$GITHUB_SHA" > prepared/source-sha
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: readiness-test-tools
-          path: prepared/*
+          name: readiness-python-runtime
+          path: prepared/python-runtime.tar.gz
+          retention-days: 2
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: readiness-python-packages
+          path: prepared/python-packages.tar.gz
+          retention-days: 2
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: readiness-ruff
+          path: prepared/ruff
           retention-days: 2
           if-no-files-found: error
