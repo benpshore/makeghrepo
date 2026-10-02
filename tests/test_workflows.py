@@ -72,3 +72,15 @@ def test_auto_release_keeps_exact_sha_checkout_and_ci_gate(workflows):
             assert i > wait_index
             assert step["with"]["ref"] == "${{ github.sha }}"
             assert step["with"]["fetch-depth"] == 0
+
+
+def test_tag_release_isolates_untrusted_build_from_write_token(workflows):
+    release = yaml.safe_load((workflows / "release.yml").read_text())
+    test_job = release["jobs"]["test"]
+    publish_job = release["jobs"]["release"]
+
+    assert test_job.get("permissions", release["permissions"]) == {"contents": "read"}
+    assert publish_job["needs"] == "test"
+    assert publish_job["permissions"] == {"contents": "write"}
+    assert all("run" not in step for step in publish_job["steps"][:-1])
+    assert publish_job["steps"][-1]["name"] == "Publish GitHub release"

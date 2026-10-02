@@ -16,10 +16,8 @@ name: Release
 # collide with one.
 #
 # Keep the checkout/setup-uv/test/audit/build steps and pinned action SHAs
-# below in sync with auto-release.yml's — duplicated rather than shared via a
-# reusable workflow, since that would need cross-job artifact passing that
-# adds more untestable surface than the duplication it removes, for two files
-# this short.
+# below in sync with auto-release.yml's. The build runs on a read-only runner;
+# only a fresh runner that consumes its artifact receives release permission.
 on:
   push:
     tags: ["v*"]
@@ -29,12 +27,10 @@ permissions:
   contents: read
 
 jobs:
-  release:
-    name: release
+  test:
+    name: test
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,6 +53,26 @@ jobs:
         run: uv audit --locked --preview-features audit-command
       - name: Build
         run: uv build
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dist
+          path: dist
+
+  release:
+    name: release
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-dist
+          path: dist
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
