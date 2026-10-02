@@ -97,3 +97,26 @@ def test_commit_refuses_junk_and_keeps_nothing_committed(tmp_path):
 def test_junk_pattern_matches_the_generated_ci_check():
     ci = Path(gitops.__file__).parent / "templates/project/template/.github/workflows/ci.yml.jinja"
     assert f"grep -Ei '{gitops.JUNK_PATTERN}'" in ci.read_text()
+
+
+def test_remote_main_distinguishes_empty_published_and_unreachable(tmp_path):
+    dest = tmp_path / "local"
+    remote = tmp_path / "remote.git"
+    gitops.init(dest)
+    repo = git.Repo(dest)
+    git.Repo.init(remote, bare=True)
+    repo.create_remote("origin", str(remote))
+    assert gitops.remote_has_main(dest) is False
+
+    (dest / "ready.txt").write_text("ready")
+    gitops.commit_all(dest)
+    gitops.push_main(dest)
+    assert gitops.remote_has_main(dest) is True
+
+    repo.git.remote("set-url", "origin", str(tmp_path / "missing.git"))
+    with pytest.raises(git.GitCommandError):
+        gitops.remote_has_main(dest)
+
+    repo.git.remote("remove", "origin")
+    with pytest.raises(git.GitCommandError):
+        gitops.remote_has_main(dest)

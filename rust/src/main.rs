@@ -115,6 +115,21 @@ fn temp_dir(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("makeghrepo-{tag}-{}-{nanos}", std::process::id()))
 }
 
+fn project_name(raw: &str, langs: &[registry::Lang], chosen: &[String]) -> Result<String, String> {
+    let name = names::validate_name(&names::normalize_name(raw))?;
+    if let Some(first) = chosen
+        .iter()
+        .find(|id| registry::get(langs, id).leading_letter)
+    {
+        if !name.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+            return Err(format!(
+                "{name:?} can't be a {first} package name: it must start with a letter. Pick another name"
+            ));
+        }
+    }
+    Ok(name)
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let langs = registry::load();
@@ -155,9 +170,14 @@ fn main() -> ExitCode {
             },
             None => (chosen.clone(), cli.private, cli.lib),
         };
-        let name = raw_name
-            .clone()
-            .unwrap_or_else(|| "quiet-otter".to_string());
+        let name = match project_name(
+            raw_name.as_deref().unwrap_or("quiet-otter"),
+            &langs,
+            &languages,
+        ) {
+            Ok(name) => name,
+            Err(e) => return fail(&e),
+        };
         let data = render::Data {
             package_name: names::package_name(&name),
             project_name: name,
@@ -283,16 +303,8 @@ fn main() -> ExitCode {
     } else if on_github {
         return fail(&format!("{repo} already exists on GitHub"));
     } else {
-        let strict: Vec<&String> = chosen
-            .iter()
-            .filter(|c| registry::get(&langs, c).leading_letter)
-            .collect();
-        if let Some(first) = strict.first() {
-            if !name.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
-                return fail(&format!(
-                    "{name:?} can't be a {first} package name: it must start with a letter. Pick another name"
-                ));
-            }
+        if let Err(e) = project_name(&name, &langs, &chosen) {
+            return fail(&e);
         }
         let shown = if chosen.is_empty() {
             "any language".to_string()
@@ -378,8 +390,20 @@ fn main() -> ExitCode {
         }
     }
 
-    // Push only if main isn't on GitHub yet; once protected, main only changes via PRs.
-    let pushed = on_github && gitops::remote_has_main(&dest);
+    // Bootstrap only: a configuration retry must never publish later local work.
+    let pushed = if on_github {
+        match gitops::remote_has_main(&dest) {
+            Ok(pushed) => pushed,
+            Err(e) => {
+                return fail(&format!(
+                    "{e}\nCould not check remote main; refusing to push. \
+                     Local project is intact; re-run to retry."
+                ));
+            }
+        }
+    } else {
+        false
+    };
     let push_dest = dest.clone();
     let push: Option<Box<dyn Fn() -> Result<(), String> + Send + Sync>> = if pushed {
         None
