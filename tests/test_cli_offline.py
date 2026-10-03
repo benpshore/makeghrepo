@@ -5,6 +5,7 @@ import tomllib
 
 import golden_snapshots
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from makeghrepo import cli, github, gitops, scaffold
@@ -47,9 +48,10 @@ def no_bootstrap_calls(monkeypatch):
 def test_help_lists_supported_languages_without_auth(option):
     result = runner.invoke(cli.app, [option])
     assert result.exit_code == 0, result.output
-    assert "--render" in result.output
+    help_text = Text.from_ansi(result.output).plain
+    assert "--render" in help_text
     for language in scaffold.LANGUAGES:
-        assert language in result.output
+        assert language in help_text
 
 
 def test_version_exits_before_validating_workflow_arguments(monkeypatch):

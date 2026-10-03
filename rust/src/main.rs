@@ -161,7 +161,10 @@ fn main() -> ExitCode {
     let langs = registry::load();
     let all: Vec<String> = registry::ids(&langs);
     let matches = Cli::command()
-        .after_help(format!("Languages (any number, or none): {}.", all.join(", ")))
+        .after_help(format!(
+            "Languages (any number, or none): {}.",
+            all.join(", ")
+        ))
         .get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
 
@@ -475,7 +478,12 @@ mod license_tests {
 
     #[test]
     fn cli_requires_an_explicit_supported_license() {
-        assert!(Cli::try_parse_from(["makeghrepo"]).unwrap().license.is_none());
+        assert!(
+            Cli::try_parse_from(["makeghrepo"])
+                .unwrap()
+                .license
+                .is_none()
+        );
         for license in ["none", "MIT"] {
             assert_eq!(
                 Cli::try_parse_from(["makeghrepo", "--license", license])
