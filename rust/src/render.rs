@@ -91,6 +91,7 @@ pub struct Data {
     pub year: String,
     pub private: bool,
     pub py_lib: bool,
+    pub project_license: String,
     pub languages: Vec<String>,
 }
 
@@ -117,6 +118,10 @@ fn context(langs: &[Lang], data: &Data) -> Value {
     ctx.insert("private".into(), Json::Bool(data.private));
     ctx.insert("py_lib".into(), Json::Bool(data.py_lib));
     ctx.insert(
+        "project_license".into(),
+        Json::String(data.project_license.clone()),
+    );
+    ctx.insert(
         "languages".into(),
         serde_json::to_value(&data.languages).expect("strings"),
     );
@@ -132,6 +137,9 @@ pub fn render(dest: &Path, langs: &[Lang], data: &Data) -> Result<(), String> {
     names::validate_owner(&data.github_owner)?;
     if data.package_name != names::package_name(&data.project_name) {
         return Err("package name does not match the validated project name".into());
+    }
+    if !matches!(data.project_license.as_str(), "none" | "MIT") {
+        return Err("project license must be none or MIT".into());
     }
     if dest.exists()
         && fs::read_dir(dest)

@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import os
+from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated
 
-import git
 import typer
 
-from makeghrepo import github, gitops, names, scaffold
+from makeghrepo import names, registry
 
-app = typer.Typer(add_completion=True)
+app = typer.Typer(add_completion=True, context_settings={"help_option_names": ["-h", "--help"]})
+LANGS = registry.load()
+
+
+class ProjectLicense(StrEnum):
+    NONE = "none"
+    MIT = "MIT"
 
 
 def _version() -> str:
@@ -22,14 +28,31 @@ def _version() -> str:
         return "unknown"
 
 
+def _show_version(value: bool) -> None:
+    if value:
+        typer.echo(f"makeghrepo {_version()}")
+        raise typer.Exit()
+
+
 def fail(msg: str) -> typer.Exit:
     typer.secho(msg, fg=typer.colors.RED, err=True)
     return typer.Exit(1)
 
 
+def _project_name(raw: str, langs: list[str]) -> str:
+    name = names.validate_name(names.normalize_name(raw))
+    strict = [lang for lang in langs if LANGS[lang].leading_letter]
+    if strict and not name[0].isalpha():
+        raise ValueError(
+            f"{name!r} can't be a {strict[0]} package name: it must start with a letter. "
+            "Pick another name"
+        )
+    return name
+
+
 @app.command(
     help="Create a new GitHub repo, fully configured. Re-run the same command to resume.\n\n"
-    f"Languages (any number, or none): {', '.join(scaffold.LANGUAGES)}.",
+    f"Languages (any number, or none): {', '.join(LANGS)}.",
 )
 def main(
     words: Annotated[
@@ -42,7 +65,31 @@ def main(
             "--lib", help="python: library layout, no console script (like uv init --lib)"
         ),
     ] = False,
+    project_license: Annotated[
+        ProjectLicense | None,
+        typer.Option(
+            "--license", help="Project license: none by default; MIT only when requested."
+        ),
+    ] = None,
+    render: Annotated[
+        Path | None,
+        typer.Option(
+            "--render", metavar="DIR", help="Render offline into DIR; no checks, repo or GitHub."
+        ),
+    ] = None,
+    show_version: Annotated[
+        bool,
+        typer.Option("--version", callback=_show_version, is_eager=True, help="Show the version."),
+    ] = False,
+    owner: Annotated[str | None, typer.Option("--owner", hidden=True)] = None,
+    author: Annotated[str | None, typer.Option("--author", hidden=True)] = None,
+    description: Annotated[str | None, typer.Option("--description", hidden=True)] = None,
+    year: Annotated[str | None, typer.Option("--year", hidden=True)] = None,
 ) -> None:
+    # Copier imports its platform probe machinery; keep help/version independent
+    # of that renderer and every external command as well as GitPython.
+    from makeghrepo import scaffold
+
     words = list(words or [])
     # A leading non-language word is the name; otherwise pick a random one.
     raw_name = words.pop(0) if words and scaffold.language(words[0]) is None else None
@@ -54,6 +101,35 @@ def main(
         langs += [lang] if lang not in langs else []
     if lib and "python" not in langs:
         raise fail("--lib only applies to python; add `python` to the language list")
+
+    if render is not None:
+        try:
+            name = _project_name(raw_name if raw_name is not None else "quiet-otter", langs)
+            offline_owner = names.validate_owner(owner if owner is not None else "someone")
+            scaffold.render(render, {
+                "project_name": name,
+                "package_name": names.package_name(name),
+                "description": description if description is not None else "a test project",
+                "author_name": author if author is not None else "Test User",
+                "github_owner": offline_owner,
+                "year": year if year is not None else "2026",
+                "private": private,
+                "py_lib": lib,
+                "project_license": (project_license or ProjectLicense.NONE).value,
+                "languages": langs,
+            })  # fmt: skip
+        except (ValueError, OSError) as exc:
+            raise fail(str(exc)) from exc
+        typer.echo(f"rendered {render}")
+        return
+    if any(value is not None for value in (owner, author, description, year)):
+        raise fail("--owner, --author, --description and --year require --render")
+
+    # GitPython probes git when imported. Help, version and offline rendering
+    # must also work on a machine without git or GitHub credentials.
+    import git
+
+    from makeghrepo import github, gitops
 
     base_dir = Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")).expanduser().resolve()
     try:
@@ -95,6 +171,15 @@ def main(
         if private and not marker.get("private"):
             raise fail(f"{repo} was created public; re-run without --private or pick another name")
         want_private = bool(marker.get("private"))
+        # Older makeghrepo versions always generated MIT, before recording a choice.
+        recorded_license = marker.get("license", "MIT")
+        if recorded_license not in ("none", "MIT"):
+            raise fail(f"{dest} has an invalid recorded license; review its resume marker")
+        if project_license is not None and project_license.value != recorded_license:
+            raise fail(
+                f"{repo} was created with license {recorded_license}; "
+                "a resume never changes licensing. Re-run without --license"
+            )
         recorded = [str(lang) for lang in marker.get("languages") or []]
         if langs and langs != recorded:
             typer.echo(f"note: ignoring languages on resume; using {', '.join(recorded) or 'none'}")
@@ -103,12 +188,10 @@ def main(
     elif on_github:
         raise fail(f"{repo} already exists on GitHub")
     else:
-        strict = [lang for lang in langs if scaffold.LANGS[lang].leading_letter]
-        if strict and not name[0].isalpha():
-            raise fail(
-                f"{name!r} can't be a {strict[0]} package name: it must start with a letter. "
-                "Pick another name"
-            )
+        try:
+            _project_name(name, langs)
+        except ValueError as exc:
+            raise fail(str(exc)) from exc
         typer.echo(f"creating {dest} [{', '.join(langs) or 'any language'}]")
         author_name = gitops.author_from_git_config()[0] or owner
         scaffold.render(dest, {
@@ -120,6 +203,7 @@ def main(
             "github_owner": owner,
             "private": private,
             "py_lib": lib,
+            "project_license": (project_license or ProjectLicense.NONE).value,
             "languages": langs,
         })  # fmt: skip
         gitops.init(dest)
@@ -134,6 +218,7 @@ def main(
             "private": private,
             "languages": langs,
             "lib": lib,
+            "license": (project_license or ProjectLicense.NONE).value,
             "created_by": f"makeghrepo {_version()}",
         })  # fmt: skip
 

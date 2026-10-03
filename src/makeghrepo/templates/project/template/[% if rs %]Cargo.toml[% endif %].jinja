@@ -3,7 +3,9 @@ name = "[[ project_name ]]"
 version = "0.1.0"
 edition = "2024"
 description = [[ description | to_json(ensure_ascii=False) ]]
+[% if project_license == "MIT" %]
 license = "MIT"
+[% endif %]
 
 [dependencies]
 

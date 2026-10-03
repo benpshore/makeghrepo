@@ -61,6 +61,11 @@ jobs:
           uv tool install dist/*.whl
           makeghrepo --help
 
+  distribution:
+    uses: ./.github/workflows/distribution.yml
+    permissions:
+      contents: read
+
   plan:
     name: plan
     runs-on: ubuntu-24.04
@@ -233,7 +238,7 @@ jobs:
   ci:
     name: ci
     if: always()
-    needs: [test, plan, templates, actionlint, rust]
+    needs: [test, plan, templates, actionlint, rust, distribution]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

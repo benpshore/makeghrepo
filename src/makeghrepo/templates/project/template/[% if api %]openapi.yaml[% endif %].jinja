@@ -3,9 +3,11 @@ info:
   title: [[ project_name ]]
   description: [[ description | to_json(ensure_ascii=False) ]]
   version: 0.1.0
+[% if project_license == "MIT" %]
   license:
     name: MIT
     identifier: MIT
+[% endif %]
   contact:
     url: https://github.com/[[ github_owner ]]/[[ project_name ]]
 servers:

@@ -752,12 +752,13 @@ add_program(quiet_otter_objcpp src/main.mm)
 target_link_libraries(quiet_otter_objcpp PRIVATE "-framework Foundation")
 
 ### END
-### FILE Cargo.toml exec=0 bytes=174 encoding=utf-8
+### FILE Cargo.toml exec=0 bytes=190 encoding=utf-8
 [package]
 name = "quiet-otter"
 version = "0.1.0"
 edition = "2024"
 description = "a test project"
+license = "MIT"
 
 [dependencies]
 
@@ -786,6 +787,30 @@ source 'https://rubygems.org'
 gem 'minitest', '~> 6.0'
 gem 'rake', '~> 13.2'
 gem 'rubocop', '~> 1.80', require: false
+
+### END
+### FILE LICENSE exec=0 bytes=1066 encoding=utf-8
+MIT License
+
+Copyright (c) 2026 Test User
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ### END
 ### FILE Package.swift exec=0 bytes=356 encoding=utf-8
@@ -968,12 +993,15 @@ func TestGreets(t *testing.T) {
 }
 
 ### END
-### FILE openapi.yaml exec=0 bytes=728 encoding=utf-8
+### FILE openapi.yaml exec=0 bytes=773 encoding=utf-8
 openapi: 3.1.0
 info:
   title: quiet-otter
   description: "a test project"
   version: 0.1.0
+  license:
+    name: MIT
+    identifier: MIT
   contact:
     url: https://github.com/someone/quiet-otter
 servers:
@@ -1002,7 +1030,7 @@ paths:
                     const: ok
 
 ### END
-### FILE package.json exec=0 bytes=585 encoding=utf-8
+### FILE package.json exec=0 bytes=605 encoding=utf-8
 {
   "name": "quiet-otter",
   "version": "0.1.0",
@@ -1024,16 +1052,18 @@ paths:
     "stylelint-config-standard": "^40",
     "typescript": "^5.9",
     "@types/node": "^24"
-  }
+  },
+  "license": "MIT"
 }
 
 ### END
-### FILE pyproject.toml exec=0 bytes=913 encoding=utf-8
+### FILE pyproject.toml exec=0 bytes=929 encoding=utf-8
 [project]
 name = "quiet-otter"
 dynamic = ["version"]
 description = "a test project"
 readme = "README.md"
+license = "MIT"
 authors = [{ name = "Test User" }]
 requires-python = ">=3.14"
 dependencies = []
