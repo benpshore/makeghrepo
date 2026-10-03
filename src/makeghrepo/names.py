@@ -73,6 +73,6 @@ _VALID_OWNER = re.compile(r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$")
 
 
 def validate_owner(owner: str) -> str:
-    if not _VALID_OWNER.match(owner):
+    if len(owner) > 39 or not _VALID_OWNER.fullmatch(owner):
         raise ValueError(f"invalid GitHub owner {owner!r}")
     return owner

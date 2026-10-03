@@ -1,0 +1,452 @@
+#!/usr/bin/env python3
+"""Exercise installed distributions in temporary directories on native CI runners.
+
+The candidate path upgrades an unpinned local Git source from v0.33.0 to this
+checkout. Its v0.34.0 tag exists only inside a disposable clone. --release instead
+downloads published assets and verifies the native binary's checksum first.
+Neither path creates GitHub repositories, pushes refs, or changes user tools.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+import zipfile
+from contextlib import contextmanager
+from email.parser import BytesParser
+from pathlib import Path
+
+REPOSITORY = "benpshore/makeghrepo"
+BASELINE_TAG = "v0.33.0"
+CANDIDATE_VERSION = "0.34.0"
+TARGETS = {
+    ("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
+    ("Linux", "aarch64"): "aarch64-unknown-linux-gnu",
+    ("Darwin", "arm64"): "aarch64-apple-darwin",
+}
+# name, languages, private, Python library, explicitly requested license
+CASES = (
+    ("base", (), False, False, None),
+    ("private", (), True, False, "none"),
+    ("python-lib", ("python",), False, True, None),
+    ("rust", ("rust",), False, False, None),
+    ("npm-api", ("js", "ts", "css", "api"), False, False, None),
+    ("shell", ("shell",), False, False, None),
+    ("mit", ("python", "rust", "js", "api"), False, False, "MIT"),
+    ("private-mit", ("python", "rust", "js", "api"), True, False, "MIT"),
+)
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def run(command, *, env=None, cwd=None, timeout=900) -> str:
+    result = subprocess.run(
+        [str(part) for part in command],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            f"{command[0]} exited {result.returncode}:\n{(result.stdout + result.stderr)[-8000:]}"
+        )
+    return result.stdout.strip()
+
+
+@contextmanager
+def stage(evidence: dict, name: str):
+    print(f"distribution: {name}", flush=True)
+    start = time.monotonic()
+    try:
+        yield
+    finally:
+        evidence["stages"].append({"name": name, "seconds": round(time.monotonic() - start, 3)})
+
+
+def sha256(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def wheel_version(path: Path) -> str:
+    with zipfile.ZipFile(path) as wheel:
+        metadata = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
+        require(len(metadata) == 1, "wheel must contain exactly one distribution's metadata")
+        parsed = BytesParser().parsebytes(wheel.read(metadata[0]))
+    require(parsed["Name"] == "makeghrepo", "unexpected wheel project")
+    require(bool(parsed["Version"]), "wheel has no version")
+    return parsed["Version"]
+
+
+def verify_checksum(binary: Path, checksum: Path) -> str:
+    # Accept only the one exact asset, never paths or extra commands from a checksum file.
+    match = re.fullmatch(r"([0-9a-f]{64})  (\S+)\n?", checksum.read_text())
+    require(match is not None and match[2] == binary.name, "invalid native checksum manifest")
+    actual = sha256(binary)
+    require(actual == match[1], "native release checksum mismatch")
+    return actual
+
+
+def rendered_files(root: Path) -> dict[str, tuple[bool, bytes]]:
+    require(root.is_dir() and not root.is_symlink(), "render root must be a real directory")
+    files = {}
+    for path in sorted(root.rglob("*")):
+        require(not path.is_symlink(), f"symlink in rendered project: {path}")
+        if path.is_dir():
+            continue
+        mode = path.stat().st_mode
+        require(stat.S_ISREG(mode), f"non-regular rendered file: {path}")
+        files[path.relative_to(root).as_posix()] = (bool(mode & stat.S_IXUSR), path.read_bytes())
+    require(not (root / ".git").exists(), "offline render initialized a git repository")
+    return files
+
+
+def compare_trees(reference: Path, other: Path) -> dict:
+    expected, actual = rendered_files(reference), rendered_files(other)
+    differences = sorted(
+        name for name in expected.keys() | actual.keys() if expected.get(name) != actual.get(name)
+    )
+    require(not differences, f"renderer file/content/execute-bit differences: {differences}")
+    digest = hashlib.sha256()
+    for name, (executable, content) in expected.items():
+        digest.update(name.encode() + b"\0" + bytes([executable]) + len(content).to_bytes(8))
+        digest.update(content)
+    return {"files": len(expected), "tree_sha256": digest.hexdigest()}
+
+
+def check_license(root: Path, requested: str | None) -> None:
+    mit = requested == "MIT"
+    require((root / "LICENSE").exists() == mit, "LICENSE did not match the explicit choice")
+    if mit:
+        require((root / "LICENSE").read_text().startswith("MIT License\n"), "unexpected license")
+    for filename, section in (("pyproject.toml", "project"), ("Cargo.toml", "package")):
+        if (root / filename).exists():
+            data = tomllib.loads((root / filename).read_text())[section]
+            require(data.get("license") == ("MIT" if mit else None), f"{filename} license mismatch")
+    if (root / "package.json").exists():
+        data = json.loads((root / "package.json").read_text())
+        require(data.get("license") == ("MIT" if mit else None), "npm license mismatch")
+        require(data["private"] is True, "npm publication protection changed")
+    if (root / "openapi.yaml").exists():
+        text = (root / "openapi.yaml").read_text()
+        has_license = bool(re.search(r"(?m)^  license:\s*$", text))
+        require(has_license == mit, "OpenAPI license mismatch")
+        if mit:
+            require("    identifier: MIT\n" in text, "OpenAPI MIT identifier missing")
+
+
+def isolated_env(root: Path) -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("GH_", "GITHUB_", "UV_", "PIP_", "GIT_"))
+        and key not in {"SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS", "PYTHONPATH", "VIRTUAL_ENV"}
+    }
+    env.update(
+        UV_CACHE_DIR=str(root / "cache"),
+        UV_PYTHON_INSTALL_DIR=str(root / "python"),
+        UV_NO_PROGRESS="1",
+        UV_NO_CONFIG="1",
+        GIT_CONFIG_GLOBAL=str(root / "empty-gitconfig"),
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_TERMINAL_PROMPT="0",
+        NO_COLOR="1",
+        COLUMNS="140",
+    )
+    return env
+
+
+def tool_env(root: Path, base: dict[str, str]) -> dict[str, str]:
+    return {
+        **base,
+        "UV_TOOL_DIR": str(root / "tools"),
+        "UV_TOOL_BIN_DIR": str(root / "bin"),
+    }
+
+
+def installed_metadata(env: dict[str, str]) -> dict:
+    metadata = list(Path(env["UV_TOOL_DIR"]).rglob("makeghrepo-*.dist-info/METADATA"))
+    require(len(metadata) == 1, "expected one isolated installed makeghrepo distribution")
+    parsed = BytesParser().parsebytes(metadata[0].read_bytes())
+    receipt = metadata[0].with_name("direct_url.json")
+    source = json.loads(receipt.read_text()) if receipt.exists() else {}
+    return {"version": parsed["Version"], "commit": source.get("vcs_info", {}).get("commit_id")}
+
+
+def install_wheel(wheel: Path, env: dict[str, str]) -> Path:
+    run(["uv", "tool", "install", "--python", "3.14", wheel], env=env)
+    return Path(env["UV_TOOL_BIN_DIR"]) / "makeghrepo"
+
+
+def offline_env(root: Path, env: dict[str, str]) -> tuple[dict[str, str], Path]:
+    bin_dir = root / "offline-bin"
+    bin_dir.mkdir()
+    sentinel = root / "unexpected-gh-call"
+    gh = bin_dir / "gh"
+    gh.write_text(
+        f"#!{sys.executable}\nfrom pathlib import Path\n"
+        f"Path({str(sentinel)!r}).write_text('called')\nraise SystemExit(91)\n"
+    )
+    gh.chmod(0o755)
+    return {**env, "PATH": str(bin_dir) + os.pathsep + env["PATH"]}, sentinel
+
+
+def check_installed_tools(tools: dict[str, Path], version: str, root: Path, env: dict) -> dict:
+    offline, sentinel = offline_env(root, env)
+    for name, binary in tools.items():
+        actual = run([binary, "--version"], env=offline, timeout=30)
+        require(actual == f"makeghrepo {version}", f"{name} reports unexpected version: {actual}")
+        for flag in ("-h", "--help"):
+            help_text = run([binary, flag], env=offline, timeout=30)
+            for option in ("--render", "--license", "--version"):
+                require(option in help_text, f"{name} {flag} omits {option}")
+    results = []
+    for case, languages, private, lib, license_choice in CASES:
+        outputs = []
+        for name, binary in tools.items():
+            dest = root / "rendered" / case / name
+            args = [
+                binary,
+                "quiet-otter",
+                *languages,
+                "--render",
+                dest,
+                "--owner",
+                "distribution-test",
+                "--author",
+                "Distribution Test",
+                "--description",
+                "Distribution acceptance fixture",
+                "--year",
+                "2026",
+            ]
+            if private:
+                args.append("--private")
+            if lib:
+                args.append("--lib")
+            if license_choice is not None:
+                args += ["--license", license_choice]
+            run(args, env=offline, timeout=60)
+            require(not sentinel.exists(), f"{name} contacted gh during an offline command")
+            check_license(dest, license_choice)
+            outputs.append(dest)
+        comparison = {}
+        for output in outputs[1:]:
+            comparison = compare_trees(outputs[0], output)
+        results.append({"case": case, **comparison})
+    bootstrap = Path(__file__).resolve().with_name("bootstrap-check")
+    require(bootstrap.is_file(), "scripts/bootstrap-check is required for distribution acceptance")
+    report = root / "bootstrap-evidence.json"
+    checked = {name: tools[name] for name in ("python-wheel", "rust")}
+    run([sys.executable, bootstrap, *checked.values(), "--output", report], env=env, timeout=300)
+    bootstrap_results = json.loads(report.read_text())
+    return {
+        "render_cases": results,
+        "bootstrap": {
+            name: bootstrap_results[str(binary.resolve())] for name, binary in checked.items()
+        },
+    }
+
+
+def candidate_check(repo: Path, target: str, root: Path, evidence: dict, env: dict) -> None:
+    source = root / "source"
+    with stage(evidence, "prepare isolated Git source"):
+        require(
+            not run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo, env=env),
+            "commit tracked source changes before testing the candidate distribution",
+        )
+        candidate = run(["git", "rev-parse", "HEAD"], cwd=repo, env=env)
+        baseline = run(["git", "rev-parse", f"{BASELINE_TAG}^{{commit}}"], cwd=repo, env=env)
+        require(candidate != baseline, "candidate must contain changes after the upgrade baseline")
+        run(["git", "clone", "--no-hardlinks", "--no-checkout", repo, source], env=env)
+        # A candidate might already have a newer release tag. Keep version inputs
+        # deterministic inside this disposable clone, without modifying the source.
+        tags = run(["git", "tag", "--list", "v*"], cwd=source, env=env).splitlines()
+        stale = [tag for tag in tags if tag != BASELINE_TAG]
+        if stale:
+            run(["git", "tag", "-d", *stale], cwd=source, env=env)
+        run(["git", "checkout", "-B", "distribution-source", baseline], cwd=source, env=env)
+        evidence.update(candidate_commit=candidate, baseline_commit=baseline)
+    git_env = tool_env(root / "git-install", env)
+    with stage(evidence, "clean Git install of v0.33.0"):
+        run(["uv", "tool", "install", "--python", "3.14", "git+" + source.as_uri()], env=git_env)
+        before = installed_metadata(git_env)
+        require(before == {"version": "0.33.0", "commit": baseline}, f"wrong baseline: {before}")
+        run([Path(git_env["UV_TOOL_BIN_DIR"]) / "makeghrepo", "--help"], env=env)
+    with stage(evidence, "build candidate wheel"):
+        run(["git", "checkout", "distribution-source"], cwd=source, env=env)
+        run(["git", "reset", "--hard", candidate], cwd=source, env=env)
+        run(
+            [
+                "git",
+                "-c",
+                "user.name=Distribution acceptance",
+                "-c",
+                "user.email=distribution@example.invalid",
+                "tag",
+                "--force",
+                "-a",
+                f"v{CANDIDATE_VERSION}",
+                "-m",
+                "Disposable distribution fixture",
+                candidate,
+            ],
+            cwd=source,
+            env=env,
+        )
+        run(["uv", "build", "--wheel", "--out-dir", root / "dist"], cwd=source, env=env)
+        wheels = list((root / "dist").glob("*.whl"))
+        require(len(wheels) == 1, "candidate must build exactly one wheel")
+        wheel = wheels[0]
+        require(wheel_version(wheel) == CANDIDATE_VERSION, "candidate wheel version mismatch")
+    with stage(evidence, "build native release binary"):
+        build_env = {
+            **env,
+            "CARGO_TARGET_DIR": str(root / "target"),
+            "MAKEGHREPO_VERSION": CANDIDATE_VERSION,
+        }
+        evidence["rustc"] = run(["rustc", "--version"], env=env)
+        run(
+            ["cargo", "build", "--release", "--locked", "--target", target],
+            cwd=source / "rust",
+            env=build_env,
+            timeout=1500,
+        )
+        binary = root / "target" / target / "release" / "makeghrepo"
+        evidence.update(
+            version=CANDIDATE_VERSION,
+            rust_profile="release",
+            artifacts={wheel.name: sha256(wheel), f"makeghrepo-{target}": sha256(binary)},
+        )
+    wheel_env = tool_env(root / "wheel-install", env)
+    with stage(evidence, "clean wheel install"):
+        python_wheel = install_wheel(wheel, wheel_env)
+        require(
+            installed_metadata(wheel_env)["version"] == CANDIDATE_VERSION,
+            "clean wheel installation has wrong version",
+        )
+    with stage(evidence, "upgrade existing Git tool installation"):
+        run(["uv", "tool", "upgrade", "makeghrepo"], env=git_env)
+        after = installed_metadata(git_env)
+        require(
+            after == {"version": CANDIDATE_VERSION, "commit": candidate},
+            f"Git upgrade did not select the candidate commit/version: {after}",
+        )
+        evidence["git_upgrade"] = {"before": before, "after": after}
+    with stage(evidence, "installed CLI, renderer, and bootstrap parity"):
+        evidence.update(
+            check_installed_tools(
+                {
+                    "python-wheel": python_wheel,
+                    "python-git": Path(git_env["UV_TOOL_BIN_DIR"]) / "makeghrepo",
+                    "rust": binary,
+                },
+                CANDIDATE_VERSION,
+                root,
+                env,
+            )
+        )
+
+
+def release_check(tag: str, target: str, root: Path, evidence: dict, env: dict) -> None:
+    require(
+        re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag) is not None,
+        "--release expects a stable vMAJOR.MINOR.PATCH tag",
+    )
+    version = tag[1:]
+    evidence.update(version=version, release=tag, repository=REPOSITORY)
+    downloads = root / "downloads"
+    downloads.mkdir()
+    binary = downloads / f"makeghrepo-{target}"
+    checksum = binary.with_name(binary.name + ".sha256")
+    wheel = downloads / f"makeghrepo-{version}-py3-none-any.whl"
+    with stage(evidence, "download and verify published assets"):
+        # Only this read-only download retains the caller's gh authentication.
+        run(
+            [
+                "gh",
+                "release",
+                "download",
+                tag,
+                "--repo",
+                REPOSITORY,
+                "--dir",
+                downloads,
+                "--pattern",
+                binary.name,
+                "--pattern",
+                checksum.name,
+                "--pattern",
+                wheel.name,
+            ]
+        )
+        digest = verify_checksum(binary, checksum)
+        require(wheel_version(wheel) == version, "published wheel version does not match its tag")
+        binary.chmod(0o755)
+        evidence["artifacts"] = {
+            binary.name: digest,
+            checksum.name: sha256(checksum),
+            wheel.name: sha256(wheel),
+        }
+    with stage(evidence, "clean published wheel install"):
+        python = install_wheel(wheel, tool_env(root / "wheel-install", env))
+    with stage(evidence, "published CLI, renderer, and bootstrap parity"):
+        evidence.update(
+            check_installed_tools({"python-wheel": python, "rust": binary}, version, root, env)
+        )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--release", metavar="TAG", help="test published assets instead of source")
+    parser.add_argument("--expected-target", choices=sorted(TARGETS.values()))
+    parser.add_argument("--evidence", type=Path, default=Path("distribution-evidence.json"))
+    args = parser.parse_args()
+    evidence = {"platform": platform.platform(), "stages": [], "status": "failed"}
+    try:
+        target = TARGETS.get((platform.system(), platform.machine()))
+        require(target is not None, "this platform has no supported native makeghrepo distribution")
+        require(args.expected_target in (None, target), "runner architecture does not match target")
+        evidence["target"] = target
+        with tempfile.TemporaryDirectory(prefix="makeghrepo-distribution-") as temporary:
+            root = Path(temporary).resolve()
+            env = isolated_env(root)
+            if args.release:
+                release_check(args.release, target, root, evidence, env)
+            else:
+                candidate_check(Path(__file__).resolve().parents[1], target, root, evidence, env)
+        evidence["status"] = "passed"
+        return 0
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        subprocess.TimeoutExpired,
+        zipfile.BadZipFile,
+    ) as exc:
+        evidence["error"] = str(exc)
+        print(f"distribution: failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        args.evidence.parent.mkdir(parents=True, exist_ok=True)
+        args.evidence.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+        print(f"distribution evidence: {args.evidence}", flush=True)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

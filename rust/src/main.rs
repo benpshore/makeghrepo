@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, Parser};
 use serde_json::{Value, json};
 
 fn version() -> &'static str {
@@ -24,8 +24,7 @@ fn version() -> &'static str {
 #[command(
     name = "makeghrepo",
     version = version(),
-    about = "Create a new GitHub repo, fully configured. Re-run the same command to resume.",
-    after_help = "Languages (any number, or none): python, rust, swift, js, css, c, cpp, objc, objcpp, api, postgres, sql, docker, shell."
+    about = "Create a new GitHub repo, fully configured. Re-run the same command to resume."
 )]
 struct Cli {
     /// [NAME] [LANGUAGE]...
@@ -36,6 +35,9 @@ struct Cli {
     /// python: library layout, no console script (like uv init --lib)
     #[arg(long)]
     lib: bool,
+    /// Project license: none by default; MIT only when requested.
+    #[arg(long, value_parser = ["none", "MIT"])]
+    license: Option<String>,
     /// Dry run: render the project into DIR and stop (no checks, no git, no GitHub).
     #[arg(long, value_name = "DIR")]
     render: Option<PathBuf>,
@@ -82,11 +84,18 @@ fn current_year() -> String {
     (if m <= 2 { y + 1 } else { y }).to_string()
 }
 
-/// Split a tests/golden combo name into (languages, private, lib).
-fn parse_combo(langs: &[registry::Lang], name: &str) -> Result<(Vec<String>, bool, bool), String> {
-    let (body, private) = match name.strip_suffix("-private") {
+/// Split a tests/golden combo name into (languages, private, lib, MIT).
+fn parse_combo(
+    langs: &[registry::Lang],
+    name: &str,
+) -> Result<(Vec<String>, bool, bool, bool), String> {
+    let (body, mit) = match name.strip_suffix("-mit") {
         Some(b) => (b, true),
         None => (name, false),
+    };
+    let (body, private) = match body.strip_suffix("-private") {
+        Some(b) => (b, true),
+        None => (body, false),
     };
     let (body, lib) = match body.strip_suffix("-lib") {
         Some(b) => (b, true),
@@ -104,7 +113,25 @@ fn parse_combo(langs: &[registry::Lang], name: &str) -> Result<(Vec<String>, boo
             })
             .collect::<Result<Vec<_>, _>>()?,
     };
-    Ok((languages, private, lib))
+    Ok((languages, private, lib, mit))
+}
+
+fn validate_resume_license(marker: &Value, requested: Option<&str>) -> Result<(), String> {
+    // Older makeghrepo versions always generated MIT, before recording a choice.
+    let recorded = match marker.get("license") {
+        None => "MIT",
+        Some(value) => value.as_str().unwrap_or_default(),
+    };
+    if !matches!(recorded, "none" | "MIT") {
+        return Err("invalid recorded license; review the resume marker".into());
+    }
+    if requested.is_some_and(|license| license != recorded) {
+        return Err(format!(
+            "project was created with license {recorded}; \
+             a resume never changes licensing. Re-run without --license"
+        ));
+    }
+    Ok(())
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -131,9 +158,12 @@ fn project_name(raw: &str, langs: &[registry::Lang], chosen: &[String]) -> Resul
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
     let langs = registry::load();
     let all: Vec<String> = registry::ids(&langs);
+    let matches = Cli::command()
+        .after_help(format!("Languages (any number, or none): {}.", all.join(", ")))
+        .get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
 
     // A leading non-language word is the name; otherwise pick a random one.
     let mut words = cli.words.clone();
@@ -163,12 +193,12 @@ fn main() -> ExitCode {
 
     // Offline modes: render only, or render and print the golden serialization.
     if cli.snapshot || cli.render.is_some() {
-        let (languages, private, lib) = match &cli.combo {
+        let (languages, private, lib, mit) = match &cli.combo {
             Some(name) => match parse_combo(&langs, name) {
                 Ok(c) => c,
                 Err(e) => return fail(&e),
             },
-            None => (chosen.clone(), cli.private, cli.lib),
+            None => (chosen.clone(), cli.private, cli.lib, false),
         };
         let name = match project_name(
             raw_name.as_deref().unwrap_or("quiet-otter"),
@@ -190,6 +220,11 @@ fn main() -> ExitCode {
             year: cli.year.clone().unwrap_or_else(|| "2026".into()),
             private,
             py_lib: lib,
+            project_license: cli
+                .license
+                .as_deref()
+                .unwrap_or(if mit { "MIT" } else { "none" })
+                .into(),
             languages,
         };
         if let Some(dir) = &cli.render {
@@ -282,6 +317,9 @@ fn main() -> ExitCode {
             ));
         }
         want_private = marker_private;
+        if let Err(e) = validate_resume_license(&marker, cli.license.as_deref()) {
+            return fail(&format!("{repo}: {e}"));
+        }
         let recorded: Vec<String> = marker["languages"]
             .as_array()
             .into_iter()
@@ -327,6 +365,7 @@ fn main() -> ExitCode {
             year: current_year(),
             private: cli.private,
             py_lib: cli.lib,
+            project_license: cli.license.clone().unwrap_or_else(|| "none".into()),
             languages: chosen.clone(),
         };
         if let Err(e) = render::render(&dest, &langs, &data) {
@@ -349,6 +388,10 @@ fn main() -> ExitCode {
         marker.insert("private".into(), json!(cli.private));
         marker.insert("languages".into(), json!(chosen));
         marker.insert("lib".into(), json!(cli.lib));
+        marker.insert(
+            "license".into(),
+            json!(cli.license.as_deref().unwrap_or("none")),
+        );
         marker.insert(
             "created_by".into(),
             json!(format!("makeghrepo {} (rust)", version())),
@@ -423,5 +466,41 @@ fn main() -> ExitCode {
             failed.len()
         ));
         ExitCode::from(2)
+    }
+}
+
+#[cfg(test)]
+mod license_tests {
+    use super::*;
+
+    #[test]
+    fn cli_requires_an_explicit_supported_license() {
+        assert!(Cli::try_parse_from(["makeghrepo"]).unwrap().license.is_none());
+        for license in ["none", "MIT"] {
+            assert_eq!(
+                Cli::try_parse_from(["makeghrepo", "--license", license])
+                    .unwrap()
+                    .license
+                    .as_deref(),
+                Some(license)
+            );
+        }
+        assert!(Cli::try_parse_from(["makeghrepo", "--license", "arbitrary"]).is_err());
+    }
+
+    #[test]
+    fn resume_keeps_the_recorded_license_including_legacy_markers() {
+        for marker in [json!({}), json!({"license": "MIT"})] {
+            assert!(validate_resume_license(&marker, None).is_ok());
+            assert!(validate_resume_license(&marker, Some("MIT")).is_ok());
+            assert!(validate_resume_license(&marker, Some("none")).is_err());
+        }
+        let marker = json!({"license": "none"});
+        assert!(validate_resume_license(&marker, None).is_ok());
+        assert!(validate_resume_license(&marker, Some("none")).is_ok());
+        assert!(validate_resume_license(&marker, Some("MIT")).is_err());
+        for invalid in [json!(null), json!(false), json!("arbitrary")] {
+            assert!(validate_resume_license(&json!({"license": invalid}), None).is_err());
+        }
     }
 }
