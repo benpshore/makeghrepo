@@ -1,10 +1,13 @@
-[[ {
+[% set package = {
   "name": project_name,
   "version": "0.1.0",
   "description": description,
-  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": npm_scripts,
   "devDependencies": npm_dev,
-} | to_nice_json(indent=2, ensure_ascii=False, sort_keys=False) ]]
+} %]
+[% if project_license == "MIT" %]
+[% set package = dict(package, license="MIT") %]
+[% endif %]
+[[ package | to_nice_json(indent=2, ensure_ascii=False, sort_keys=False) ]]

@@ -51,12 +51,14 @@ def test_unique_random_name_gives_up():
         names.unique_random_name(lambda _: True, attempts=3)
 
 
-@pytest.mark.parametrize("bad", ["-x", "..", "a/b", "a--b", "", "x" * 40, "-", "a b"])
+@pytest.mark.parametrize(
+    "bad", ["-x", "..", "a/b", "a--b", "", "x" * 40, "a-" * 20 + "a", "-", "a b", "a\n"]
+)
 def test_validate_owner_rejects(bad):
     with pytest.raises(ValueError):
         names.validate_owner(bad)
 
 
-@pytest.mark.parametrize("good", ["benpshore", "Some-Org", "a1"])
+@pytest.mark.parametrize("good", ["benpshore", "Some-Org", "a1", "a-" * 19 + "a"])
 def test_validate_owner_accepts(good):
     assert names.validate_owner(good) == good

@@ -4,11 +4,11 @@ import json
 
 import golden_snapshots as gs
 
-PRIVATE = {"base-private", "python-private", "all-private"}
+METADATA_VARIANTS = {"base-private", "python-private", "all-private", "all-mit", "all-private-mit"}
 
 
-def test_every_public_combo_is_checked():
-    assert {e["combo"] for e in gs.ci_matrix()["include"]} == set(gs.COMBOS) - PRIVATE
+def test_every_distinct_check_combo_is_checked():
+    assert {e["combo"] for e in gs.ci_matrix()["include"]} == set(gs.COMBOS) - METADATA_VARIANTS
 
 
 def test_runners():

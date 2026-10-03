@@ -34,7 +34,7 @@ def files_of(root: Path) -> set[str]:
 
 
 BASE = {
-    ".gitignore", ".editorconfig", "README.md", "LICENSE", "AGENTS.md", "CLAUDE.md", "SECURITY.md",
+    ".gitignore", ".editorconfig", "README.md", "AGENTS.md", "CLAUDE.md", "SECURITY.md",
     ".github/dependabot.yml", ".github/pull_request_template.md", ".github/workflows/ci.yml",
     ".github/workflows/release.yml", ".github/workflows/codeql.yml",
     ".github/ISSUE_TEMPLATE/bug.yml", ".github/ISSUE_TEMPLATE/feature.yml",
@@ -44,6 +44,30 @@ BASE = {
 
 def test_no_language_is_just_the_base(tmp_path):
     assert files_of(render(tmp_path, [])) == BASE
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("project_license", [None, "none", "MIT"])
+def test_license_grant_requires_an_explicit_choice(tmp_path, private, project_license):
+    import json
+
+    options = {} if project_license is None else {"project_license": project_license}
+    dest = render(tmp_path, ["python", "rust", "js", "api"], private=private, **options)
+    metadata = [
+        tomllib.loads((dest / "pyproject.toml").read_text())["project"],
+        tomllib.loads((dest / "Cargo.toml").read_text())["package"],
+        json.loads((dest / "package.json").read_text()),
+        yaml.safe_load((dest / "openapi.yaml").read_text())["info"],
+    ]
+    if project_license == "MIT":
+        assert all(item["license"] == "MIT" for item in metadata[:3])
+        assert metadata[3]["license"] == {"name": "MIT", "identifier": "MIT"}
+        assert (dest / "LICENSE").read_text().startswith("MIT License\n")
+        assert "Test User" in (dest / "LICENSE").read_text()
+    else:
+        assert all("license" not in item for item in metadata)
+        assert not (dest / "LICENSE").exists()
+    assert metadata[2]["private"] is True
 
 
 @pytest.mark.parametrize("private", [False, True])

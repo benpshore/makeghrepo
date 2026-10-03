@@ -37,6 +37,10 @@ private:
 py_lib:
   type: bool
   default: false
+project_license:
+  type: str
+  choices: ["none", "MIT"]
+  default: "none"
 languages:
   type: yaml
   default: "[]"

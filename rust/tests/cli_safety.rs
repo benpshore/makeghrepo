@@ -39,6 +39,20 @@ fn output_text(output: &Output) -> String {
 }
 
 #[test]
+fn help_lists_every_registry_language() {
+    let output = binary().arg("--help").env("PATH", "").output().unwrap();
+    assert!(output.status.success(), "{}", output_text(&output));
+    let text = output_text(&output);
+    let registry = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/makeghrepo/langs");
+    for entry in fs::read_dir(registry).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "toml") {
+            assert!(text.contains(path.file_stem().unwrap().to_str().unwrap()));
+        }
+    }
+}
+
+#[test]
 fn offline_render_normalizes_names_and_keeps_files_inside_destination() {
     let temp = TempDir::new();
     for (raw, normalized) in [("My Repo", "my_repo"), ("../../escaped", "escaped")] {
