@@ -56,13 +56,14 @@ def test_auto_release_keeps_exact_sha_checkout_and_ci_gate(workflows):
     if not path.exists():
         return
     release = yaml.safe_load(path.read_text())
-    steps = release["jobs"]["release"]["steps"]
+    job = release["jobs"].get("build", release["jobs"]["release"])
+    steps = job["steps"]
     wait_index, wait = next(
         (i, step)
         for i, step in enumerate(steps)
         if step.get("name") == "Wait for this commit's ci check"
     )
-    env = release["jobs"]["release"].get("env", {}) | wait.get("env", {})
+    env = job.get("env", {}) | wait.get("env", {})
     assert env["SHA"] == "${{ github.sha }}"
     assert "commits/$SHA/check-runs?check_name=ci" in wait["run"]
     assert '.app.slug == "github-actions"' in wait["run"]
@@ -72,3 +73,27 @@ def test_auto_release_keeps_exact_sha_checkout_and_ci_gate(workflows):
             assert i > wait_index
             assert step["with"]["ref"] == "${{ github.sha }}"
             assert step["with"]["fetch-depth"] == 0
+
+
+def test_auto_release_isolates_write_credentials_from_project_code(workflows):
+    path = workflows / "auto-release.yml"
+    if not path.exists():
+        return
+    release = yaml.safe_load(path.read_text())
+    if "build" not in release["jobs"]:
+        return  # This regression test covers the generated workflow.
+    build = release["jobs"]["build"]
+    publish = release["jobs"]["release"]
+
+    assert build["permissions"] == {"contents": "read"}
+    assert "GH_TOKEN" not in build.get("env", {})
+    checkout = next(
+        step for step in build["steps"] if step.get("uses", "").startswith("actions/checkout@")
+    )
+    assert checkout["with"]["persist-credentials"] is False
+    assert publish["permissions"] == {"contents": "write"}
+    assert not any(
+        command in step.get("run", "")
+        for step in publish["steps"]
+        for command in ("uv sync", "uv run pytest", "uv build")
+    )
