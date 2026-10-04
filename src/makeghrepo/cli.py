@@ -1,4 +1,21 @@
-"""makeghrepo [NAME] [LANGUAGE]... [--private]"""
+"""Create or resume a project with one policy from parsing through publication.
+
+The CLI is the junction between local project generation and GitHub enforcement.
+With no options, both policy bools are False: templates describe required PRs/CI
+and configuration builds both rules. With --no-ci, only the check requirement is
+omitted; the generated workflows and the PR/review-thread requirement remain.
+With --no-pr, direct pushes are permitted but still need CI unless --no-ci is
+also selected. Keeping these choices independent avoids contradictory promises.
+
+Offline rendering passes the choices straight to the shared template and stops.
+Creation passes them to that same renderer, then records them before local checks
+can fail. Resume restores the original marker choices before any mutation; it
+never rewrites generated text or treats an omitted flag as a change of policy.
+Finally, GitHub configuration applies the effective choices to new rules while
+refusing to weaken stricter live policy. That last refusal matters: the marker is
+our retry record, not authority to undo a repository owner's later decisions.
+Rust follows this same flow, with shared templates and offline parity tests.
+"""
 
 from __future__ import annotations
 

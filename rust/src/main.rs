@@ -1,6 +1,22 @@
 //! makeghrepo [NAME] [LANGUAGE]... [--private] [--lib]
 //!
 //! The Rust port of the Python tool: same template, same registry, same steps.
+//!
+//! Creation policy travels as one choice through this bootstrap, not as separate
+//! renderer and API switches. Clap's false defaults mean required PRs and CI;
+//! --no-ci omits only the check rule, and --no-pr omits only the PR/review rule.
+//! Thus --no-pr alone permits direct pushes but still requires passing CI.
+//! Both flags keep workflows and local smoke checks because execution and merge
+//! enforcement answer different questions; dropping files could strand a gate.
+//!
+//! Offline rendering uses those choices immediately and stops. Creation renders
+//! the same shared template, writes the local retry marker, runs checks, and sends
+//! the effective policy to GitHub configuration. Resume restores that marker
+//! before mutation and leaves generated files intact. The API planner then refuses
+//! any opt-out that would weaken an existing live requirement or bypass policy:
+//! our marker preserves a creation decision, not permission to undo later owner
+//! changes. Shared payload fixtures and byte parity make the Python/Rust story
+//! testable at both ends, rather than relying on two implementations looking alike.
 
 mod github;
 mod gitops;
