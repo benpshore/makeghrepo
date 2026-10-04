@@ -50,6 +50,8 @@ jobs:
           path: ${{ runner.temp }}/ruff-format.patch
       - name: Lint
         run: uv run ruff check --output-format=github
+      - name: Verify unchanged default golden snapshots
+        run: uv run scripts/regen-golden --check
       - name: Test
         run: uv run pytest
       # Snapshots are rendered here, not on a dev machine. Only trusted runs

@@ -242,7 +242,9 @@ fn configure_ruleset_policy_with(
             // exact-owner exception. Opt-out retries must not loosen that choice;
             // retain the pre-existing migration behavior only for default policy.
             if (no_ci || no_pr) && index == 1 && saved["bypass_actors"] != body["bypass_actors"] {
-                return Err("creation opt-outs cannot add an owner bypass to an existing gate".into());
+                return Err(
+                    "creation opt-outs cannot add an owner bypass to an existing gate".into(),
+                );
             }
             for rule in saved["rules"].as_array().ok_or("invalid ruleset rules")? {
                 let kind = rule["type"].as_str().ok_or("invalid rule type")?;
@@ -707,64 +709,99 @@ mod tests {
             self.configure_policy(false, false, false)
         }
 
-        fn configure_policy(&mut self, no_ci: bool, no_pr: bool, validate_only: bool) -> Result<(), String> {
-            configure_ruleset_policy_with("me/r", no_ci, no_pr, validate_only, |method, path, body| {
-                self.calls.push((method.into(), path.into(), body.cloned()));
-                if method == "GET" {
-                    if path == "repos/me/r" {
-                        return Ok(json!({"owner": self.owner}));
+        fn configure_policy(
+            &mut self,
+            no_ci: bool,
+            no_pr: bool,
+            validate_only: bool,
+        ) -> Result<(), String> {
+            configure_ruleset_policy_with(
+                "me/r",
+                no_ci,
+                no_pr,
+                validate_only,
+                |method, path, body| {
+                    self.calls.push((method.into(), path.into(), body.cloned()));
+                    if method == "GET" {
+                        if path == "repos/me/r" {
+                            return Ok(json!({"owner": self.owner}));
+                        }
+                        if path.contains('?') {
+                            let page: usize = path.rsplit("page=").next().unwrap().parse().unwrap();
+                            return Ok(json!(
+                                self.state
+                                    .iter()
+                                    .skip((page - 1) * 100)
+                                    .take(100)
+                                    .map(|(id, v)| json!({"id": id, "name": v["name"]}))
+                                    .collect::<Vec<_>>()
+                            ));
+                        }
+                        let id = path.rsplit('/').next().unwrap().parse::<u64>().unwrap();
+                        return Ok(self.state[&id].clone());
                     }
-                    if path.contains('?') {
-                        let page: usize = path.rsplit("page=").next().unwrap().parse().unwrap();
-                        return Ok(json!(
-                            self.state
-                                .iter()
-                                .skip((page - 1) * 100)
-                                .take(100)
-                                .map(|(id, v)| json!({"id": id, "name": v["name"]}))
-                                .collect::<Vec<_>>()
-                        ));
+                    if self.fail_write > 0 && self.writes().len() == self.fail_write {
+                        return Err("write rejected".into());
                     }
-                    let id = path.rsplit('/').next().unwrap().parse::<u64>().unwrap();
-                    return Ok(self.state[&id].clone());
-                }
-                if self.fail_write > 0 && self.writes().len() == self.fail_write {
-                    return Err("write rejected".into());
-                }
-                let id = if method == "PUT" {
-                    path.rsplit('/').next().unwrap().parse().unwrap()
-                } else {
-                    self.state.keys().last().copied().unwrap_or(0) + 1
-                };
-                self.state.insert(id, body.unwrap().clone());
-                Ok(json!({"id": id}))
-            })
+                    let id = if method == "PUT" {
+                        path.rsplit('/').next().unwrap().parse().unwrap()
+                    } else {
+                        self.state.keys().last().copied().unwrap_or(0) + 1
+                    };
+                    self.state.insert(id, body.unwrap().clone());
+                    Ok(json!({"id": id}))
+                },
+            )
         }
     }
 
     #[test]
     fn creation_matrix_matches_shared_fixture_and_survives_resume() {
-        let cases: Value = serde_json::from_str(include_str!("../../tests/fixtures/creation_policy.json")).unwrap();
+        let cases: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/creation_policy.json"))
+                .unwrap();
         for case in cases.as_array().unwrap() {
-            let (no_ci, no_pr) = (case["no_ci"].as_bool().unwrap(), case["no_pr"].as_bool().unwrap());
+            let (no_ci, no_pr) = (
+                case["no_ci"].as_bool().unwrap(),
+                case["no_pr"].as_bool().unwrap(),
+            );
             let body = review_ruleset_body_policy(123, no_ci, no_pr);
-            let types: Vec<_> = body["rules"].as_array().unwrap().iter().map(|r| r["type"].clone()).collect();
+            let types: Vec<_> = body["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["type"].clone())
+                .collect();
             assert_eq!(json!(types), case["rules"]);
-            assert_eq!(body["bypass_actors"], defaults()["review_ruleset"]["bypass_actors"]);
-            let mut api = RulesetApi::new([(7, json!({"name": "custom-policy", "rules": [{"type": "creation"}]}))]);
+            assert_eq!(
+                body["bypass_actors"],
+                defaults()["review_ruleset"]["bypass_actors"]
+            );
+            let mut api = RulesetApi::new([(
+                7,
+                json!({"name": "custom-policy", "rules": [{"type": "creation"}]}),
+            )]);
             api.configure_policy(no_ci, no_pr, true).unwrap();
             assert!(api.writes().is_empty());
             for _ in 0..2 {
                 api.configure_policy(no_ci, no_pr, false).unwrap();
                 assert!(api.state.values().any(|v| v == &ruleset_body()));
-                let gate = api.state.values().find(|v| v["name"] == REVIEW_RULESET_NAME);
+                let gate = api
+                    .state
+                    .values()
+                    .find(|v| v["name"] == REVIEW_RULESET_NAME);
                 if no_ci && no_pr {
                     assert!(gate.is_none());
                 } else {
                     assert_eq!(gate.unwrap(), &body);
                 }
                 assert_eq!(api.state[&7]["rules"], json!([{"type": "creation"}]));
-                assert!(api.writes().iter().all(|c| !c.2.as_ref().unwrap()["rules"].as_array().unwrap().is_empty()));
+                assert!(api.writes().iter().all(|c| {
+                    !c.2.as_ref().unwrap()["rules"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty()
+                }));
             }
         }
     }
@@ -793,7 +830,10 @@ mod tests {
             if no_ci {
                 body["rules"][0]["parameters"]["required_approving_review_count"] = json!(2);
             } else {
-                body["rules"][0]["parameters"]["required_status_checks"].as_array_mut().unwrap().push(json!({"context": "security"}));
+                body["rules"][0]["parameters"]["required_status_checks"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"context": "security"}));
             }
             let mut api = RulesetApi::new([(42, ruleset_body()), (43, body.clone())]);
             api.configure_policy(no_ci, no_pr, false).unwrap();

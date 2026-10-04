@@ -544,15 +544,28 @@ mod license_tests {
     fn exact_policy_options_and_resume_defaults() {
         for (no_ci, no_pr) in [(false, false), (true, false), (false, true), (true, true)] {
             let mut args = vec!["makeghrepo"];
-            if no_ci { args.push("--no-ci"); }
-            if no_pr { args.push("--no-pr"); }
+            if no_ci {
+                args.push("--no-ci");
+            }
+            if no_pr {
+                args.push("--no-pr");
+            }
             let cli = Cli::try_parse_from(args).unwrap();
             assert_eq!((cli.no_ci, cli.no_pr), (no_ci, no_pr));
             let marker = json!({"no_ci": no_ci, "no_pr": no_pr});
-            assert_eq!(resume_policy(&marker, false, false).unwrap(), (no_ci, no_pr));
-            assert_eq!(resume_policy(&marker, no_ci, no_pr).unwrap(), (no_ci, no_pr));
+            assert_eq!(
+                resume_policy(&marker, false, false).unwrap(),
+                (no_ci, no_pr)
+            );
+            assert_eq!(
+                resume_policy(&marker, no_ci, no_pr).unwrap(),
+                (no_ci, no_pr)
+            );
         }
-        assert_eq!(resume_policy(&json!({}), false, false).unwrap(), (false, false));
+        assert_eq!(
+            resume_policy(&json!({}), false, false).unwrap(),
+            (false, false)
+        );
         assert!(resume_policy(&json!({}), true, false).is_err());
         assert!(resume_policy(&json!({}), false, true).is_err());
         for value in [json!(null), json!(0), json!("false"), json!([])] {
