@@ -72,3 +72,21 @@ def test_auto_release_keeps_exact_sha_checkout_and_ci_gate(workflows):
             assert i > wait_index
             assert step["with"]["ref"] == "${{ github.sha }}"
             assert step["with"]["fetch-depth"] == 0
+
+
+def test_tag_release_isolates_build_code_from_write_token(workflows):
+    release = yaml.safe_load((workflows / "release.yml").read_text())
+    if "build" not in release["jobs"]:
+        return  # This assertion covers generated-project release workflows.
+    build = release["jobs"]["build"]
+    publish = release["jobs"]["publish"]
+
+    assert build["permissions"] == {"contents": "read"}
+    assert publish["permissions"] == {"contents": "write"}
+    assert publish["needs"] == "build"
+
+    token_steps = [step for step in publish["steps"] if "GH_TOKEN" in step.get("env", {})]
+    assert len(token_steps) == 1
+    assert token_steps[0]["name"] == "Publish GitHub release"
+    assert token_steps[0]["env"]["GH_TOKEN"] == "${{ github.token }}"  # noqa: S105
+    assert all("GH_TOKEN" not in step.get("env", {}) for step in build["steps"])
