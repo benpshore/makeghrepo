@@ -125,6 +125,10 @@ pub fn review_ruleset_body(owner_id: u64) -> Value {
     review_ruleset_body_policy(owner_id, false, false)
 }
 
+/// Keep the established rule parameters and remove only the selected gate types.
+/// no_pr also removes all associated review requirements; no_ci leaves Actions,
+/// workflow generation, local smoke checks and release CI gates untouched.
+/// An empty result is a planning value only, never a ruleset we send to GitHub.
 fn review_ruleset_body_policy(owner_id: u64, no_ci: bool, no_pr: bool) -> Value {
     let mut body = ruleset_body();
     body["name"] = json!(REVIEW_RULESET_NAME);
@@ -149,6 +153,9 @@ fn review_ruleset_body_policy(owner_id: u64, no_ci: bool, no_pr: bool) -> Value 
                 ],
             }},
     ]);
+    // `body` owns its JSON array. `as_array_mut` borrows that array exclusively;
+    // retain's closure borrows each rule and keeps it unless its type is opted out.
+    // Once retain returns the borrow ends and the entire body can be returned.
     body["rules"].as_array_mut().unwrap().retain(|rule| {
         !(no_pr && rule["type"] == "pull_request"
             || no_ci && rule["type"] == "required_status_checks")
@@ -160,6 +167,9 @@ pub fn configure_ruleset(repo: &str, no_ci: bool, no_pr: bool) -> Result<(), Str
     configure_ruleset_policy_with(repo, no_ci, no_pr, false, api)
 }
 
+/// Discover/validate a complete write plan; validate_only performs no mutation.
+/// FnMut permits the offline fixture to record calls and update its own state.
+/// Production passes the ordinary API function, so both paths validate identically.
 fn configure_ruleset_policy_with(
     repo: &str,
     no_ci: bool,
@@ -225,6 +235,12 @@ fn configure_ruleset_policy_with(
                     "customized ruleset {name:?}; review its scope/bypasses manually"
                 ));
             }
+            // A live gate with [] bypass actors is stricter than the generated
+            // exact-owner exception. Opt-out retries must not loosen that choice;
+            // retain the pre-existing migration behavior only for default policy.
+            if (no_ci || no_pr) && index == 1 && saved["bypass_actors"] != body["bypass_actors"] {
+                return Err("creation opt-outs cannot add an owner bypass to an existing gate".into());
+            }
             for rule in saved["rules"].as_array().ok_or("invalid ruleset rules")? {
                 let kind = rule["type"].as_str().ok_or("invalid rule type")?;
                 if saved_rules[index]
@@ -237,12 +253,18 @@ fn configure_ruleset_policy_with(
         }
     }
     let [legacy, gates] = saved_rules;
+    // Own these type strings rather than retaining &str borrows into bodies[1].
+    // We will mutate that body's rule array below to preserve stricter saved
+    // parameters; references into it could not safely survive that mutation.
     let gate_types: Vec<String> = bodies[1]["rules"]
         .as_array()
         .unwrap()
         .iter()
         .map(|r| r["type"].as_str().unwrap().to_string())
         .collect();
+    // Creation opt-outs never delete a requirement from an existing split gate or
+    // legacy history ruleset, even when a local marker recorded that opt-out.
+    // The owner may have deliberately tightened live policy since creation.
     for kind in ["pull_request", "required_status_checks"] {
         if !gate_types.iter().any(|k| k == kind)
             && (legacy.contains_key(kind) || gates.contains_key(kind))
@@ -253,6 +275,8 @@ fn configure_ruleset_policy_with(
             );
         }
     }
+    // Migrating even the remaining legacy gate would add an owner bypass it did
+    // not have before. The opt-out flags provide no authority for that migration.
     if (no_ci || no_pr) && legacy.keys().any(|k| gate_types.contains(k)) {
         return Err(
             "creation opt-outs cannot migrate existing history gates; review live policy".into(),
@@ -289,11 +313,15 @@ fn configure_ruleset_policy_with(
     }
     // The replacement gate must succeed before removing the legacy gate.
     // A failed migration therefore leaves an existing repo's PR/CI gate intact.
+    // Preflight ends here, after the same full validation as installation. The
+    // caller reruns it at install time; it must not trust the first read forever.
     if validate_only {
         return Ok(());
     }
     for index in [1, 0] {
         if bodies[index]["rules"].as_array().unwrap().is_empty() {
+            // Both flags: install history protection only. Never POST an invalid
+            // empty gate or DELETE an existing customized repository ruleset.
             continue;
         }
         match ids[index] {
@@ -441,11 +469,16 @@ pub fn configure_all(
     push: Option<Step>,
     log: &(dyn Fn(&str) + Sync),
 ) -> Vec<String> {
+    // Two Copy bools make the effective CLI/marker policy safe to capture in the
+    // later scoped work. They represent enforcement, not whether Actions run.
     let (no_ci, no_pr) = policy;
     if private && (no_ci || no_pr) {
         log("  ✗ creation policy: --no-ci and --no-pr only apply to public repositories");
         return vec!["creation policy".into()];
     }
+    // Refuse a weakening resume before PATCH, push, Project/label writes or any
+    // fanout. Return a failed-step result so the CLI keeps its retry semantics.
+    // Defaults keep the pre-existing sequencing, avoiding unrelated behavior changes.
     if no_ci || no_pr {
         if let Err(e) = configure_ruleset_policy_with(repo, no_ci, no_pr, true, api) {
             log(&format!("  ✗ creation policy: {e}"));
@@ -762,6 +795,19 @@ mod tests {
             let mut api = RulesetApi::new([(42, ruleset_body()), (43, body.clone())]);
             api.configure_policy(no_ci, no_pr, false).unwrap();
             assert_eq!(api.state[&43], body);
+        }
+    }
+
+    #[test]
+    fn opt_out_cannot_introduce_an_owner_bypass() {
+        for (no_ci, no_pr) in [(true, false), (false, true)] {
+            let mut gate = review_ruleset_body_policy(123, no_ci, no_pr);
+            gate["bypass_actors"] = json!([]);
+            let mut api = RulesetApi::new([(42, ruleset_body()), (43, gate)]);
+            let before = api.state.clone();
+            assert!(api.configure_policy(no_ci, no_pr, false).is_err());
+            assert_eq!(api.state, before);
+            assert!(api.writes().is_empty());
         }
     }
 

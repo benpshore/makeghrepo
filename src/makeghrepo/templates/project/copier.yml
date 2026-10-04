@@ -34,6 +34,8 @@ year:
 private:
   type: bool
   default: false
+# Creation enforcement only: workflows/check commands remain in every project.
+# False defaults preserve the pre-option output, including legacy snapshots.
 no_ci:
   type: bool
   default: false

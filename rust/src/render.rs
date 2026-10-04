@@ -91,6 +91,8 @@ pub struct Data {
     pub year: String,
     pub private: bool,
     pub py_lib: bool,
+    // These independently describe the generated project's *requirements*.
+    // They never select or omit workflow files, local checks or license metadata.
     pub no_ci: bool,
     pub no_pr: bool,
     pub project_license: String,
@@ -119,6 +121,8 @@ fn context(langs: &[Lang], data: &Data) -> Value {
     );
     ctx.insert("private".into(), Json::Bool(data.private));
     ctx.insert("py_lib".into(), Json::Bool(data.py_lib));
+    // Use the same bool keys as Copier, so shared policy-text conditionals have
+    // identical defaults and values in the Python and Rust renderers.
     ctx.insert("no_ci".into(), Json::Bool(data.no_ci));
     ctx.insert("no_pr".into(), Json::Bool(data.no_pr));
     ctx.insert(

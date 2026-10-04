@@ -85,3 +85,14 @@ class CreationPolicyTests(unittest.TestCase):
             with patch.object(github, "api") as api, self.assertRaises(github.GhError):
                 github.configure_all("me/r", private=True, no_ci=case["no_ci"], no_pr=case["no_pr"])
             api.assert_not_called()
+
+
+    def test_opt_out_cannot_introduce_an_owner_bypass(self):
+        for no_ci, no_pr in ((True, False), (False, True)):
+            gate = github.review_ruleset_body(123, no_ci=no_ci, no_pr=no_pr)
+            gate["bypass_actors"] = []
+            api = RulesetAPI({42: github.ruleset_body(), 43: gate})
+            before = copy.deepcopy(api.state)
+            with patch.object(github, "api", api), self.assertRaises(github.GhError):
+                github.configure_ruleset("me/r", no_ci=no_ci, no_pr=no_pr)
+            assert api.state == before and not api.writes

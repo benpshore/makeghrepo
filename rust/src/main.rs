@@ -32,6 +32,9 @@ struct Cli {
     words: Vec<String>,
     #[arg(long)]
     private: bool,
+    // Clap maps underscores in field names to kebab-case long options. `long`
+    // therefore exposes exactly --no-ci and --no-pr; they take no value token.
+    // They independently remove rules, not generated files or bootstrap checks.
     /// Public only: do not require CI checks; workflows and local checks remain.
     #[arg(long)]
     no_ci: bool,
@@ -140,7 +143,14 @@ fn validate_resume_license(marker: &Value, requested: Option<&str>) -> Result<()
     Ok(())
 }
 
+/// Restore the creation policy without interpreting absent flags as reversals.
+/// The Python helper uses the same invariant: missing legacy fields mean false
+/// (enforced), an omitted CLI flag preserves the marker, and true cannot replace
+/// recorded false. `as_bool` deliberately rejects JSON null, numbers and strings;
+/// accepting truthy values could silently remove a required PR or CI check.
 fn resume_policy(marker: &Value, no_ci: bool, no_pr: bool) -> Result<(bool, bool), String> {
+    // The fixed array is owned by this function; the return copies two bools.
+    // Borrow marker values to validate them without rewriting the user's marker.
     let mut recorded = [false; 2];
     for (index, (key, requested)) in [("no_ci", no_ci), ("no_pr", no_pr)].into_iter().enumerate() {
         recorded[index] = match marker.get(key) {
@@ -219,6 +229,8 @@ fn main() -> ExitCode {
         return fail("--lib only applies to python; add `python` to the language list");
     }
 
+    // Reject before any file writes or external commands. Private Actions remain
+    // disabled before first push; these public-only choices never enable them.
     if cli.private && (cli.no_ci || cli.no_pr) {
         return fail("--no-ci and --no-pr only apply to public repositories");
     }
@@ -352,6 +364,9 @@ fn main() -> ExitCode {
             ));
         }
         want_private = marker_private;
+        // Reassign the effective policy, not the parsed invocation: later bootstrap
+        // must use marker choices even when neither option was repeated today.
+        // Do this before smoke tests, commits, or any GitHub configuration writes.
         (no_ci, no_pr) = match resume_policy(&marker, cli.no_ci, cli.no_pr) {
             Ok(policy) => policy,
             Err(e) => return fail(&e),
@@ -432,6 +447,9 @@ fn main() -> ExitCode {
         marker.insert("private".into(), json!(cli.private));
         marker.insert("languages".into(), json!(chosen));
         marker.insert("lib".into(), json!(cli.lib));
+        // Persist explicit bools before smoke testing so interrupted creation and
+        // cross-language resumes restore the same policy. Schema-1 legacy markers
+        // remain readable: absence of either key means enforcement stays enabled.
         marker.insert("no_ci".into(), json!(no_ci));
         marker.insert("no_pr".into(), json!(no_pr));
         marker.insert(

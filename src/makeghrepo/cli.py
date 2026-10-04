@@ -51,6 +51,15 @@ def _project_name(raw: str, langs: list[str]) -> str:
 
 
 def _resume_policy(marker: dict, no_ci: bool, no_pr: bool) -> tuple[bool, bool]:
+    """Restore immutable creation choices; flags never migrate a live policy.
+
+    A bool option's False default means "no opt-out requested on this invocation",
+    not "undo the stored opt-out". Consequently a plain resume restores True from
+    the marker, while an explicit True against a recorded False is a conflict.
+    Missing fields come from older releases and must retain enforcement. Reject
+    nulls, numbers and strings rather than letting truthiness loosen that default.
+    Python and Rust intentionally implement this same two-field state machine.
+    """
     recorded = []
     for key, requested in (("no_ci", no_ci), ("no_pr", no_pr)):
         value = marker.get(key, False)
@@ -131,6 +140,9 @@ def main(
     if lib and "python" not in langs:
         raise fail("--lib only applies to python; add `python` to the language list")
 
+    # Validate public-only semantics before rendering, authentication or Git init.
+    # Private repositories already have a separate policy: disable Actions before
+    # the initial push. Neither flag is permission to change that policy.
     if private and (no_ci or no_pr):
         raise fail("--no-ci and --no-pr only apply to public repositories")
 
@@ -205,6 +217,8 @@ def main(
         if private and not marker.get("private"):
             raise fail(f"{repo} was created public; re-run without --private or pick another name")
         want_private = bool(marker.get("private"))
+        # Read policy before smoke tests/commits/configuration: conflicting flags
+        # must fail without changing either the project or its remote settings.
         try:
             no_ci, no_pr = _resume_policy(marker, no_ci, no_pr)
         except ValueError as exc:
@@ -253,6 +267,9 @@ def main(
         # fall back to the authenticated GitHub user so `git commit` never fails on that.
         gitops.ensure_identity(dest, author_name, f"{owner}@users.noreply.github.com")
         # Written before the smoke test so an interrupted first run can still resume.
+        # Store both bools even when False. Legacy absence means enforced, while
+        # explicit True survives retries without requiring the user to repeat it.
+        # This tool-owned marker is local Git metadata, never a committed secret.
         gitops.write_marker(dest, {
             "schema": 1,
             "name": name,
