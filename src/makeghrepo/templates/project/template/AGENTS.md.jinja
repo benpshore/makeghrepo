@@ -1,8 +1,16 @@
 # [[ project_name ]]
 
+[% if no_pr and not private %]
+- Pull requests and PR reviews are optional; direct pushes are allowed without using the owner's bypass. History protections still apply.
+[% else %]
 - Agents must work on a branch and open a PR (`gh pr create --fill`); never push directly to `main` or use the owner's bypass, even when authenticated as the owner.
+[% endif %]
 [% if not private %]
+[% if no_ci %]
+- CI is optional as a merge/push requirement. Workflows, security scanning, local checks and release CI gates remain enabled.
+[% else %]
 - The `ci` check must pass for agent-authored work. Only the human owner's own work may use the direct-push exception.
+[% endif %]
 [% else %]
 - GitHub Actions is disabled for this private repo; run the checks below locally before opening a PR.
 [% endif %]
@@ -14,7 +22,11 @@
 [% if py and not private %]
 - Every merge to `main` is released automatically (next minor version, wheel and sdist attached).
 [% endif %]
+[% if no_ci and not private %]
+- Recommended local checks (bootstrap still runs them):
+[% else %]
 - Before committing, run:
+[% endif %]
 
 ```sh
 [% include '_checks.jinja' %]

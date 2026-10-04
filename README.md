@@ -51,6 +51,33 @@ makeghrepo only resumes folders it created itself. It records that, along with t
 
 New projects have **no license by default**, whether public or private: no `LICENSE` file or license metadata is added. Choose `--license MIT` to add an MIT license and matching package/API metadata, or `--license none` to state the default explicitly. This leaves private and commercial projects' licensing for their owners to decide. Resuming never rewrites license files, including any terms you added yourself; a conflicting `--license` is refused. Older resume markers without a license field retain the legacy MIT choice. makeghrepo itself remains MIT-licensed.
 
+For newly created **public** repositories, Python and Rust both accept these independent options:
+
+| Options | Required pull request/reviews | Required GitHub Actions `ci` |
+| --- | --- | --- |
+| Neither | Yes (existing owner exception) | Yes (existing owner exception) |
+| `--no-ci` | Yes, resolved review threads | No |
+| `--no-pr` | No | Yes, passing and up to date |
+| `--no-ci --no-pr` | No | No |
+
+These exact ASCII long options change enforcement, not workflow generation.
+`--no-ci` keeps Actions, CodeQL/security scanning, release CI gates, and local
+bootstrap checks. `--no-pr` removes the PR rule and its review requirements but
+keeps the CI requirement unless `--no-ci` is also passed. Generated README and
+agent instructions describe the selected policy; history protections still apply.
+With both options, no empty review ruleset is created. Any remaining gate retains
+the verified personal owner's existing exception. Security settings and licensing
+are unchanged. `--private` rejects either option; its existing Actions-disable
+policy remains in effect. Both options work with offline `--render DIR`.
+
+The original choice is recorded in `.git/makeghrepo.json`. Resume without flags
+keeps that choice; legacy markers keep both requirements. A conflicting opt-out or
+invalid marker is rejected before mutation. These options are creation choices,
+not live-policy migration commands: existing stricter rules are preserved, and
+an opt-out that would remove a live requirement is refused before configuration
+or publishing. Customized scopes, bypasses and conflicting policies still fail
+closed. See [the command manual](docs/makeghrepo.1).
+
 Projects go in `~/code/GitHub/<name>`. Set `MAKEGHREPO_DIR` to use another folder.
 
 No git identity or GitHub auth setup needed beyond `gh auth login`: makeghrepo falls back to a `users.noreply.github.com` commit identity if none is configured, and never touches your global git config.
@@ -86,7 +113,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 - `.gitignore` covering every supported language, plus `.DS_Store`, databases and data files, secrets, and editor/cache files. A `repo` CI job fails if any of those get committed anyway.
 - `README.md` and `AGENTS.md` (plus `CLAUDE.md`), each listing that project's check commands; `SECURITY.md`, `.editorconfig`. `LICENSE` is included only with `--license MIT`.
 - Issue templates for bug, task and epic (epics use native sub-issues), and a PR template.
-- `ci.yml`: one job per language, plus a final `ci` job that passes only if all of them passed. That `ci` job is the one required check.
+- `ci.yml`: one job per language, plus a final `ci` job that passes only if all of them passed. That `ci` job is required by default; `--no-ci` makes it optional for merge/push enforcement.
 - `codeql.yml` (public repos): actions, plus python, js, rust, go, ruby, c-cpp and swift as chosen.
 - `dependabot.yml`: GitHub Actions, plus uv, cargo, gomod, bundler, swift, npm, docker and docker-compose as chosen; weekly and grouped, with a 7-day cooldown.
 - `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python the version *is* the tag (hatchling + uv-dynamic-versioning, nothing to bump by hand): it checks the tag against the computed version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`. For Rust it checks the tag against `Cargo.toml`, tests, builds a release binary and attaches it with a `SHA256SUMS` file. For Go it tests and attaches static linux amd64 and arm64 binaries with `SHA256SUMS`. For C/C++ (without ObjC) it builds Release, runs ctest and attaches the linux x86_64 binaries with `SHA256SUMS`. For js/ts/css it attaches the `npm pack` tarball.

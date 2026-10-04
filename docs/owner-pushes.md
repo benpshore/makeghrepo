@@ -48,3 +48,19 @@ owner pushes; inspect those separately rather than deleting their requirements.
 For a repository without makeghrepo's local resume marker, apply the reviewed
 two-ruleset change directly in GitHub settings. Do not fabricate a marker or run
 the bootstrap command against an unrelated checkout.
+
+## Creation opt-outs
+
+For public projects, `--no-ci` omits the required-status-check rule and `--no-pr`
+omits the PR rule and its review policy. They are independent; passing both omits
+the review ruleset entirely. History protections and security settings remain.
+Workflows and local bootstrap checks are retained, and release workflows still
+wait for CI. The owner's verified bypass applies to any remaining gate.
+
+Resume restores the tool marker's original policy (legacy markers require both).
+Conflicting flags, private projects, and invalid policy fields are refused. An
+opt-out must never remove an existing live rule or migrate a history gate into an
+owner-bypass gate; the read-only preflight refuses such configuration before any
+settings write or publishing. Existing unrelated rules and stricter parameters
+on the remaining rule are retained. These options do not update this repository's
+own protections.
