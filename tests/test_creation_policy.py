@@ -70,8 +70,12 @@ class CreationPolicyTests(unittest.TestCase):
             pushes = []
             with patch.object(github, "api", api):
                 failed = github.configure_all(
-                    "me/r", private=False, no_ci=case["no_ci"], no_pr=case["no_pr"],
-                    push=lambda: pushes.append(True), log=lambda _: None,
+                    "me/r",
+                    private=False,
+                    no_ci=case["no_ci"],
+                    no_pr=case["no_pr"],
+                    push=lambda: pushes.append(True),
+                    log=lambda _: None,
                 )
             assert failed == ["creation policy"]
             assert not pushes and not api.writes
@@ -79,7 +83,5 @@ class CreationPolicyTests(unittest.TestCase):
     def test_private_policy_rejected_without_api_calls(self):
         for case in MATRIX[1:]:
             with patch.object(github, "api") as api, self.assertRaises(github.GhError):
-                github.configure_all(
-                    "me/r", private=True, no_ci=case["no_ci"], no_pr=case["no_pr"]
-                )
+                github.configure_all("me/r", private=True, no_ci=case["no_ci"], no_pr=case["no_pr"])
             api.assert_not_called()

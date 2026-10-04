@@ -359,7 +359,9 @@ def test_resume_lookup_failure_never_pushes_or_configures(tmp_path, gh, monkeypa
     assert git.Repo(dest).head.commit.hexsha == before
 
 
-@pytest.mark.parametrize("no_ci,no_pr", [(False, False), (True, False), (False, True), (True, True)])
+@pytest.mark.parametrize(
+    "no_ci,no_pr", [(False, False), (True, False), (False, True), (True, True)]
+)
 def test_creation_policy_persists_across_resume(tmp_path, gh, no_ci, no_pr):
     args = ["policy", *(["--no-ci"] if no_ci else []), *(["--no-pr"] if no_pr else [])]
     assert runner.invoke(app, args).exit_code == 0

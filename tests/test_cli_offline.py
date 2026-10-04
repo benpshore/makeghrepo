@@ -173,13 +173,19 @@ main()
     assert not (tmp_path / "unused").exists()
 
 
-@pytest.mark.parametrize("no_ci,no_pr", [(False, False), (True, False), (False, True), (True, True)])
+@pytest.mark.parametrize(
+    "no_ci,no_pr", [(False, False), (True, False), (False, True), (True, True)]
+)
 @pytest.mark.parametrize("languages", [[], ["python", "rust", "docker"]])
 @pytest.mark.parametrize("license_choice", ["none", "MIT"])
-def test_offline_creation_policy_keeps_workflows_and_license(tmp_path, no_ci, no_pr, languages, license_choice):
+def test_offline_creation_policy_keeps_workflows_and_license(
+    tmp_path, no_ci, no_pr, languages, license_choice
+):
     dest = tmp_path / "output"
     flags = [*(["--no-ci"] if no_ci else []), *(["--no-pr"] if no_pr else [])]
-    result = runner.invoke(cli.app, ["sample", *languages, *flags, "--license", license_choice, "--render", str(dest)])
+    result = runner.invoke(
+        cli.app, ["sample", *languages, *flags, "--license", license_choice, "--render", str(dest)]
+    )
     assert result.exit_code == 0, result.output
     assert (dest / "LICENSE").exists() is (license_choice == "MIT")
     assert (dest / ".github/workflows/ci.yml").exists()

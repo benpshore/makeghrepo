@@ -38,7 +38,9 @@ def main():
             if not no_ci and not no_pr and expected != gs.read_golden(combo):
                 raise RuntimeError(gs.diff_report(combo, gs.read_golden(combo), expected))
             count += 1
-    print(f"{count} public policy/stack/license cases match in file names, bytes and executable bits")
+    print(
+        f"{count} public policy/stack/license cases match in file names, bytes and executable bits"
+    )
 
 
 if __name__ == "__main__":

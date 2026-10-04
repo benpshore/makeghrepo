@@ -327,12 +327,16 @@ def scenario(executable, private, failure, no_ci=False, no_pr=False):
                 (root / "state.json").write_text(json.dumps(state))
                 command([*resume_args, flag], env=env, expected=1)
                 after = read_state(root)["events"][before:]
-                assert not any(e["kind"] == "push" or (e["kind"] == "api" and e["method"] != "GET") for e in after)
+                assert not any(
+                    e["kind"] == "push" or (e["kind"] == "api" and e["method"] != "GET")
+                    for e in after
+                )
         # A stricter rule added by the owner survives an opt-out resume untouched.
         if no_ci or no_pr:
             state = read_state(root)
             state["failure"] = None
-            full_gate = json.loads((Path(__file__).resolve().parents[1] / "tests/fixtures/github_defaults.json").read_text())["review_ruleset"]
+            fixture = Path(__file__).resolve().parents[1] / "tests/fixtures/github_defaults.json"
+            full_gate = json.loads(fixture.read_text())["review_ruleset"]
             full_gate["bypass_actors"][0]["actor_id"] = OWNER_ID
             for rule in state["rulesets"]:
                 if rule["name"] == "require-pr-and-ci":
@@ -346,7 +350,10 @@ def scenario(executable, private, failure, no_ci=False, no_pr=False):
             command(resume_args, env=env, expected=2)
             strict = read_state(root)
             assert strict["rulesets"] == before_rules
-            assert not any(e["kind"] == "push" or (e["kind"] == "api" and e["method"] != "GET") for e in strict["events"][before:])
+            assert not any(
+                e["kind"] == "push" or (e["kind"] == "api" and e["method"] != "GET")
+                for e in strict["events"][before:]
+            )
         return {
             "no_ci": no_ci,
             "no_pr": no_pr,

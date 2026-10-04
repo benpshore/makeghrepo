@@ -80,7 +80,9 @@ def ruleset_body() -> dict[str, Any]:
     }
 
 
-def review_ruleset_body(owner_id: int, *, no_ci: bool = False, no_pr: bool = False) -> dict[str, Any]:
+def review_ruleset_body(
+    owner_id: int, *, no_ci: bool = False, no_pr: bool = False
+) -> dict[str, Any]:
     """Only the personal repository owner may push without a PR or passing CI."""
     body = {
         **ruleset_body(),
@@ -113,7 +115,8 @@ def review_ruleset_body(owner_id: int, *, no_ci: bool = False, no_pr: bool = Fal
     }
 
     body["rules"] = [
-        rule for rule in body["rules"]
+        rule
+        for rule in body["rules"]
         if not (no_pr and rule["type"] == "pull_request")
         and not (no_ci and rule["type"] == "required_status_checks")
     ]
@@ -175,7 +178,9 @@ def configure_ruleset(
     gate_types = {rule["type"] for rule in review["rules"]}
     omitted = {"pull_request", "required_status_checks"} - gate_types
     if omitted & (legacy.keys() | gates.keys()):
-        raise GhError("creation opt-outs would weaken existing rules; refusing to change live policy")
+        raise GhError(
+            "creation opt-outs would weaken existing rules; refusing to change live policy"
+        )
     if (no_ci or no_pr) and gate_types & legacy.keys():
         raise GhError("creation opt-outs cannot migrate existing history gates; review live policy")
     if gates.keys() - gate_types:

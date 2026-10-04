@@ -57,7 +57,9 @@ def _resume_policy(marker: dict, no_ci: bool, no_pr: bool) -> tuple[bool, bool]:
         if not isinstance(value, bool):
             raise ValueError("invalid recorded creation policy; review the resume marker")
         if requested and not value:
-            raise ValueError(f"a resume never changes creation policy; re-run without --{key.replace('_', '-')}")
+            raise ValueError(
+                f"a resume never changes creation policy; re-run without --{key.replace('_', '-')}"
+            )
         recorded.append(value)
     return recorded[0], recorded[1]
 
@@ -72,10 +74,19 @@ def main(
     ] = None,
     private: Annotated[bool, typer.Option("--private")] = False,
     no_ci: Annotated[
-        bool, typer.Option("--no-ci", help="Public only: do not require CI checks; workflows and local checks remain.")
+        bool,
+        typer.Option(
+            "--no-ci",
+            help="Public only: do not require CI checks; workflows and local checks remain.",
+        ),
     ] = False,
     no_pr: Annotated[
-        bool, typer.Option("--no-pr", help="Public only: do not require pull requests or PR reviews; CI remains required unless --no-ci.")
+        bool,
+        typer.Option(
+            "--no-pr",
+            help="Public only: do not require pull requests or PR reviews; "
+            "CI remains required unless --no-ci.",
+        ),
     ] = False,
     lib: Annotated[
         bool,
