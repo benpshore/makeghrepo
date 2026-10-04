@@ -175,6 +175,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
       - name: Toolchain
         run: |
           rustup toolchain install stable --profile minimal --component clippy,rustfmt
@@ -210,6 +213,11 @@ jobs:
             n=$((n + 1))
           done
           echo "$n golden snapshots reproduced byte for byte by the Rust build"
+      - name: Python/Rust public creation policy parity
+        working-directory: .
+        run: |
+          uv sync --locked
+          uv run scripts/policy-parity ./rust/target/release/makeghrepo
       - name: Dry run
         run: |
           ./target/release/makeghrepo quiet-otter rust docker --render "$RUNNER_TEMP/dry" >/dev/null

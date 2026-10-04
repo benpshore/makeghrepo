@@ -160,14 +160,6 @@ pub fn configure_ruleset(repo: &str, no_ci: bool, no_pr: bool) -> Result<(), Str
     configure_ruleset_policy_with(repo, no_ci, no_pr, false, api)
 }
 
-#[cfg(test)]
-fn configure_ruleset_with(
-    repo: &str,
-    api: impl FnMut(&str, &str, Option<&Value>) -> Result<Value, String>,
-) -> Result<(), String> {
-    configure_ruleset_policy_with(repo, false, false, false, api)
-}
-
 fn configure_ruleset_policy_with(
     repo: &str,
     no_ci: bool,
@@ -662,7 +654,11 @@ mod tests {
         }
 
         fn configure(&mut self) -> Result<(), String> {
-            configure_ruleset_with("me/r", |method, path, body| {
+            self.configure_policy(false, false, false)
+        }
+
+        fn configure_policy(&mut self, no_ci: bool, no_pr: bool, validate_only: bool) -> Result<(), String> {
+            configure_ruleset_policy_with("me/r", no_ci, no_pr, validate_only, |method, path, body| {
                 self.calls.push((method.into(), path.into(), body.cloned()));
                 if method == "GET" {
                     if path == "repos/me/r" {
@@ -693,6 +689,65 @@ mod tests {
                 self.state.insert(id, body.unwrap().clone());
                 Ok(json!({"id": id}))
             })
+        }
+    }
+
+    #[test]
+    fn creation_matrix_matches_shared_fixture_and_survives_resume() {
+        let cases: Value = serde_json::from_str(include_str!("../../tests/fixtures/creation_policy.json")).unwrap();
+        for case in cases.as_array().unwrap() {
+            let (no_ci, no_pr) = (case["no_ci"].as_bool().unwrap(), case["no_pr"].as_bool().unwrap());
+            let body = review_ruleset_body_policy(123, no_ci, no_pr);
+            let types: Vec<_> = body["rules"].as_array().unwrap().iter().map(|r| r["type"].clone()).collect();
+            assert_eq!(json!(types), case["rules"]);
+            assert_eq!(body["bypass_actors"], defaults()["review_ruleset"]["bypass_actors"]);
+            let mut api = RulesetApi::new([(7, json!({"name": "custom-policy", "rules": [{"type": "creation"}]}))]);
+            api.configure_policy(no_ci, no_pr, true).unwrap();
+            assert!(api.writes().is_empty());
+            for _ in 0..2 {
+                api.configure_policy(no_ci, no_pr, false).unwrap();
+                assert!(api.state.values().any(|v| v == &ruleset_body()));
+                let gate = api.state.values().find(|v| v["name"] == REVIEW_RULESET_NAME);
+                if no_ci && no_pr {
+                    assert!(gate.is_none());
+                } else {
+                    assert_eq!(gate.unwrap(), &body);
+                }
+                assert_eq!(api.state[&7]["rules"], json!([{"type": "creation"}]));
+                assert!(api.writes().iter().all(|c| !c.2.as_ref().unwrap()["rules"].as_array().unwrap().is_empty()));
+            }
+        }
+    }
+
+    #[test]
+    fn opt_out_never_removes_existing_split_or_legacy_requirements() {
+        for (no_ci, no_pr) in [(true, false), (false, true), (true, true)] {
+            for legacy in [false, true] {
+                let mut api = if legacy {
+                    RulesetApi::new([(42, legacy_policy())])
+                } else {
+                    RulesetApi::new([(42, ruleset_body()), (43, review_ruleset_body(123))])
+                };
+                let before = api.state.clone();
+                assert!(api.configure_policy(no_ci, no_pr, false).is_err());
+                assert!(api.writes().is_empty());
+                assert_eq!(api.state, before);
+            }
+        }
+    }
+
+    #[test]
+    fn opt_out_retains_stricter_remaining_gate() {
+        for (no_ci, no_pr) in [(true, false), (false, true)] {
+            let mut body = review_ruleset_body_policy(123, no_ci, no_pr);
+            if no_ci {
+                body["rules"][0]["parameters"]["required_approving_review_count"] = json!(2);
+            } else {
+                body["rules"][0]["parameters"]["required_status_checks"].as_array_mut().unwrap().push(json!({"context": "security"}));
+            }
+            let mut api = RulesetApi::new([(42, ruleset_body()), (43, body.clone())]);
+            api.configure_policy(no_ci, no_pr, false).unwrap();
+            assert_eq!(api.state[&43], body);
         }
     }
 

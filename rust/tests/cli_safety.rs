@@ -151,3 +151,19 @@ esac
     assert!(!calls.contains("gh api -X PUT"));
     assert!(!calls.contains("gh repo create"));
 }
+
+
+#[test]
+fn policy_options_are_public_only_in_offline_modes() {
+    let temp = TempDir::new();
+    for option in ["--no-ci", "--no-pr"] {
+        let dest = temp.0.join("output");
+        let output = binary().args(["sample", "--private", option, "--render"]).arg(&dest).env("PATH", "").output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output_text(&output).contains("only apply to public"));
+        assert!(!dest.exists());
+    }
+    let output = binary().args(["--snapshot", "--combo", "base-private", "--no-ci"]).env("PATH", "").output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output_text(&output).contains("only apply to public"));
+}
