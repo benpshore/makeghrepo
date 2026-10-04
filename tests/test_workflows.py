@@ -72,3 +72,21 @@ def test_auto_release_keeps_exact_sha_checkout_and_ci_gate(workflows):
             assert i > wait_index
             assert step["with"]["ref"] == "${{ github.sha }}"
             assert step["with"]["fetch-depth"] == 0
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        name
+        for name, combo in gs.COMBOS.items()
+        if {"js", "ts", "css"} & set(combo["languages"])
+    ],
+)
+def test_npm_release_disables_lifecycle_scripts(tmp_path, name):
+    root = gs.render_combo(name, tmp_path / "quiet-otter")
+    release = yaml.safe_load((root / ".github/workflows/release.yml").read_text())
+    commands = "\n".join(
+        step.get("run", "") for step in release["jobs"]["release"]["steps"]
+    )
+    assert "npm ci --ignore-scripts" in commands
+    assert "npm pack --ignore-scripts --pack-destination dist" in commands

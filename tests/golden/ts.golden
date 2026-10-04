@@ -221,7 +221,7 @@ jobs:
           category: "/language:${{ matrix.language }}"
 
 ### END
-### FILE .github/workflows/release.yml exec=0 bytes=909 encoding=utf-8
+### FILE .github/workflows/release.yml exec=0 bytes=943 encoding=utf-8
 name: Release
 
 # Publish: push a tag, e.g. `git tag v0.1.1 && git push --tags`.
@@ -246,11 +246,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - name: Pack the release tarball
         run: |
           mkdir -p dist
-          npm pack --pack-destination dist
+          npm pack --ignore-scripts --pack-destination dist
           (cd dist && sha256sum -- * > SHA256SUMS)
       - name: Publish GitHub release
         env:
