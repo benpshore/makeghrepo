@@ -32,6 +32,12 @@ struct Cli {
     words: Vec<String>,
     #[arg(long)]
     private: bool,
+    /// Public only: do not require CI checks; workflows and local checks remain.
+    #[arg(long)]
+    no_ci: bool,
+    /// Public only: do not require pull requests or PR reviews; CI remains required.
+    #[arg(long)]
+    no_pr: bool,
     /// python: library layout, no console script (like uv init --lib)
     #[arg(long)]
     lib: bool,
@@ -134,6 +140,20 @@ fn validate_resume_license(marker: &Value, requested: Option<&str>) -> Result<()
     Ok(())
 }
 
+fn resume_policy(marker: &Value, no_ci: bool, no_pr: bool) -> Result<(bool, bool), String> {
+    let mut recorded = [false; 2];
+    for (index, (key, requested)) in [("no_ci", no_ci), ("no_pr", no_pr)].into_iter().enumerate() {
+        recorded[index] = match marker.get(key) {
+            None => false,
+            Some(value) => value.as_bool().ok_or("invalid recorded creation policy; review the resume marker")?,
+        };
+        if requested && !recorded[index] {
+            return Err(format!("a resume never changes creation policy; re-run without --{}", key.replace('_', "-")));
+        }
+    }
+    Ok((recorded[0], recorded[1]))
+}
+
 fn temp_dir(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -194,6 +214,10 @@ fn main() -> ExitCode {
         return fail("--lib only applies to python; add `python` to the language list");
     }
 
+    if cli.private && (cli.no_ci || cli.no_pr) {
+        return fail("--no-ci and --no-pr only apply to public repositories");
+    }
+
     // Offline modes: render only, or render and print the golden serialization.
     if cli.snapshot || cli.render.is_some() {
         let (languages, private, lib, mit) = match &cli.combo {
@@ -223,6 +247,8 @@ fn main() -> ExitCode {
             year: cli.year.clone().unwrap_or_else(|| "2026".into()),
             private,
             py_lib: lib,
+            no_ci: cli.no_ci,
+            no_pr: cli.no_pr,
             project_license: cli
                 .license
                 .as_deref()
@@ -290,6 +316,7 @@ fn main() -> ExitCode {
 
     let private: bool;
     let mut want_private = cli.private;
+    let (mut no_ci, mut no_pr) = (cli.no_ci, cli.no_pr);
     if resume {
         if !dest.join(".git").is_dir() {
             return fail(&format!(
@@ -320,6 +347,13 @@ fn main() -> ExitCode {
             ));
         }
         want_private = marker_private;
+        (no_ci, no_pr) = match resume_policy(&marker, cli.no_ci, cli.no_pr) {
+            Ok(policy) => policy,
+            Err(e) => return fail(&e),
+        };
+        if want_private && (no_ci || no_pr) {
+            return fail("--no-ci and --no-pr only apply to public repositories");
+        }
         if let Err(e) = validate_resume_license(&marker, cli.license.as_deref()) {
             return fail(&format!("{repo}: {e}"));
         }
@@ -368,6 +402,8 @@ fn main() -> ExitCode {
             year: current_year(),
             private: cli.private,
             py_lib: cli.lib,
+            no_ci,
+            no_pr,
             project_license: cli.license.clone().unwrap_or_else(|| "none".into()),
             languages: chosen.clone(),
         };
@@ -391,6 +427,8 @@ fn main() -> ExitCode {
         marker.insert("private".into(), json!(cli.private));
         marker.insert("languages".into(), json!(chosen));
         marker.insert("lib".into(), json!(cli.lib));
+        marker.insert("no_ci".into(), json!(no_ci));
+        marker.insert("no_pr".into(), json!(no_pr));
         marker.insert(
             "license".into(),
             json!(cli.license.as_deref().unwrap_or("none")),
@@ -429,6 +467,9 @@ fn main() -> ExitCode {
             ));
         }
         private = actual;
+        if private && (no_ci || no_pr) {
+            return fail("--no-ci and --no-pr only apply to public repositories");
+        }
     } else {
         private = want_private;
         if let Err(e) = github::create_repo(&repo, &dest, &name, private) {
@@ -456,7 +497,7 @@ fn main() -> ExitCode {
     } else {
         Some(Box::new(move || gitops::push_main(&push_dest)))
     };
-    let failed = github::configure_all(&repo, private, true, push, &echo);
+    let failed = github::configure_all(&repo, private, true, (no_ci, no_pr), push, &echo);
     echo(&format!(
         "\nhttps://github.com/{repo}\ncd {}",
         dest.display()

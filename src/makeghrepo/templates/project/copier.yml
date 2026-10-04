@@ -34,6 +34,12 @@ year:
 private:
   type: bool
   default: false
+no_ci:
+  type: bool
+  default: false
+no_pr:
+  type: bool
+  default: false
 py_lib:
   type: bool
   default: false

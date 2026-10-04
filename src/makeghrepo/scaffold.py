@@ -94,6 +94,8 @@ def language(word: str) -> str | None:
 
 
 def render(dest: Path, data: dict[str, object]) -> None:
+    if data.get("private") and (data.get("no_ci") or data.get("no_pr")):
+        raise ValueError("--no-ci and --no-pr only apply to public repositories")
     if dest.exists() and any(dest.iterdir()):
         raise FileExistsError(f"{dest} already exists and is not empty")
     chosen = list(data.get("languages") or [])

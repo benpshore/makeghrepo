@@ -120,7 +120,12 @@ pub fn ruleset_body() -> Value {
 }
 
 /// Only the personal repository owner may push without a PR or passing CI.
+#[cfg(test)]
 pub fn review_ruleset_body(owner_id: u64) -> Value {
+    review_ruleset_body_policy(owner_id, false, false)
+}
+
+fn review_ruleset_body_policy(owner_id: u64, no_ci: bool, no_pr: bool) -> Value {
     let mut body = ruleset_body();
     body["name"] = json!(REVIEW_RULESET_NAME);
     body["bypass_actors"] = json!([
@@ -144,15 +149,30 @@ pub fn review_ruleset_body(owner_id: u64) -> Value {
                 ],
             }},
     ]);
+    body["rules"].as_array_mut().unwrap().retain(|rule| {
+        !(no_pr && rule["type"] == "pull_request"
+            || no_ci && rule["type"] == "required_status_checks")
+    });
     body
 }
 
-pub fn configure_ruleset(repo: &str) -> Result<(), String> {
-    configure_ruleset_with(repo, api)
+pub fn configure_ruleset(repo: &str, no_ci: bool, no_pr: bool) -> Result<(), String> {
+    configure_ruleset_policy_with(repo, no_ci, no_pr, false, api)
 }
 
+#[cfg(test)]
 fn configure_ruleset_with(
     repo: &str,
+    api: impl FnMut(&str, &str, Option<&Value>) -> Result<Value, String>,
+) -> Result<(), String> {
+    configure_ruleset_policy_with(repo, false, false, false, api)
+}
+
+fn configure_ruleset_policy_with(
+    repo: &str,
+    no_ci: bool,
+    no_pr: bool,
+    validate_only: bool,
     mut api: impl FnMut(&str, &str, Option<&Value>) -> Result<Value, String>,
 ) -> Result<(), String> {
     // Resolve the repository owner, never the caller or commit author identity.
@@ -170,7 +190,7 @@ fn configure_ruleset_with(
             "owner push bypass requires a personal repository with a verified owner ID".into(),
         );
     }
-    let mut bodies = [ruleset_body(), review_ruleset_body(owner_id.unwrap())];
+    let mut bodies = [ruleset_body(), review_ruleset_body_policy(owner_id.unwrap(), no_ci, no_pr)];
     let mut existing = Vec::new();
     for page in 1.. {
         let batch = api(
@@ -222,8 +242,17 @@ fn configure_ruleset_with(
         }
     }
     let [legacy, gates] = saved_rules;
-    let gate_types = ["pull_request", "required_status_checks"];
-    if gates.keys().any(|k| !gate_types.contains(&k.as_str())) {
+    let gate_types: Vec<String> = bodies[1]["rules"]
+        .as_array().unwrap().iter().map(|r| r["type"].as_str().unwrap().to_string()).collect();
+    for kind in ["pull_request", "required_status_checks"] {
+        if !gate_types.iter().any(|k| k == kind) && (legacy.contains_key(kind) || gates.contains_key(kind)) {
+            return Err("creation opt-outs would weaken existing rules; refusing to change live policy".into());
+        }
+    }
+    if (no_ci || no_pr) && legacy.keys().any(|k| gate_types.contains(k)) {
+        return Err("creation opt-outs cannot migrate existing history gates; review live policy".into());
+    }
+    if gates.keys().any(|k| !gate_types.contains(k)) {
         return Err(format!(
             "customized rules in {REVIEW_RULESET_NAME:?}; cannot grant owner bypass"
         ));
@@ -244,7 +273,7 @@ fn configure_ruleset_with(
     }
     let history = bodies[0]["rules"].as_array_mut().unwrap();
     for (kind, rule) in legacy {
-        if !gate_types.contains(&kind.as_str()) {
+        if !gate_types.contains(&kind) {
             if let Some(existing) = history.iter_mut().find(|r| r["type"] == kind) {
                 *existing = rule;
             } else {
@@ -254,7 +283,13 @@ fn configure_ruleset_with(
     }
     // The replacement gate must succeed before removing the legacy gate.
     // A failed migration therefore leaves an existing repo's PR/CI gate intact.
+    if validate_only {
+        return Ok(());
+    }
     for index in [1, 0] {
+        if bodies[index]["rules"].as_array().unwrap().is_empty() {
+            continue;
+        }
         match ids[index] {
             Some(id) => api(
                 "PUT",
@@ -396,9 +431,21 @@ pub fn configure_all(
     repo: &str,
     private: bool,
     project: bool,
+    policy: (bool, bool),
     push: Option<Step>,
     log: &(dyn Fn(&str) + Sync),
 ) -> Vec<String> {
+    let (no_ci, no_pr) = policy;
+    if private && (no_ci || no_pr) {
+        log("  ✗ creation policy: --no-ci and --no-pr only apply to public repositories");
+        return vec!["creation policy".into()];
+    }
+    if no_ci || no_pr {
+        if let Err(e) = configure_ruleset_policy_with(repo, no_ci, no_pr, true, api) {
+            log(&format!("  ✗ creation policy: {e}"));
+            return vec!["creation policy".into()];
+        }
+    }
     let failed: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let report = |name: &str, result: Result<(), String>| {
         match &result {
@@ -535,7 +582,7 @@ pub fn configure_all(
         });
         let ruleset_result =
             if !private && !push_blocked && push_result.as_ref().is_none_or(Result::is_ok) {
-                Some(configure_ruleset(repo))
+                Some(configure_ruleset(repo, no_ci, no_pr))
             } else {
                 None
             };
