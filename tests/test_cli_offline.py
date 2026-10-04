@@ -171,3 +171,36 @@ main()
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert not (tmp_path / "unused").exists()
+
+
+@pytest.mark.parametrize("no_ci,no_pr", [(False, False), (True, False), (False, True), (True, True)])
+@pytest.mark.parametrize("languages", [[], ["python", "rust", "docker"]])
+@pytest.mark.parametrize("license_choice", ["none", "MIT"])
+def test_offline_creation_policy_keeps_workflows_and_license(tmp_path, no_ci, no_pr, languages, license_choice):
+    dest = tmp_path / "output"
+    flags = [*(["--no-ci"] if no_ci else []), *(["--no-pr"] if no_pr else [])]
+    result = runner.invoke(cli.app, ["sample", *languages, *flags, "--license", license_choice, "--render", str(dest)])
+    assert result.exit_code == 0, result.output
+    assert (dest / "LICENSE").exists() is (license_choice == "MIT")
+    assert (dest / ".github/workflows/ci.yml").exists()
+    assert (dest / ".github/workflows/codeql.yml").exists()
+    agents = (dest / "AGENTS.md").read_text()
+    assert ("Agents must work on a branch and open a PR" in agents) is not no_pr
+    assert ("The `ci` check must pass" in agents) is not no_ci
+    assert (dest / "CLAUDE.md").read_text() == "@AGENTS.md\n"
+    assert not (dest / ".git").exists()
+
+
+@pytest.mark.parametrize("option", ["--no-ci", "--no-pr"])
+def test_private_offline_opt_out_is_rejected_before_writing(tmp_path, option):
+    dest = tmp_path / "output"
+    result = runner.invoke(cli.app, ["sample", "--private", option, "--render", str(dest)])
+    assert result.exit_code == 1 and "only apply to public" in result.output
+    assert not dest.exists()
+
+
+def test_help_describes_independent_public_creation_options():
+    result = runner.invoke(cli.app, ["--help"])
+    text = Text.from_ansi(result.output).plain
+    assert "--no-ci" in text and "--no-pr" in text
+    assert "Public only" in text and "workflows" in text
