@@ -1,0 +1,6 @@
+[
+  {"no_ci": false, "no_pr": false, "rules": ["pull_request", "required_status_checks"]},
+  {"no_ci": true, "no_pr": false, "rules": ["pull_request"]},
+  {"no_ci": false, "no_pr": true, "rules": ["required_status_checks"]},
+  {"no_ci": true, "no_pr": true, "rules": []}
+]

@@ -1,0 +1,46 @@
+.TH MAKEGHREPO 1
+.SH NAME
+makeghrepo \- create a configured GitHub repository
+.SH SYNOPSIS
+.B makeghrepo
+[NAME] [LANGUAGE]... [\-\-private] [\-\-lib]
+[\-\-license none|MIT] [\-\-no-ci] [\-\-no-pr] [\-\-render DIR]
+.SH OPTIONS
+.TP
+.B \-\-no-ci
+Public repositories only: omit required CI/status checks. Keep required pull
+requests and resolved review threads unless --no-pr is also selected. Actions,
+workflow files, CodeQL, local bootstrap checks and release CI gates remain.
+.TP
+.B \-\-no-pr
+Public repositories only: omit required pull requests and associated reviews.
+CI remains required unless --no-ci is also selected. History protections remain.
+.TP
+.B \-\-private
+Create a private repository. Reject --no-ci and --no-pr. Disable Actions before
+publishing, preserving the existing private-repository policy.
+.TP
+.B \-\-license none|MIT
+New projects default to no license. MIT is explicit. Resume preserves licensing;
+legacy markers without a license field retain MIT.
+.TP
+.B \-\-lib
+Python library layout; requires the python language.
+.TP
+.B \-\-render DIR
+Render offline into an absent or empty directory, with no checks or GitHub calls.
+Supports both policy opt-outs; creates no repository or resume marker.
+.TP
+.B \-h, \-\-help
+Show command help.
+.TP
+.B \-\-version
+Show the installed version.
+.SH RESUME
+Without opt-out flags, both PR and CI requirements retain their existing defaults.
+Recorded opt-outs persist on resume without repeating flags. Legacy markers retain
+both requirements. Conflicting flags or invalid policy fields are refused.
+These are creation choices, not migration commands: existing live requirements,
+custom rules, security settings and history protections must not be weakened.
+Python and Rust implement the same policy. With both opt-outs, no empty gate is
+created; any remaining gate retains the verified personal owner's exception.

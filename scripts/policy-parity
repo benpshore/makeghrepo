@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Compare both offline CLIs for every public creation policy; no GitHub or checks."""
+
+import itertools
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+import golden_snapshots as gs  # noqa: E402
+
+
+def main():
+    binary = Path(sys.argv[1]).resolve()
+    env = {**os.environ, "PATH": ""}  # offline must need neither git nor gh
+    count = 0
+    with tempfile.TemporaryDirectory(prefix="makeghrepo-policy-parity-") as temporary:
+        root = Path(temporary)
+        for combo, no_ci, no_pr in itertools.product(
+            ("base", "python+rust+docker", "js+css+api", "all-mit"), (False, True), (False, True)
+        ):
+            flags = [*(["--no-ci"] if no_ci else []), *(["--no-pr"] if no_pr else [])]
+            data = gs.COMBOS[combo]
+            args = ["quiet-otter", *data["languages"], *flags]
+            if data.get("project_license"):
+                args += ["--license", data["project_license"]]
+            python_dir, rust_dir = root / f"python-{count}", root / f"rust-{count}"
+            for command, dest in (
+                ([sys.executable, "-c", "from makeghrepo import main; main()"], python_dir),
+                ([str(binary)], rust_dir),
+            ):
+                subprocess.run([*command, *args, "--render", str(dest)], env=env, check=True)
+            expected, actual = gs.serialize(python_dir), gs.serialize(rust_dir)
+            if expected != actual:
+                raise RuntimeError(gs.diff_report(f"{combo} {flags}", expected, actual))
+            if not no_ci and not no_pr and expected != gs.read_golden(combo):
+                raise RuntimeError(gs.diff_report(combo, gs.read_golden(combo), expected))
+            count += 1
+    print(
+        f"{count} public policy/stack/license cases match in file names, bytes and executable bits"
+    )
+
+
+if __name__ == "__main__":
+    main()

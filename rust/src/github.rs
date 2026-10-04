@@ -120,7 +120,19 @@ pub fn ruleset_body() -> Value {
 }
 
 /// Only the personal repository owner may push without a PR or passing CI.
+#[cfg(test)]
 pub fn review_ruleset_body(owner_id: u64) -> Value {
+    review_ruleset_body_policy(owner_id, false, false)
+}
+
+/// Keep the established rule parameters and remove only the selected gate types.
+/// no_pr also removes all associated review requirements; no_ci leaves Actions,
+/// workflow generation, local smoke checks and release CI gates untouched.
+/// An empty result is a planning value only, never a ruleset we send to GitHub.
+/// We keep execution separate because removing workflow files could leave the
+/// surviving CI rule impossible to satisfy. Filtering the established payload
+/// also keeps Python/Rust defaults aligned rather than creating four definitions.
+fn review_ruleset_body_policy(owner_id: u64, no_ci: bool, no_pr: bool) -> Value {
     let mut body = ruleset_body();
     body["name"] = json!(REVIEW_RULESET_NAME);
     body["bypass_actors"] = json!([
@@ -144,15 +156,28 @@ pub fn review_ruleset_body(owner_id: u64) -> Value {
                 ],
             }},
     ]);
+    // `body` owns its JSON array. `as_array_mut` borrows that array exclusively;
+    // retain's closure borrows each rule and keeps it unless its type is opted out.
+    // Once retain returns the borrow ends and the entire body can be returned.
+    body["rules"].as_array_mut().unwrap().retain(|rule| {
+        !(no_pr && rule["type"] == "pull_request"
+            || no_ci && rule["type"] == "required_status_checks")
+    });
     body
 }
 
-pub fn configure_ruleset(repo: &str) -> Result<(), String> {
-    configure_ruleset_with(repo, api)
+pub fn configure_ruleset(repo: &str, no_ci: bool, no_pr: bool) -> Result<(), String> {
+    configure_ruleset_policy_with(repo, no_ci, no_pr, false, api)
 }
 
-fn configure_ruleset_with(
+/// Discover/validate a complete write plan; validate_only performs no mutation.
+/// FnMut permits the offline fixture to record calls and update its own state.
+/// Production passes the ordinary API function, so both paths validate identically.
+fn configure_ruleset_policy_with(
     repo: &str,
+    no_ci: bool,
+    no_pr: bool,
+    validate_only: bool,
     mut api: impl FnMut(&str, &str, Option<&Value>) -> Result<Value, String>,
 ) -> Result<(), String> {
     // Resolve the repository owner, never the caller or commit author identity.
@@ -170,7 +195,10 @@ fn configure_ruleset_with(
             "owner push bypass requires a personal repository with a verified owner ID".into(),
         );
     }
-    let mut bodies = [ruleset_body(), review_ruleset_body(owner_id.unwrap())];
+    let mut bodies = [
+        ruleset_body(),
+        review_ruleset_body_policy(owner_id.unwrap(), no_ci, no_pr),
+    ];
     let mut existing = Vec::new();
     for page in 1.. {
         let batch = api(
@@ -210,6 +238,14 @@ fn configure_ruleset_with(
                     "customized ruleset {name:?}; review its scope/bypasses manually"
                 ));
             }
+            // A live gate with [] bypass actors is stricter than the generated
+            // exact-owner exception. Opt-out retries must not loosen that choice;
+            // retain the pre-existing migration behavior only for default policy.
+            if (no_ci || no_pr) && index == 1 && saved["bypass_actors"] != body["bypass_actors"] {
+                return Err(
+                    "creation opt-outs cannot add an owner bypass to an existing gate".into(),
+                );
+            }
             for rule in saved["rules"].as_array().ok_or("invalid ruleset rules")? {
                 let kind = rule["type"].as_str().ok_or("invalid rule type")?;
                 if saved_rules[index]
@@ -222,8 +258,36 @@ fn configure_ruleset_with(
         }
     }
     let [legacy, gates] = saved_rules;
-    let gate_types = ["pull_request", "required_status_checks"];
-    if gates.keys().any(|k| !gate_types.contains(&k.as_str())) {
+    // Own these type strings rather than retaining &str borrows into bodies[1].
+    // We will mutate that body's rule array below to preserve stricter saved
+    // parameters; references into it could not safely survive that mutation.
+    let gate_types: Vec<String> = bodies[1]["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["type"].as_str().unwrap().to_string())
+        .collect();
+    // Creation opt-outs never delete a requirement from an existing split gate or
+    // legacy history ruleset, even when a local marker recorded that opt-out.
+    // The owner may have deliberately tightened live policy since creation.
+    for kind in ["pull_request", "required_status_checks"] {
+        if !gate_types.iter().any(|k| k == kind)
+            && (legacy.contains_key(kind) || gates.contains_key(kind))
+        {
+            return Err(
+                "creation opt-outs would weaken existing rules; refusing to change live policy"
+                    .into(),
+            );
+        }
+    }
+    // Migrating even the remaining legacy gate would add an owner bypass it did
+    // not have before. The opt-out flags provide no authority for that migration.
+    if (no_ci || no_pr) && legacy.keys().any(|k| gate_types.contains(k)) {
+        return Err(
+            "creation opt-outs cannot migrate existing history gates; review live policy".into(),
+        );
+    }
+    if gates.keys().any(|k| !gate_types.contains(k)) {
         return Err(format!(
             "customized rules in {REVIEW_RULESET_NAME:?}; cannot grant owner bypass"
         ));
@@ -244,7 +308,7 @@ fn configure_ruleset_with(
     }
     let history = bodies[0]["rules"].as_array_mut().unwrap();
     for (kind, rule) in legacy {
-        if !gate_types.contains(&kind.as_str()) {
+        if !gate_types.contains(&kind) {
             if let Some(existing) = history.iter_mut().find(|r| r["type"] == kind) {
                 *existing = rule;
             } else {
@@ -254,7 +318,17 @@ fn configure_ruleset_with(
     }
     // The replacement gate must succeed before removing the legacy gate.
     // A failed migration therefore leaves an existing repo's PR/CI gate intact.
+    // Preflight ends here, after the same full validation as installation. The
+    // caller reruns it at install time; it must not trust the first read forever.
+    if validate_only {
+        return Ok(());
+    }
     for index in [1, 0] {
+        if bodies[index]["rules"].as_array().unwrap().is_empty() {
+            // Both flags: install history protection only. Never POST an invalid
+            // empty gate or DELETE an existing customized repository ruleset.
+            continue;
+        }
         match ids[index] {
             Some(id) => api(
                 "PUT",
@@ -396,9 +470,26 @@ pub fn configure_all(
     repo: &str,
     private: bool,
     project: bool,
+    policy: (bool, bool),
     push: Option<Step>,
     log: &(dyn Fn(&str) + Sync),
 ) -> Vec<String> {
+    // Two Copy bools make the effective CLI/marker policy safe to capture in the
+    // later scoped work. They represent enforcement, not whether Actions run.
+    let (no_ci, no_pr) = policy;
+    if private && (no_ci || no_pr) {
+        log("  ✗ creation policy: --no-ci and --no-pr only apply to public repositories");
+        return vec!["creation policy".into()];
+    }
+    // Refuse a weakening resume before PATCH, push, Project/label writes or any
+    // fanout. Return a failed-step result so the CLI keeps its retry semantics.
+    // Defaults keep the pre-existing sequencing, avoiding unrelated behavior changes.
+    if no_ci || no_pr {
+        if let Err(e) = configure_ruleset_policy_with(repo, no_ci, no_pr, true, api) {
+            log(&format!("  ✗ creation policy: {e}"));
+            return vec!["creation policy".into()];
+        }
+    }
     let failed: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let report = |name: &str, result: Result<(), String>| {
         match &result {
@@ -535,7 +626,7 @@ pub fn configure_all(
         });
         let ruleset_result =
             if !private && !push_blocked && push_result.as_ref().is_none_or(Result::is_ok) {
-                Some(configure_ruleset(repo))
+                Some(configure_ruleset(repo, no_ci, no_pr))
             } else {
                 None
             };
@@ -615,37 +706,151 @@ mod tests {
         }
 
         fn configure(&mut self) -> Result<(), String> {
-            configure_ruleset_with("me/r", |method, path, body| {
-                self.calls.push((method.into(), path.into(), body.cloned()));
-                if method == "GET" {
-                    if path == "repos/me/r" {
-                        return Ok(json!({"owner": self.owner}));
+            self.configure_policy(false, false, false)
+        }
+
+        fn configure_policy(
+            &mut self,
+            no_ci: bool,
+            no_pr: bool,
+            validate_only: bool,
+        ) -> Result<(), String> {
+            configure_ruleset_policy_with(
+                "me/r",
+                no_ci,
+                no_pr,
+                validate_only,
+                |method, path, body| {
+                    self.calls.push((method.into(), path.into(), body.cloned()));
+                    if method == "GET" {
+                        if path == "repos/me/r" {
+                            return Ok(json!({"owner": self.owner}));
+                        }
+                        if path.contains('?') {
+                            let page: usize = path.rsplit("page=").next().unwrap().parse().unwrap();
+                            return Ok(json!(
+                                self.state
+                                    .iter()
+                                    .skip((page - 1) * 100)
+                                    .take(100)
+                                    .map(|(id, v)| json!({"id": id, "name": v["name"]}))
+                                    .collect::<Vec<_>>()
+                            ));
+                        }
+                        let id = path.rsplit('/').next().unwrap().parse::<u64>().unwrap();
+                        return Ok(self.state[&id].clone());
                     }
-                    if path.contains('?') {
-                        let page: usize = path.rsplit("page=").next().unwrap().parse().unwrap();
-                        return Ok(json!(
-                            self.state
-                                .iter()
-                                .skip((page - 1) * 100)
-                                .take(100)
-                                .map(|(id, v)| json!({"id": id, "name": v["name"]}))
-                                .collect::<Vec<_>>()
-                        ));
+                    if self.fail_write > 0 && self.writes().len() == self.fail_write {
+                        return Err("write rejected".into());
                     }
-                    let id = path.rsplit('/').next().unwrap().parse::<u64>().unwrap();
-                    return Ok(self.state[&id].clone());
-                }
-                if self.fail_write > 0 && self.writes().len() == self.fail_write {
-                    return Err("write rejected".into());
-                }
-                let id = if method == "PUT" {
-                    path.rsplit('/').next().unwrap().parse().unwrap()
+                    let id = if method == "PUT" {
+                        path.rsplit('/').next().unwrap().parse().unwrap()
+                    } else {
+                        self.state.keys().last().copied().unwrap_or(0) + 1
+                    };
+                    self.state.insert(id, body.unwrap().clone());
+                    Ok(json!({"id": id}))
+                },
+            )
+        }
+    }
+
+    #[test]
+    fn creation_matrix_matches_shared_fixture_and_survives_resume() {
+        let cases: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/creation_policy.json"))
+                .unwrap();
+        for case in cases.as_array().unwrap() {
+            let (no_ci, no_pr) = (
+                case["no_ci"].as_bool().unwrap(),
+                case["no_pr"].as_bool().unwrap(),
+            );
+            let body = review_ruleset_body_policy(123, no_ci, no_pr);
+            let types: Vec<_> = body["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["type"].clone())
+                .collect();
+            assert_eq!(json!(types), case["rules"]);
+            assert_eq!(
+                body["bypass_actors"],
+                defaults()["review_ruleset"]["bypass_actors"]
+            );
+            let mut api = RulesetApi::new([(
+                7,
+                json!({"name": "custom-policy", "rules": [{"type": "creation"}]}),
+            )]);
+            api.configure_policy(no_ci, no_pr, true).unwrap();
+            assert!(api.writes().is_empty());
+            for _ in 0..2 {
+                api.configure_policy(no_ci, no_pr, false).unwrap();
+                assert!(api.state.values().any(|v| v == &ruleset_body()));
+                let gate = api
+                    .state
+                    .values()
+                    .find(|v| v["name"] == REVIEW_RULESET_NAME);
+                if no_ci && no_pr {
+                    assert!(gate.is_none());
                 } else {
-                    self.state.keys().last().copied().unwrap_or(0) + 1
+                    assert_eq!(gate.unwrap(), &body);
+                }
+                assert_eq!(api.state[&7]["rules"], json!([{"type": "creation"}]));
+                assert!(api.writes().iter().all(|c| {
+                    !c.2.as_ref().unwrap()["rules"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty()
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn opt_out_never_removes_existing_split_or_legacy_requirements() {
+        for (no_ci, no_pr) in [(true, false), (false, true), (true, true)] {
+            for legacy in [false, true] {
+                let mut api = if legacy {
+                    RulesetApi::new([(42, legacy_policy())])
+                } else {
+                    RulesetApi::new([(42, ruleset_body()), (43, review_ruleset_body(123))])
                 };
-                self.state.insert(id, body.unwrap().clone());
-                Ok(json!({"id": id}))
-            })
+                let before = api.state.clone();
+                assert!(api.configure_policy(no_ci, no_pr, false).is_err());
+                assert!(api.writes().is_empty());
+                assert_eq!(api.state, before);
+            }
+        }
+    }
+
+    #[test]
+    fn opt_out_retains_stricter_remaining_gate() {
+        for (no_ci, no_pr) in [(true, false), (false, true)] {
+            let mut body = review_ruleset_body_policy(123, no_ci, no_pr);
+            if no_ci {
+                body["rules"][0]["parameters"]["required_approving_review_count"] = json!(2);
+            } else {
+                body["rules"][0]["parameters"]["required_status_checks"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"context": "security"}));
+            }
+            let mut api = RulesetApi::new([(42, ruleset_body()), (43, body.clone())]);
+            api.configure_policy(no_ci, no_pr, false).unwrap();
+            assert_eq!(api.state[&43], body);
+        }
+    }
+
+    #[test]
+    fn opt_out_cannot_introduce_an_owner_bypass() {
+        for (no_ci, no_pr) in [(true, false), (false, true)] {
+            let mut gate = review_ruleset_body_policy(123, no_ci, no_pr);
+            gate["bypass_actors"] = json!([]);
+            let mut api = RulesetApi::new([(42, ruleset_body()), (43, gate)]);
+            let before = api.state.clone();
+            assert!(api.configure_policy(no_ci, no_pr, false).is_err());
+            assert_eq!(api.state, before);
+            assert!(api.writes().is_empty());
         }
     }
 

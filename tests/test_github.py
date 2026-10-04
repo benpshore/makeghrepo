@@ -167,7 +167,7 @@ def test_ruleset_does_not_wait_for_slow_project(calls, monkeypatch):
         ruleset_started.wait(0.5)
         project_finished.set()
 
-    def check_ruleset(_):
+    def check_ruleset(_, **policy):
         assert project_started.wait(0.5)
         assert not project_finished.is_set()
         ruleset_started.set()

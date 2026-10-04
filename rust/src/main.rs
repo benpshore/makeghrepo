@@ -1,6 +1,22 @@
 //! makeghrepo [NAME] [LANGUAGE]... [--private] [--lib]
 //!
 //! The Rust port of the Python tool: same template, same registry, same steps.
+//!
+//! Creation policy travels as one choice through this bootstrap, not as separate
+//! renderer and API switches. Clap's false defaults mean required PRs and CI;
+//! --no-ci omits only the check rule, and --no-pr omits only the PR/review rule.
+//! Thus --no-pr alone permits direct pushes but still requires passing CI.
+//! Both flags keep workflows and local smoke checks because execution and merge
+//! enforcement answer different questions; dropping files could strand a gate.
+//!
+//! Offline rendering uses those choices immediately and stops. Creation renders
+//! the same shared template, writes the local retry marker, runs checks, and sends
+//! the effective policy to GitHub configuration. Resume restores that marker
+//! before mutation and leaves generated files intact. The API planner then refuses
+//! any opt-out that would weaken an existing live requirement or bypass policy:
+//! our marker preserves a creation decision, not permission to undo later owner
+//! changes. Shared payload fixtures and byte parity make the Python/Rust story
+//! testable at both ends, rather than relying on two implementations looking alike.
 
 mod github;
 mod gitops;
@@ -32,6 +48,15 @@ struct Cli {
     words: Vec<String>,
     #[arg(long)]
     private: bool,
+    // Clap maps underscores in field names to kebab-case long options. `long`
+    // therefore exposes exactly --no-ci and --no-pr; they take no value token.
+    // They independently remove rules, not generated files or bootstrap checks.
+    /// Public only: do not require CI checks; workflows and local checks remain.
+    #[arg(long)]
+    no_ci: bool,
+    /// Public only: do not require pull requests or PR reviews; CI remains required unless --no-ci.
+    #[arg(long)]
+    no_pr: bool,
     /// python: library layout, no console script (like uv init --lib)
     #[arg(long)]
     lib: bool,
@@ -134,6 +159,32 @@ fn validate_resume_license(marker: &Value, requested: Option<&str>) -> Result<()
     Ok(())
 }
 
+/// Restore the creation policy without interpreting absent flags as reversals.
+/// The Python helper uses the same invariant: missing legacy fields mean false
+/// (enforced), an omitted CLI flag preserves the marker, and true cannot replace
+/// recorded false. `as_bool` deliberately rejects JSON null, numbers and strings;
+/// accepting truthy values could silently remove a required PR or CI check.
+fn resume_policy(marker: &Value, no_ci: bool, no_pr: bool) -> Result<(bool, bool), String> {
+    // The fixed array is owned by this function; the return copies two bools.
+    // Borrow marker values to validate them without rewriting the user's marker.
+    let mut recorded = [false; 2];
+    for (index, (key, requested)) in [("no_ci", no_ci), ("no_pr", no_pr)].into_iter().enumerate() {
+        recorded[index] = match marker.get(key) {
+            None => false,
+            Some(value) => value
+                .as_bool()
+                .ok_or("invalid recorded creation policy; review the resume marker")?,
+        };
+        if requested && !recorded[index] {
+            return Err(format!(
+                "a resume never changes creation policy; re-run without --{}",
+                key.replace('_', "-")
+            ));
+        }
+    }
+    Ok((recorded[0], recorded[1]))
+}
+
 fn temp_dir(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -194,6 +245,12 @@ fn main() -> ExitCode {
         return fail("--lib only applies to python; add `python` to the language list");
     }
 
+    // Reject before any file writes or external commands. Private Actions remain
+    // disabled before first push; these public-only choices never enable them.
+    if cli.private && (cli.no_ci || cli.no_pr) {
+        return fail("--no-ci and --no-pr only apply to public repositories");
+    }
+
     // Offline modes: render only, or render and print the golden serialization.
     if cli.snapshot || cli.render.is_some() {
         let (languages, private, lib, mit) = match &cli.combo {
@@ -223,6 +280,8 @@ fn main() -> ExitCode {
             year: cli.year.clone().unwrap_or_else(|| "2026".into()),
             private,
             py_lib: lib,
+            no_ci: cli.no_ci,
+            no_pr: cli.no_pr,
             project_license: cli
                 .license
                 .as_deref()
@@ -290,6 +349,7 @@ fn main() -> ExitCode {
 
     let private: bool;
     let mut want_private = cli.private;
+    let (mut no_ci, mut no_pr) = (cli.no_ci, cli.no_pr);
     if resume {
         if !dest.join(".git").is_dir() {
             return fail(&format!(
@@ -320,6 +380,16 @@ fn main() -> ExitCode {
             ));
         }
         want_private = marker_private;
+        // Reassign the effective policy, not the parsed invocation: later bootstrap
+        // must use marker choices even when neither option was repeated today.
+        // Do this before smoke tests, commits, or any GitHub configuration writes.
+        (no_ci, no_pr) = match resume_policy(&marker, cli.no_ci, cli.no_pr) {
+            Ok(policy) => policy,
+            Err(e) => return fail(&e),
+        };
+        if want_private && (no_ci || no_pr) {
+            return fail("--no-ci and --no-pr only apply to public repositories");
+        }
         if let Err(e) = validate_resume_license(&marker, cli.license.as_deref()) {
             return fail(&format!("{repo}: {e}"));
         }
@@ -368,6 +438,8 @@ fn main() -> ExitCode {
             year: current_year(),
             private: cli.private,
             py_lib: cli.lib,
+            no_ci,
+            no_pr,
             project_license: cli.license.clone().unwrap_or_else(|| "none".into()),
             languages: chosen.clone(),
         };
@@ -391,6 +463,11 @@ fn main() -> ExitCode {
         marker.insert("private".into(), json!(cli.private));
         marker.insert("languages".into(), json!(chosen));
         marker.insert("lib".into(), json!(cli.lib));
+        // Persist explicit bools before smoke testing so interrupted creation and
+        // cross-language resumes restore the same policy. Schema-1 legacy markers
+        // remain readable: absence of either key means enforcement stays enabled.
+        marker.insert("no_ci".into(), json!(no_ci));
+        marker.insert("no_pr".into(), json!(no_pr));
         marker.insert(
             "license".into(),
             json!(cli.license.as_deref().unwrap_or("none")),
@@ -429,6 +506,9 @@ fn main() -> ExitCode {
             ));
         }
         private = actual;
+        if private && (no_ci || no_pr) {
+            return fail("--no-ci and --no-pr only apply to public repositories");
+        }
     } else {
         private = want_private;
         if let Err(e) = github::create_repo(&repo, &dest, &name, private) {
@@ -456,7 +536,7 @@ fn main() -> ExitCode {
     } else {
         Some(Box::new(move || gitops::push_main(&push_dest)))
     };
-    let failed = github::configure_all(&repo, private, true, push, &echo);
+    let failed = github::configure_all(&repo, private, true, (no_ci, no_pr), push, &echo);
     echo(&format!(
         "\nhttps://github.com/{repo}\ncd {}",
         dest.display()
@@ -475,6 +555,45 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod license_tests {
     use super::*;
+
+    #[test]
+    fn exact_policy_options_and_resume_defaults() {
+        for (no_ci, no_pr) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut args = vec!["makeghrepo"];
+            if no_ci {
+                args.push("--no-ci");
+            }
+            if no_pr {
+                args.push("--no-pr");
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!((cli.no_ci, cli.no_pr), (no_ci, no_pr));
+            let marker = json!({"no_ci": no_ci, "no_pr": no_pr});
+            assert_eq!(
+                resume_policy(&marker, false, false).unwrap(),
+                (no_ci, no_pr)
+            );
+            assert_eq!(
+                resume_policy(&marker, no_ci, no_pr).unwrap(),
+                (no_ci, no_pr)
+            );
+        }
+        assert_eq!(
+            resume_policy(&json!({}), false, false).unwrap(),
+            (false, false)
+        );
+        assert!(resume_policy(&json!({}), true, false).is_err());
+        assert!(resume_policy(&json!({}), false, true).is_err());
+        for value in [json!(null), json!(0), json!("false"), json!([])] {
+            for key in ["no_ci", "no_pr"] {
+                let marker = json!({key: value});
+                assert!(resume_policy(&marker, false, false).is_err());
+            }
+        }
+        for bad in ["--no-CI", "--no-PR", "--no"] {
+            assert!(Cli::try_parse_from(["makeghrepo", bad]).is_err());
+        }
+    }
 
     #[test]
     fn cli_requires_an_explicit_supported_license() {

@@ -80,9 +80,21 @@ def ruleset_body() -> dict[str, Any]:
     }
 
 
-def review_ruleset_body(owner_id: int) -> dict[str, Any]:
-    """Only the personal repository owner may push without a PR or passing CI."""
-    return {
+def review_ruleset_body(
+    owner_id: int, *, no_ci: bool = False, no_pr: bool = False
+) -> dict[str, Any]:
+    """Build the independent PR/check gate, retaining the exact-owner exception.
+
+    no_pr removes the entire pull_request rule, including its review-thread and
+    approval parameters. no_ci removes required_status_checks, not the workflows
+    that produce those checks. Build the established default first and filter only
+    these two types so their surviving parameters cannot drift from the default.
+    The caller skips installation when both rules are absent: GitHub must never
+    receive an empty, active review gate. Omitting workflows instead would answer
+    a different request and could strand the remaining required CI rule; leaving
+    execution intact makes each enforcement choice independent and testable.
+    """
+    body = {
         **ruleset_body(),
         "name": REVIEW_RULESET_NAME,
         "bypass_actors": [{"actor_type": "User", "actor_id": owner_id, "bypass_mode": "always"}],
@@ -112,8 +124,26 @@ def review_ruleset_body(owner_id: int) -> dict[str, Any]:
         ],
     }
 
+    body["rules"] = [
+        rule
+        for rule in body["rules"]
+        if not (no_pr and rule["type"] == "pull_request")
+        and not (no_ci and rule["type"] == "required_status_checks")
+    ]
+    return body
 
-def configure_ruleset(repo: str) -> None:
+
+def configure_ruleset(
+    repo: str, *, no_ci: bool = False, no_pr: bool = False, validate_only: bool = False
+) -> None:
+    """Plan and optionally install creation rules without weakening live policy.
+
+    validate_only runs the same discovery and validation, but performs no writes.
+    Opt-out bootstrap uses it before settings/publishing, then repeats validation
+    when installing rules to avoid trusting a stale first read. It is a preflight,
+    not a transaction: concurrent administrators can still change policy between
+    API requests. Never delete an omitted rule or migrate its owner-bypass scope.
+    """
     # Use GitHub's repository owner, never the caller or commit author identity.
     owner = api("GET", f"repos/{repo}")["owner"]
     owner_id = owner.get("id")
@@ -126,7 +156,7 @@ def configure_ruleset(repo: str) -> None:
     ):
         raise GhError("owner push bypass requires a personal repository with a verified owner ID")
 
-    bodies = [ruleset_body(), review_ruleset_body(owner_id)]
+    bodies = [ruleset_body(), review_ruleset_body(owner_id, no_ci=no_ci, no_pr=no_pr)]
     existing = []
     page = 1
     while True:
@@ -154,6 +184,15 @@ def configure_ruleset(repo: str) -> None:
                 saved.get("bypass_actors") not in ([], body["bypass_actors"])
             ):
                 raise GhError(f"customized ruleset {name!r}; review its scope/bypasses manually")
+            # A gate with no bypass may be an owner's stricter post-creation
+            # choice. Default legacy migration still follows its existing policy,
+            # but opt-outs must never introduce a bypass into such a live gate.
+            if (
+                (no_ci or no_pr)
+                and name == REVIEW_RULESET_NAME
+                and saved["bypass_actors"] != body["bypass_actors"]
+            ):
+                raise GhError("creation opt-outs cannot add an owner bypass to an existing gate")
             for rule in saved["rules"]:
                 if rule["type"] in rules:
                     raise GhError(f"duplicate rule in {name!r}; reconcile it manually")
@@ -164,6 +203,18 @@ def configure_ruleset(repo: str) -> None:
     legacy = saved_rules[RULESET_NAME]
     gates = saved_rules[REVIEW_RULESET_NAME]
     gate_types = {rule["type"] for rule in review["rules"]}
+    # An opt-out affects *new* rules only. A same-named live gate or a legacy
+    # history gate may have been tightened by its owner after project creation.
+    # Refuse even an otherwise "idempotent" retry if it would omit such a rule.
+    omitted = {"pull_request", "required_status_checks"} - gate_types
+    if omitted & (legacy.keys() | gates.keys()):
+        raise GhError(
+            "creation opt-outs would weaken existing rules; refusing to change live policy"
+        )
+    # Moving a remaining rule out of protect-main would also introduce an owner
+    # bypass it did not previously have. Opt-outs are not migration authority.
+    if (no_ci or no_pr) and gate_types & legacy.keys():
+        raise GhError("creation opt-outs cannot migrate existing history gates; review live policy")
     if gates.keys() - gate_types:
         raise GhError(f"customized rules in {REVIEW_RULESET_NAME!r}; cannot grant owner bypass")
     for index, default in enumerate(review["rules"]):
@@ -181,7 +232,13 @@ def configure_ruleset(repo: str) -> None:
 
     # Install the replacement gate before removing the legacy gate. If either
     # request fails, an existing protected repo retains its PR/CI requirements.
+    if validate_only:
+        return
     for body in (review, history):
+        if not body["rules"]:
+            # Both flags selected: keep history protection, create no empty gate,
+            # and never DELETE a saved ruleset (custom policy belongs to its owner).
+            continue
         match = ids.get(body["name"])
         if match:
             api("PUT", f"repos/{repo}/rulesets/{match}", body)
@@ -269,6 +326,8 @@ def configure_all(
     *,
     private: bool,
     project: bool = True,
+    no_ci: bool = False,
+    no_pr: bool = False,
     push: Callable[[], object] | None = None,
     log: Callable[[str], None] = print,
 ) -> list[str]:
@@ -285,6 +344,19 @@ def configure_all(
     retry (push=None) can still repair protection on an existing main.
     """
     failed: list[str] = []
+    if private and (no_ci or no_pr):
+        raise GhError("--no-ci and --no-pr only apply to public repositories")
+    if no_ci or no_pr:
+        # Opt-out resumes can encounter stricter owner-added rules. Validate them
+        # before settings, publishing or independent mutations, not only in the
+        # later fanout. A refused policy returns a normal failed-step result so the
+        # CLI reports a recoverable bootstrap failure with the local project intact.
+        # Without flags, preserve the established sequencing and concurrency.
+        try:
+            configure_ruleset(repo, no_ci=no_ci, no_pr=no_pr, validate_only=True)
+        except GhError as exc:
+            log(f"  ✗ creation policy: {exc}")
+            return ["creation policy"]
 
     def run(fn: Callable[[], object]) -> Exception | None:
         try:
@@ -361,7 +433,7 @@ def configure_all(
                 futures[i] = pool.submit(run, fn)
         push_failed = push_index is not None and futures[push_index].result() is not None
         ruleset_err = (
-            run(lambda: configure_ruleset(repo))
+            run(lambda: configure_ruleset(repo, no_ci=no_ci, no_pr=no_pr))
             if not private and not push_blocked and not push_failed
             else None
         )

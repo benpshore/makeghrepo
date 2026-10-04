@@ -91,6 +91,10 @@ pub struct Data {
     pub year: String,
     pub private: bool,
     pub py_lib: bool,
+    // These independently describe the generated project's *requirements*.
+    // They never select or omit workflow files, local checks or license metadata.
+    pub no_ci: bool,
+    pub no_pr: bool,
     pub project_license: String,
     pub languages: Vec<String>,
 }
@@ -117,6 +121,10 @@ fn context(langs: &[Lang], data: &Data) -> Value {
     );
     ctx.insert("private".into(), Json::Bool(data.private));
     ctx.insert("py_lib".into(), Json::Bool(data.py_lib));
+    // Use the same bool keys as Copier, so shared policy-text conditionals have
+    // identical defaults and values in the Python and Rust renderers.
+    ctx.insert("no_ci".into(), Json::Bool(data.no_ci));
+    ctx.insert("no_pr".into(), Json::Bool(data.no_pr));
     ctx.insert(
         "project_license".into(),
         Json::String(data.project_license.clone()),
@@ -133,6 +141,9 @@ fn context(langs: &[Lang], data: &Data) -> Value {
 
 /// Render the template into `dest` (which must not exist or must be empty).
 pub fn render(dest: &Path, langs: &[Lang], data: &Data) -> Result<(), String> {
+    if data.private && (data.no_ci || data.no_pr) {
+        return Err("--no-ci and --no-pr only apply to public repositories".into());
+    }
     names::validate_name(&data.project_name)?;
     names::validate_owner(&data.github_owner)?;
     if data.package_name != names::package_name(&data.project_name) {

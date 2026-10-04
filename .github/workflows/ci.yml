@@ -35,9 +35,23 @@ jobs:
       - name: Install
         run: uv sync --locked
       - name: Format
-        run: uv run ruff format --check
+        id: python-fmt
+        run: |
+          if ! uv run ruff format --check; then
+            uv run ruff format
+            git diff -- . > "$RUNNER_TEMP/ruff-format.patch"
+            echo "::error::ruff wants changes; apply the ruff-format-patch artifact"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && steps.python-fmt.outcome == 'failure'
+        with:
+          name: ruff-format-patch
+          path: ${{ runner.temp }}/ruff-format.patch
       - name: Lint
         run: uv run ruff check --output-format=github
+      - name: Verify unchanged default golden snapshots
+        run: uv run scripts/regen-golden --check
       - name: Test
         run: uv run pytest
       # Snapshots are rendered here, not on a dev machine. Only trusted runs
@@ -175,6 +189,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
       - name: Toolchain
         run: |
           rustup toolchain install stable --profile minimal --component clippy,rustfmt
@@ -210,6 +227,11 @@ jobs:
             n=$((n + 1))
           done
           echo "$n golden snapshots reproduced byte for byte by the Rust build"
+      - name: Python/Rust public creation policy parity
+        working-directory: .
+        run: |
+          uv sync --locked
+          uv run scripts/policy-parity ./rust/target/release/makeghrepo
       - name: Dry run
         run: |
           ./target/release/makeghrepo quiet-otter rust docker --render "$RUNNER_TEMP/dry" >/dev/null

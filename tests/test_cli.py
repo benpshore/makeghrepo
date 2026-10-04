@@ -21,7 +21,8 @@ def gh(tmp_path, monkeypatch):
     monkeypatch.setattr(github, "create_repo", lambda *a: state["calls"].append(("create", *a)))
     monkeypatch.setattr(gitops, "remote_has_main", lambda _: False)
 
-    def configure_all(repo, *, private, push, log):
+    def configure_all(repo, *, private, push, log, no_ci=False, no_pr=False):
+        state["policy"] = (no_ci, no_pr)
         state["calls"].append(("configure", repo, private, push is not None))
         return state["failed"]
 
@@ -356,3 +357,68 @@ def test_resume_lookup_failure_never_pushes_or_configures(tmp_path, gh, monkeypa
     assert "Could not check remote main; refusing to push" in result.output
     assert gh["calls"] == []
     assert git.Repo(dest).head.commit.hexsha == before
+
+
+@pytest.mark.parametrize(
+    "no_ci,no_pr", [(False, False), (True, False), (False, True), (True, True)]
+)
+def test_creation_policy_persists_across_resume(tmp_path, gh, no_ci, no_pr):
+    args = ["policy", *(["--no-ci"] if no_ci else []), *(["--no-pr"] if no_pr else [])]
+    assert runner.invoke(app, args).exit_code == 0
+    dest = tmp_path / "policy"
+    assert gh["policy"] == (no_ci, no_pr)
+    marker_before = (dest / ".git/makeghrepo.json").read_bytes()
+    marker = gitops.read_marker(dest)
+    assert (marker["no_ci"], marker["no_pr"]) == (no_ci, no_pr)
+    result = runner.invoke(app, ["policy"])
+    assert result.exit_code == 0, result.output
+    assert gh["policy"] == (no_ci, no_pr)
+    assert (dest / ".git/makeghrepo.json").read_bytes() == marker_before
+
+
+@pytest.mark.parametrize("option", ["--no-ci", "--no-pr"])
+def test_conflicting_creation_policy_is_rejected_before_mutation(tmp_path, gh, option):
+    assert runner.invoke(app, ["policy"]).exit_code == 0
+    gh["calls"].clear()
+    result = runner.invoke(app, ["policy", option])
+    assert result.exit_code == 1 and "a resume never changes creation policy" in result.output
+    assert not gh["calls"]
+
+
+def test_legacy_policy_defaults_remain_enforced(tmp_path, gh):
+    assert runner.invoke(app, ["policy"]).exit_code == 0
+    dest = tmp_path / "policy"
+    marker = gitops.read_marker(dest)
+    del marker["no_ci"], marker["no_pr"]
+    gitops.write_marker(dest, marker)
+    assert runner.invoke(app, ["policy"]).exit_code == 0
+    assert gh["policy"] == (False, False)
+    gh["calls"].clear()
+    result = runner.invoke(app, ["policy", "--no-ci"])
+    assert result.exit_code == 1 and not gh["calls"]
+
+
+@pytest.mark.parametrize("key", ["no_ci", "no_pr"])
+@pytest.mark.parametrize("value", [None, 0, "false", []])
+def test_invalid_policy_marker_stops_before_mutation(tmp_path, gh, key, value):
+    assert runner.invoke(app, ["policy"]).exit_code == 0
+    dest = tmp_path / "policy"
+    gitops.write_marker(dest, {**gitops.read_marker(dest), key: value})
+    gh["calls"].clear()
+    result = runner.invoke(app, ["policy"])
+    assert result.exit_code == 1 and "invalid recorded creation policy" in result.output
+    assert not gh["calls"]
+
+
+@pytest.mark.parametrize("options", [["--no-ci"], ["--no-pr"], ["--no-ci", "--no-pr"]])
+def test_private_rejects_opt_out_before_creation(tmp_path, gh, options):
+    result = runner.invoke(app, ["policy", "--private", *options])
+    assert result.exit_code == 1 and "only apply to public" in result.output
+    assert not gh["calls"] and not (tmp_path / "policy").exists()
+
+
+def test_resume_private_rejects_opt_out_without_repeating_private(tmp_path, gh):
+    assert runner.invoke(app, ["policy", "--private"]).exit_code == 0
+    gh["calls"].clear()
+    result = runner.invoke(app, ["policy", "--no-ci"])
+    assert result.exit_code == 1 and not gh["calls"]

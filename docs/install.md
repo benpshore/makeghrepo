@@ -101,8 +101,9 @@ release or remote tag is created. Installed tools must pass help/version checks
 and render matching file names, bytes, and executable bits for eight representative
 public/private and licensed/unlicensed projects.
 
-The installed wheel and Rust binary also run five real-Git bootstrap and retry
-scenarios against a controlled GitHub fixture, comparing their resulting settings,
+The installed wheel and Rust binary also run eleven real-Git bootstrap and retry
+scenarios against a controlled GitHub fixture, including the public CI/PR opt-outs,
+conflicting resumes and later stricter live rules. They compare resulting settings,
 rulesets and push behavior. These tests use local bare remotes and never call
 GitHub or change live policy.
 
