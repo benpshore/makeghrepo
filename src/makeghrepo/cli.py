@@ -50,6 +50,18 @@ def _project_name(raw: str, langs: list[str]) -> str:
     return name
 
 
+def _resume_policy(marker: dict, no_ci: bool, no_pr: bool) -> tuple[bool, bool]:
+    recorded = []
+    for key, requested in (("no_ci", no_ci), ("no_pr", no_pr)):
+        value = marker.get(key, False)
+        if not isinstance(value, bool):
+            raise ValueError("invalid recorded creation policy; review the resume marker")
+        if requested and not value:
+            raise ValueError(f"a resume never changes creation policy; re-run without --{key.replace('_', '-')}")
+        recorded.append(value)
+    return recorded[0], recorded[1]
+
+
 @app.command(
     help="Create a new GitHub repo, fully configured. Re-run the same command to resume.\n\n"
     f"Languages (any number, or none): {', '.join(LANGS)}.",
@@ -59,6 +71,12 @@ def main(
         list[str] | None, typer.Argument(metavar="[NAME] [LANGUAGE]...", show_default=False)
     ] = None,
     private: Annotated[bool, typer.Option("--private")] = False,
+    no_ci: Annotated[
+        bool, typer.Option("--no-ci", help="Public only: do not require CI checks; workflows and local checks remain.")
+    ] = False,
+    no_pr: Annotated[
+        bool, typer.Option("--no-pr", help="Public only: do not require pull requests or PR reviews; CI remains required.")
+    ] = False,
     lib: Annotated[
         bool,
         typer.Option(
@@ -102,6 +120,9 @@ def main(
     if lib and "python" not in langs:
         raise fail("--lib only applies to python; add `python` to the language list")
 
+    if private and (no_ci or no_pr):
+        raise fail("--no-ci and --no-pr only apply to public repositories")
+
     if render is not None:
         try:
             name = _project_name(raw_name if raw_name is not None else "quiet-otter", langs)
@@ -114,6 +135,8 @@ def main(
                 "github_owner": offline_owner,
                 "year": year if year is not None else "2026",
                 "private": private,
+                "no_ci": no_ci,
+                "no_pr": no_pr,
                 "py_lib": lib,
                 "project_license": (project_license or ProjectLicense.NONE).value,
                 "languages": langs,
@@ -171,6 +194,12 @@ def main(
         if private and not marker.get("private"):
             raise fail(f"{repo} was created public; re-run without --private or pick another name")
         want_private = bool(marker.get("private"))
+        try:
+            no_ci, no_pr = _resume_policy(marker, no_ci, no_pr)
+        except ValueError as exc:
+            raise fail(str(exc)) from exc
+        if want_private and (no_ci or no_pr):
+            raise fail("--no-ci and --no-pr only apply to public repositories")
         # Older makeghrepo versions always generated MIT, before recording a choice.
         recorded_license = marker.get("license", "MIT")
         if recorded_license not in ("none", "MIT"):
@@ -202,6 +231,8 @@ def main(
             "author_name": author_name,
             "github_owner": owner,
             "private": private,
+                "no_ci": no_ci,
+                "no_pr": no_pr,
             "py_lib": lib,
             "project_license": (project_license or ProjectLicense.NONE).value,
             "languages": langs,
@@ -216,6 +247,8 @@ def main(
             "name": name,
             "owner": owner,
             "private": private,
+                "no_ci": no_ci,
+                "no_pr": no_pr,
             "languages": langs,
             "lib": lib,
             "license": (project_license or ProjectLicense.NONE).value,
@@ -241,6 +274,8 @@ def main(
                     "Restore the remote's private visibility before retrying"
                 )
             private = actual_private
+            if private and (no_ci or no_pr):
+                raise fail("--no-ci and --no-pr only apply to public repositories")
         else:
             private = want_private
             github.create_repo(repo, dest, name, private)
@@ -256,7 +291,9 @@ def main(
             "Local project is intact; re-run to retry."
         ) from exc
     push = None if pushed else lambda: gitops.push_main(dest)
-    failed = github.configure_all(repo, private=private, push=push, log=typer.echo)
+    failed = github.configure_all(
+        repo, private=private, no_ci=no_ci, no_pr=no_pr, push=push, log=typer.echo
+    )
     typer.echo(f"\nhttps://github.com/{repo}\ncd {dest}")
     if failed:
         typer.echo(f"{len(failed)} step(s) failed. Fix, then re-run: makeghrepo {name}")

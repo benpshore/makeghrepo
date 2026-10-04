@@ -80,9 +80,9 @@ def ruleset_body() -> dict[str, Any]:
     }
 
 
-def review_ruleset_body(owner_id: int) -> dict[str, Any]:
+def review_ruleset_body(owner_id: int, *, no_ci: bool = False, no_pr: bool = False) -> dict[str, Any]:
     """Only the personal repository owner may push without a PR or passing CI."""
-    return {
+    body = {
         **ruleset_body(),
         "name": REVIEW_RULESET_NAME,
         "bypass_actors": [{"actor_type": "User", "actor_id": owner_id, "bypass_mode": "always"}],
@@ -112,8 +112,17 @@ def review_ruleset_body(owner_id: int) -> dict[str, Any]:
         ],
     }
 
+    body["rules"] = [
+        rule for rule in body["rules"]
+        if not (no_pr and rule["type"] == "pull_request")
+        and not (no_ci and rule["type"] == "required_status_checks")
+    ]
+    return body
 
-def configure_ruleset(repo: str) -> None:
+
+def configure_ruleset(
+    repo: str, *, no_ci: bool = False, no_pr: bool = False, validate_only: bool = False
+) -> None:
     # Use GitHub's repository owner, never the caller or commit author identity.
     owner = api("GET", f"repos/{repo}")["owner"]
     owner_id = owner.get("id")
@@ -126,7 +135,7 @@ def configure_ruleset(repo: str) -> None:
     ):
         raise GhError("owner push bypass requires a personal repository with a verified owner ID")
 
-    bodies = [ruleset_body(), review_ruleset_body(owner_id)]
+    bodies = [ruleset_body(), review_ruleset_body(owner_id, no_ci=no_ci, no_pr=no_pr)]
     existing = []
     page = 1
     while True:
@@ -164,6 +173,11 @@ def configure_ruleset(repo: str) -> None:
     legacy = saved_rules[RULESET_NAME]
     gates = saved_rules[REVIEW_RULESET_NAME]
     gate_types = {rule["type"] for rule in review["rules"]}
+    omitted = {"pull_request", "required_status_checks"} - gate_types
+    if omitted & (legacy.keys() | gates.keys()):
+        raise GhError("creation opt-outs would weaken existing rules; refusing to change live policy")
+    if (no_ci or no_pr) and gate_types & legacy.keys():
+        raise GhError("creation opt-outs cannot migrate existing history gates; review live policy")
     if gates.keys() - gate_types:
         raise GhError(f"customized rules in {REVIEW_RULESET_NAME!r}; cannot grant owner bypass")
     for index, default in enumerate(review["rules"]):
@@ -181,7 +195,11 @@ def configure_ruleset(repo: str) -> None:
 
     # Install the replacement gate before removing the legacy gate. If either
     # request fails, an existing protected repo retains its PR/CI requirements.
+    if validate_only:
+        return
     for body in (review, history):
+        if not body["rules"]:
+            continue
         match = ids.get(body["name"])
         if match:
             api("PUT", f"repos/{repo}/rulesets/{match}", body)
@@ -269,6 +287,8 @@ def configure_all(
     *,
     private: bool,
     project: bool = True,
+    no_ci: bool = False,
+    no_pr: bool = False,
     push: Callable[[], object] | None = None,
     log: Callable[[str], None] = print,
 ) -> list[str]:
@@ -285,6 +305,15 @@ def configure_all(
     retry (push=None) can still repair protection on an existing main.
     """
     failed: list[str] = []
+    if private and (no_ci or no_pr):
+        raise GhError("--no-ci and --no-pr only apply to public repositories")
+    if no_ci or no_pr:
+        # Read-only preflight before settings, publishing or independent mutations.
+        try:
+            configure_ruleset(repo, no_ci=no_ci, no_pr=no_pr, validate_only=True)
+        except GhError as exc:
+            log(f"  ✗ creation policy: {exc}")
+            return ["creation policy"]
 
     def run(fn: Callable[[], object]) -> Exception | None:
         try:
@@ -361,7 +390,7 @@ def configure_all(
                 futures[i] = pool.submit(run, fn)
         push_failed = push_index is not None and futures[push_index].result() is not None
         ruleset_err = (
-            run(lambda: configure_ruleset(repo))
+            run(lambda: configure_ruleset(repo, no_ci=no_ci, no_pr=no_pr))
             if not private and not push_blocked and not push_failed
             else None
         )
