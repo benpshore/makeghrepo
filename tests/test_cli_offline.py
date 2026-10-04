@@ -210,3 +210,11 @@ def test_help_describes_independent_public_creation_options():
     text = Text.from_ansi(result.output).plain
     assert "--no-ci" in text and "--no-pr" in text
     assert "Public only" in text and "workflows" in text
+
+
+@pytest.mark.parametrize("option", ["--no-CI", "--no-PR", "--no"])
+def test_creation_options_require_the_exact_ascii_spelling(tmp_path, option):
+    dest = tmp_path / "output"
+    result = runner.invoke(cli.app, ["sample", option, "--render", str(dest)])
+    assert result.exit_code == 2
+    assert not dest.exists()

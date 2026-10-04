@@ -90,7 +90,9 @@ def review_ruleset_body(
     that produce those checks. Build the established default first and filter only
     these two types so their surviving parameters cannot drift from the default.
     The caller skips installation when both rules are absent: GitHub must never
-    receive an empty, active review gate.
+    receive an empty, active review gate. Omitting workflows instead would answer
+    a different request and could strand the remaining required CI rule; leaving
+    execution intact makes each enforcement choice independent and testable.
     """
     body = {
         **ruleset_body(),

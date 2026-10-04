@@ -74,7 +74,7 @@ class CreationPolicyTests(unittest.TestCase):
                     private=False,
                     no_ci=case["no_ci"],
                     no_pr=case["no_pr"],
-                    push=lambda: pushes.append(True),
+                    push=lambda pushes=pushes: pushes.append(True),
                     log=lambda _: None,
                 )
             assert failed == ["creation policy"]

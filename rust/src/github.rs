@@ -129,6 +129,9 @@ pub fn review_ruleset_body(owner_id: u64) -> Value {
 /// no_pr also removes all associated review requirements; no_ci leaves Actions,
 /// workflow generation, local smoke checks and release CI gates untouched.
 /// An empty result is a planning value only, never a ruleset we send to GitHub.
+/// We keep execution separate because removing workflow files could leave the
+/// surviving CI rule impossible to satisfy. Filtering the established payload
+/// also keeps Python/Rust defaults aligned rather than creating four definitions.
 fn review_ruleset_body_policy(owner_id: u64, no_ci: bool, no_pr: bool) -> Value {
     let mut body = ruleset_body();
     body["name"] = json!(REVIEW_RULESET_NAME);
