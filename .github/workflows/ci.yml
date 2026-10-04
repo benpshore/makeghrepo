@@ -35,7 +35,19 @@ jobs:
       - name: Install
         run: uv sync --locked
       - name: Format
-        run: uv run ruff format --check
+        id: python-fmt
+        run: |
+          if ! uv run ruff format --check; then
+            uv run ruff format
+            git diff -- . > "$RUNNER_TEMP/ruff-format.patch"
+            echo "::error::ruff wants changes; apply the ruff-format-patch artifact"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && steps.python-fmt.outcome == 'failure'
+        with:
+          name: ruff-format-patch
+          path: ${{ runner.temp }}/ruff-format.patch
       - name: Lint
         run: uv run ruff check --output-format=github
       - name: Test

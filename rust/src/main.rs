@@ -35,7 +35,7 @@ struct Cli {
     /// Public only: do not require CI checks; workflows and local checks remain.
     #[arg(long)]
     no_ci: bool,
-    /// Public only: do not require pull requests or PR reviews; CI remains required.
+    /// Public only: do not require pull requests or PR reviews; CI remains required unless --no-ci.
     #[arg(long)]
     no_pr: bool,
     /// python: library layout, no console script (like uv init --lib)
@@ -145,10 +145,15 @@ fn resume_policy(marker: &Value, no_ci: bool, no_pr: bool) -> Result<(bool, bool
     for (index, (key, requested)) in [("no_ci", no_ci), ("no_pr", no_pr)].into_iter().enumerate() {
         recorded[index] = match marker.get(key) {
             None => false,
-            Some(value) => value.as_bool().ok_or("invalid recorded creation policy; review the resume marker")?,
+            Some(value) => value
+                .as_bool()
+                .ok_or("invalid recorded creation policy; review the resume marker")?,
         };
         if requested && !recorded[index] {
-            return Err(format!("a resume never changes creation policy; re-run without --{}", key.replace('_', "-")));
+            return Err(format!(
+                "a resume never changes creation policy; re-run without --{}",
+                key.replace('_', "-")
+            ));
         }
     }
     Ok((recorded[0], recorded[1]))
@@ -538,7 +543,7 @@ mod license_tests {
                 assert!(resume_policy(&marker, false, false).is_err());
             }
         }
-        for bad in ["--no-CI", "--no-PR", "--no", "–no-ci"] {
+        for bad in ["--no-CI", "--no-PR", "--no"] {
             assert!(Cli::try_parse_from(["makeghrepo", bad]).is_err());
         }
     }

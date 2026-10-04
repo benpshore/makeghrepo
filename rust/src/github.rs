@@ -182,7 +182,10 @@ fn configure_ruleset_policy_with(
             "owner push bypass requires a personal repository with a verified owner ID".into(),
         );
     }
-    let mut bodies = [ruleset_body(), review_ruleset_body_policy(owner_id.unwrap(), no_ci, no_pr)];
+    let mut bodies = [
+        ruleset_body(),
+        review_ruleset_body_policy(owner_id.unwrap(), no_ci, no_pr),
+    ];
     let mut existing = Vec::new();
     for page in 1.. {
         let batch = api(
@@ -235,14 +238,25 @@ fn configure_ruleset_policy_with(
     }
     let [legacy, gates] = saved_rules;
     let gate_types: Vec<String> = bodies[1]["rules"]
-        .as_array().unwrap().iter().map(|r| r["type"].as_str().unwrap().to_string()).collect();
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["type"].as_str().unwrap().to_string())
+        .collect();
     for kind in ["pull_request", "required_status_checks"] {
-        if !gate_types.iter().any(|k| k == kind) && (legacy.contains_key(kind) || gates.contains_key(kind)) {
-            return Err("creation opt-outs would weaken existing rules; refusing to change live policy".into());
+        if !gate_types.iter().any(|k| k == kind)
+            && (legacy.contains_key(kind) || gates.contains_key(kind))
+        {
+            return Err(
+                "creation opt-outs would weaken existing rules; refusing to change live policy"
+                    .into(),
+            );
         }
     }
     if (no_ci || no_pr) && legacy.keys().any(|k| gate_types.contains(k)) {
-        return Err("creation opt-outs cannot migrate existing history gates; review live policy".into());
+        return Err(
+            "creation opt-outs cannot migrate existing history gates; review live policy".into(),
+        );
     }
     if gates.keys().any(|k| !gate_types.contains(k)) {
         return Err(format!(

@@ -9,7 +9,11 @@
 [% if no_ci %]
 - CI is optional as a merge/push requirement. Workflows, security scanning, local checks and release CI gates remain enabled.
 [% else %]
+[% if no_pr %]
+- The `ci` check must pass for agent-authored work, including direct pushes. Agents must not use the owner's bypass.
+[% else %]
 - The `ci` check must pass for agent-authored work. Only the human owner's own work may use the direct-push exception.
+[% endif %]
 [% endif %]
 [% else %]
 - GitHub Actions is disabled for this private repo; run the checks below locally before opening a PR.

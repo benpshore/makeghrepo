@@ -172,7 +172,7 @@ def read_state(root):
     return json.loads((root / "state.json").read_text())
 
 
-def check_policy(state, private):
+def check_policy(state, private, no_ci=False, no_pr=False):
     assert state["settings"]["allow_squash_merge"] is True
     assert state["settings"]["allow_merge_commit"] is False
     events = state["events"]
@@ -212,19 +212,31 @@ def check_policy(state, private):
             "non_fast_forward",
             "required_linear_history",
         }
+        expected = set()
+        if not no_pr:
+            expected.add("pull_request")
+        if not no_ci:
+            expected.add("required_status_checks")
+        if not expected:
+            assert "require-pr-and-ci" not in rules
+            return
         gate = rules["require-pr-and-ci"]
         assert gate["bypass_actors"] == [
             {"actor_type": "User", "actor_id": OWNER_ID, "bypass_mode": "always"}
         ]
-        assert {r["type"] for r in gate["rules"]} == {"pull_request", "required_status_checks"}
-        check = next(r for r in gate["rules"] if r["type"] == "required_status_checks")
-        assert check["parameters"]["strict_required_status_checks_policy"] is True
-        assert check["parameters"]["required_status_checks"] == [
-            {"context": "ci", "integration_id": 15368}
-        ]
+        assert {r["type"] for r in gate["rules"]} == expected
+        if not no_ci:
+            check = next(r for r in gate["rules"] if r["type"] == "required_status_checks")
+            assert check["parameters"]["strict_required_status_checks_policy"] is True
+            assert check["parameters"]["required_status_checks"] == [
+                {"context": "ci", "integration_id": 15368}
+            ]
+        if not no_pr:
+            review = next(r for r in gate["rules"] if r["type"] == "pull_request")
+            assert review["parameters"]["required_review_thread_resolution"] is True
 
 
-def scenario(executable, private, failure):
+def scenario(executable, private, failure, no_ci=False, no_pr=False):
     real_git = shutil.which("git")
     assert real_git
     with tempfile.TemporaryDirectory(prefix="makeghrepo-bootstrap-") as temporary:
@@ -263,7 +275,9 @@ def scenario(executable, private, failure):
             "GIT_ALLOW_PROTOCOL": "file",
             "GH_TOKEN": "synthetic-acceptance-token",
         }
-        args = [executable, name, *(["--private"] if private else [])]
+        resume_args = [executable, name]
+        args = [*resume_args, *(["--private"] if private else []),
+                *(["--no-ci"] if no_ci else []), *(["--no-pr"] if no_pr else [])]
         start = time.monotonic()
         command(args, env=env, expected=2 if failure else 0)
         state = read_state(root)
@@ -272,13 +286,14 @@ def scenario(executable, private, failure):
         if failure:
             state["failure"] = None
             (root / "state.json").write_text(json.dumps(state))
-            command(args, env=env)
+            command(resume_args, env=env)
         project = root / "projects" / name
         assert not (project / "LICENSE").exists()
         marker = json.loads((project / ".git" / "makeghrepo.json").read_text())
         assert marker["private"] is private and marker["license"] == "none"
         state = read_state(root)
-        check_policy(state, private)
+        assert (marker["no_ci"], marker["no_pr"]) == (no_ci, no_pr)
+        check_policy(state, private, no_ci, no_pr)
         remote_sha = command(
             [real_git, "--git-dir", str(root / "remote.git"), "rev-parse", "main"], env=env
         )
@@ -288,7 +303,7 @@ def scenario(executable, private, failure):
         command([real_git, "-C", str(project), "add", "later.txt"], env=env)
         command([real_git, "-C", str(project), "commit", "-qm", "later local work"], env=env)
         pushes = sum(e["kind"] == "push" for e in state["events"])
-        command(args, env=env)
+        command(resume_args, env=env)
         assert (
             command([real_git, "--git-dir", str(root / "remote.git"), "rev-parse", "main"], env=env)
             == remote_sha
@@ -298,12 +313,43 @@ def scenario(executable, private, failure):
         state["failure"] = "lookup"
         before = len(state["events"])
         (root / "state.json").write_text(json.dumps(state))
-        command(args, env=env, expected=1)
+        command(resume_args, env=env, expected=1)
         after = read_state(root)["events"][before:]
         assert not any(
             e["kind"] == "push" or (e["kind"] == "api" and e["method"] != "GET") for e in after
         )
+        # Conflicting creation flags are refused before any live-policy mutation.
+        for flag, enabled in (("--no-ci", no_ci), ("--no-pr", no_pr)):
+            if not enabled:
+                state = read_state(root)
+                state["failure"] = None
+                before = len(state["events"])
+                (root / "state.json").write_text(json.dumps(state))
+                command([*resume_args, flag], env=env, expected=1)
+                after = read_state(root)["events"][before:]
+                assert not any(e["kind"] == "push" or (e["kind"] == "api" and e["method"] != "GET") for e in after)
+        # A stricter rule added by the owner survives an opt-out resume untouched.
+        if no_ci or no_pr:
+            state = read_state(root)
+            state["failure"] = None
+            full_gate = json.loads((Path(__file__).resolve().parents[1] / "tests/fixtures/github_defaults.json").read_text())["review_ruleset"]
+            full_gate["bypass_actors"][0]["actor_id"] = OWNER_ID
+            for rule in state["rulesets"]:
+                if rule["name"] == "require-pr-and-ci":
+                    rule["rules"] = full_gate["rules"]
+                    break
+            else:
+                state["rulesets"].append({"id": 999, **full_gate})
+            before = len(state["events"])
+            before_rules = state["rulesets"]
+            (root / "state.json").write_text(json.dumps(state))
+            command(resume_args, env=env, expected=2)
+            strict = read_state(root)
+            assert strict["rulesets"] == before_rules
+            assert not any(e["kind"] == "push" or (e["kind"] == "api" and e["method"] != "GET") for e in strict["events"][before:])
         return {
+            "no_ci": no_ci,
+            "no_pr": no_pr,
             "private": private,
             "failure": failure,
             "elapsed_seconds": round(time.monotonic() - start, 3),
@@ -333,8 +379,13 @@ def main():
                 (False, "ruleset"),
             ]
         ]
+        results.extend(
+            scenario(executable, False, failure, no_ci, no_pr)
+            for no_ci, no_pr in [(True, False), (False, True), (True, True)]
+            for failure in [None, "ruleset"]
+        )
         evidence[executable] = results
-        print(f"{executable}: 5 real-Git bootstrap/retry scenarios passed")
+        print(f"{executable}: {len(results)} real-Git bootstrap/retry scenarios passed")
     normalized = [
         [{k: v for k, v in result.items() if k != "elapsed_seconds"} for result in results]
         for results in evidence.values()

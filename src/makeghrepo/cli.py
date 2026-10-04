@@ -75,7 +75,7 @@ def main(
         bool, typer.Option("--no-ci", help="Public only: do not require CI checks; workflows and local checks remain.")
     ] = False,
     no_pr: Annotated[
-        bool, typer.Option("--no-pr", help="Public only: do not require pull requests or PR reviews; CI remains required.")
+        bool, typer.Option("--no-pr", help="Public only: do not require pull requests or PR reviews; CI remains required unless --no-ci.")
     ] = False,
     lib: Annotated[
         bool,
@@ -231,8 +231,8 @@ def main(
             "author_name": author_name,
             "github_owner": owner,
             "private": private,
-                "no_ci": no_ci,
-                "no_pr": no_pr,
+            "no_ci": no_ci,
+            "no_pr": no_pr,
             "py_lib": lib,
             "project_license": (project_license or ProjectLicense.NONE).value,
             "languages": langs,
@@ -247,8 +247,8 @@ def main(
             "name": name,
             "owner": owner,
             "private": private,
-                "no_ci": no_ci,
-                "no_pr": no_pr,
+            "no_ci": no_ci,
+            "no_pr": no_pr,
             "languages": langs,
             "lib": lib,
             "license": (project_license or ProjectLicense.NONE).value,
