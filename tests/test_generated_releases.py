@@ -17,9 +17,7 @@ def test_release_output_covers_public_stacks_and_preserves_private(combo, tmp_pa
     assert (directory / "auto-release.yml").exists() is not private
     manual = yaml.safe_load((directory / "release.yml").read_text())
     assert manual["jobs"]["publish"]["needs"] == ["plan", "build"]
-    plan_commands = "\n".join(
-        step.get("run", "") for step in manual["jobs"]["plan"]["steps"]
-    )
+    plan_commands = "\n".join(step.get("run", "") for step in manual["jobs"]["plan"]["steps"])
     assert ("check-runs?check_name=ci" in plan_commands) is not private
     build = manual["jobs"]["build"]
     assert build["permissions"] == {"contents": "read"}
