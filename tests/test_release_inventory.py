@@ -19,6 +19,61 @@ record = runpy.run_path(str(ROOT / "scripts/release-inventory"))["record"]
 
 
 class ReleaseInventoryTests(unittest.TestCase):
+    def test_incomplete_or_corrupt_transfer_fails_before_publication(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/release-build.yml").read_text())
+        verification = workflow["jobs"]["publish"]["steps"][-2]["run"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist = root / "dist"
+            dist.mkdir()
+            version, source = "0.36.0", "a" * 40
+            slots = {
+                "python": [f"makeghrepo-{version}-py3-none-any.whl", f"makeghrepo-{version}.tar.gz"],
+                **{
+                    target: [f"makeghrepo-{target}", f"makeghrepo-{target}.sha256"]
+                    for target in (
+                        "x86_64-unknown-linux-gnu",
+                        "aarch64-unknown-linux-gnu",
+                        "aarch64-apple-darwin",
+                    )
+                },
+            }
+            for slot, names in slots.items():
+                assets = []
+                for name in names:
+                    content = name.encode()
+                    (dist / name).write_bytes(content)
+                    assets.append(
+                        {
+                            "name": name,
+                            "size": len(content),
+                            "sha256": hashlib.sha256(content).hexdigest(),
+                        }
+                    )
+                (dist / f"{slot}.json").write_text(
+                    json.dumps({"version": version, "source": source, "assets": assets})
+                )
+            env = os.environ | {"VERSION": version, "SOURCE": source}
+            missing = dist / "makeghrepo-aarch64-apple-darwin"
+            content = missing.read_bytes()
+            missing.unlink()
+            result = subprocess.run(
+                ["bash", "-c", verification], cwd=root, env=env, capture_output=True
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / "payload").exists())
+            missing.write_bytes(b"corrupt payload")
+            result = subprocess.run(
+                ["bash", "-c", verification], cwd=root, env=env, capture_output=True
+            )
+            self.assertNotEqual(result.returncode, 0)
+            missing.write_bytes(content)
+            result = subprocess.run(
+                ["bash", "-c", verification], cwd=root, env=env, capture_output=True
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assertEqual(len(list((root / "payload").iterdir())), 8)
+
     def test_failed_upload_never_publishes_and_draft_retry_completes(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/release-build.yml").read_text())
         publication = workflow["jobs"]["publish"]["steps"][-1]["run"]
