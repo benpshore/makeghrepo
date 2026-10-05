@@ -56,13 +56,14 @@ def test_auto_release_keeps_exact_sha_checkout_and_ci_gate(workflows):
     if not path.exists():
         return
     release = yaml.safe_load(path.read_text())
-    steps = release["jobs"]["release"]["steps"]
+    job = release["jobs"].get("plan", release["jobs"]["release"])
+    steps = job["steps"]
     wait_index, wait = next(
         (i, step)
         for i, step in enumerate(steps)
         if step.get("name") == "Wait for this commit's ci check"
     )
-    env = release["jobs"]["release"].get("env", {}) | wait.get("env", {})
+    env = job.get("env", {}) | wait.get("env", {})
     assert env["SHA"] == "${{ github.sha }}"
     assert "commits/$SHA/check-runs?check_name=ci" in wait["run"]
     assert '.app.slug == "github-actions"' in wait["run"]

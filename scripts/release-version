@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Select a release version without changing a branch or publishing anything.
+
+The source commit, not the moving main branch, owns the release. A retry uses
+its existing stable tag; otherwise the highest valid stable version reserves
+the next minor. Ignore preview/malformed tags instead of feeding arbitrary
+tag text to shell arithmetic. Numeric tuples also avoid lexicographic 9/10
+ordering and the empty-history edge case that prompted this repair.
+"""
+
+import argparse
+import re
+import subprocess
+
+STABLE = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+
+
+def select(tags: list[str], source_tags: list[str]) -> str:
+    stable = {
+        tag: tuple(map(int, STABLE.fullmatch(tag).groups()))
+        for tag in tags
+        if STABLE.fullmatch(tag)
+    }
+    existing = sorted(set(source_tags) & stable.keys())
+    if len(existing) > 1:
+        raise ValueError("source has multiple stable release tags; select one manually")
+    if existing:
+        return existing[0][1:]
+    major, minor, _ = max(stable.values(), default=(0, 0, 0))
+    return f"{major}.{minor + 1}.0"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tag", help="explicit existing stable tag for manual recovery")
+    args = parser.parse_args()
+
+    def git(*argv: str) -> list[str]:
+        return subprocess.check_output(["git", *argv], text=True).splitlines()
+
+    source = git("rev-parse", "HEAD")[0]
+    if args.tag:
+        if not STABLE.fullmatch(args.tag):
+            raise ValueError("manual recovery requires a stable vMAJOR.MINOR.PATCH tag")
+        if git("rev-parse", f"{args.tag}^{{commit}}")[0] != source:
+            raise ValueError("manual tag does not name the checked out source")
+        version = args.tag[1:]
+    else:
+        version = select(git("tag", "--list"), git("tag", "--points-at", "HEAD"))
+    print(f"version={version}")
+    print(f"sha={source}")
+
+
+if __name__ == "__main__":
+    main()
