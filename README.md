@@ -57,6 +57,8 @@ No git identity or GitHub auth setup needed beyond `gh auth login`: makeghrepo f
 
 Local checks run third-party code: npm packages, pinned `npx`/`uvx` tools, and the new project's own tests. They run with credential *channels* removed from the environment: no `GH_*`/`GITHUB_*` variables, no keyring session, no ssh agent. That is not isolation: a check can still read files under your home directory, including `gh`'s stored token (#113 tracks an OS-level sandbox). Until then, treat a generated project's checks like any code you run by hand. npm installs use `--ignore-scripts`. Checks that can't work on this machine are skipped and left to CI, which runs them on GitHub:
 
+Local checks also remove `UV_GITHUB_TOKEN` and disable uv dotenv loading. They ignore inherited `UV_ENV_FILE`, `UV_PROJECT`, `UV_WORKING_DIR`, and `UV_PROJECT_ENVIRONMENT`, so the packaged uv commands use the selected daughter and its default `.venv`. The parent environment used by `gh` is unchanged. This policy also covers required lockfile commands when other local checks are skipped; it does not sandbox dependency resolution, installation, or builds.
+
 - ObjC/ObjC++ need macOS.
 - Docker needs a daemon that answers `docker info`.
 - `cargo fmt`/`clippy` need their rustup components.
