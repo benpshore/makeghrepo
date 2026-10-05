@@ -16,9 +16,13 @@ normalized content with `data/python-seed.json`. The complete dependency graph,
 versions, indexes, URLs and hashes must match. Manifest normalization permits
 only the template's identity/layout/license fields; changed requirements,
 sources, build settings, hooks or extra configuration are rejected. Missing and
-symlinked inputs fail. On an unpublished retry, committed Python inputs must
-also match the validated files. A published-repository configuration retry does
-not validate subsequent manifest edits or push subsequent commits.
+symlinked inputs fail. After any initial commit creation, bootstrap resolves
+`refs/heads/main`, validates its actual input blobs, and compares them with the
+validated worktree bytes. Publication uses that immutable commit ID explicitly;
+a different HEAD or a later movement of main cannot substitute another commit.
+A language-neutral marker conflicts with Python inputs in either the worktree
+or publication tree and is rejected. A published-repository configuration retry
+does not validate subsequent manifest edits or push subsequent commits.
 
 This is a bounded template contract, not an arbitrary resolver or OS sandbox.
 Git and gh still use the user's existing authentication and configuration.

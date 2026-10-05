@@ -236,18 +236,19 @@ def main(
 
     if not pushed:
         try:
-            seedlock.validate_bootstrap(dest, langs, name, lib=lib)
+            working_inputs = seedlock.validate_bootstrap(dest, langs, name, lib=lib)
             if "python" in langs:
                 typer.echo("using packaged Python lock; local install/test/build were not run")
             if not gitops.has_commits(dest):
                 gitops.commit_all(dest, "setup")
-            elif "python" in langs:
-                tree = git.Repo(dest).head.commit.tree
-                for filename in ("pyproject.toml", "uv.lock"):
-                    if tree[filename].data_stream.read() != (dest / filename).read_bytes():
-                        raise ValueError(
-                            "Committed Python bootstrap inputs differ from local files"
-                        )
+            # Commit creation can change staged inputs. Always check the actual
+            # main commit afterward, including initial creation and neutral plans.
+            publication = gitops.main_commit(dest)
+            committed_inputs = gitops.commit_files(publication, seedlock.PYTHON_INPUTS)
+            seedlock.validate_contents(committed_inputs, langs, name, lib=lib)
+            if committed_inputs != working_inputs:
+                raise ValueError("Committed Python bootstrap inputs differ from local files")
+            publication_sha = publication.hexsha
         except (ValueError, RuntimeError, KeyError, OSError, git.GitCommandError) as exc:
             raise fail(
                 f"{exc}\nNothing was published. Fix it, then re-run the same command."
@@ -270,7 +271,7 @@ def main(
         raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
 
     # Bootstrap only: a configuration rerun must never publish subsequent local work.
-    push = None if pushed else lambda: gitops.push_main(dest)
+    push = None if pushed else lambda: gitops.push_main(dest, publication_sha)
     failed = github.configure_all(repo, private=private, push=push, log=typer.echo)
     typer.echo(f"\nhttps://github.com/{repo}\ncd {dest}")
     if failed:

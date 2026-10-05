@@ -70,7 +70,10 @@ and complete lock graph as data against the packaged contract. It runs no local
 dependency resolution, installation, probes, lint, tests, audit or builds. The
 result includes the lock required by generated CI and works when private Actions
 are disabled. This validates the scaffold inputs; it does not claim that checks
-ran on your machine. See [Python seed maintenance](docs/python-seed.md).
+ran on your machine. Initial creation and unpublished retries validate the actual
+`main` commit after commit creation and publish that exact commit ID. A neutral
+resume marker cannot skip checks when Python inputs remain in either tree.
+See [Python seed maintenance](docs/python-seed.md).
 
 The Rust executable retains its existing local checks. Those checks, and any
 checks you run yourself, execute third-party code under the same OS account.

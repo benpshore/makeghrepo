@@ -18,6 +18,12 @@ from makeghrepo import names
 
 SEED_NAME = "makeghrepo-seed"
 PYTHON_COMPONENTS = frozenset({"python", "api", "sqlite"})
+PYTHON_INPUTS = ("pyproject.toml", "uv.lock")
+_INVALID_INPUTS = (
+    "Cannot bootstrap this Python project with the packaged lock. "
+    "Its manifest/lock is missing, edited, or incompatible; no package code was run. "
+    "Keep the local project and review the differences before retrying."
+)
 
 
 def require_supported(languages: list[str]) -> None:
@@ -80,35 +86,57 @@ def digest(value: dict) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _read_toml(path: Path) -> dict:
+def _read_input(path: Path) -> bytes:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 1_000_000:
         raise ValueError(f"{path.name} must be a regular file smaller than 1 MB")
-    return tomllib.loads(path.read_text(encoding="utf-8"))
+    return path.read_bytes()
 
 
-def validate_bootstrap(dest: Path, languages: list[str], name: str, *, lib: bool) -> None:
-    """Check generated/resumed bootstrap data against the reviewed seed before publication.
-
-    Missing, edited or incompatible inputs stop bootstrap; this never repairs a
-    manifest, resolves dependencies, runs a tool, or treats a resume marker as trust.
-    Published repositories bypass this bootstrap-only check so retries keep working.
-    """
+def validate_contents(
+    contents: dict[str, bytes], languages: list[str], name: str, *, lib: bool
+) -> None:
+    """Apply the same static contract to worktree bytes and the actual publication tree."""
     require_supported(languages)
     if not languages:
+        if contents:
+            raise ValueError(
+                "Language-neutral plan conflicts with Python bootstrap inputs; "
+                "review the resume marker and publication tree before retrying"
+            )
         return
     contract = json.loads(
         (files("makeghrepo") / "data/python-seed.json").read_text(encoding="utf-8")
     )
     try:
-        manifest = manifest_contract(_read_toml(dest / "pyproject.toml"), name, lib=lib)
-        lock = lock_contract(_read_toml(dest / "uv.lock"), name)
+        manifest = manifest_contract(
+            tomllib.loads(contents["pyproject.toml"].decode("utf-8")), name, lib=lib
+        )
+        lock = lock_contract(tomllib.loads(contents["uv.lock"].decode("utf-8")), name)
         if manifest != contract["manifest"] or digest(lock) != contract["lock_sha256"]:
             raise ValueError(
                 "manifest or lock differs from the packaged Python dependency contract"
             )
     except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError) as exc:
-        raise ValueError(
-            "Cannot bootstrap this Python project with the packaged lock. "
-            "Its manifest/lock is missing, edited, or incompatible; no package code was run. "
-            "Keep the local project and review the differences before retrying."
-        ) from exc
+        raise ValueError(_INVALID_INPUTS) from exc
+
+
+def validate_bootstrap(
+    dest: Path, languages: list[str], name: str, *, lib: bool
+) -> dict[str, bytes]:
+    """Validate worktree inputs and return the exact bytes to compare with publication.
+
+    A neutral marker must agree with the files present; it is not authority to
+    skip Python validation. Published repositories bypass this bootstrap-only
+    check so normal configuration retries keep working.
+    """
+    require_supported(languages)
+    try:
+        contents = {
+            filename: _read_input(dest / filename)
+            for filename in PYTHON_INPUTS
+            if (dest / filename).exists() or (dest / filename).is_symlink()
+        }
+    except (OSError, ValueError) as exc:
+        raise ValueError(_INVALID_INPUTS) from exc
+    validate_contents(contents, languages, name, lib=lib)
+    return contents

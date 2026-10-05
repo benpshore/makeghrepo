@@ -26,8 +26,8 @@ jobs:
           git config --global user.name "CI"
           git config --global user.email "ci@example.invalid"
       - name: Verify packaged locks and bootstrap behavior
-        run: uv run pytest tests/test_seedlock.py tests/test_cli.py
+        run: uv run pytest tests/test_seedlock.py tests/test_cli.py tests/test_gitops.py
       - name: Format check for this change
-        run: uv run ruff format --diff src/makeghrepo/seedlock.py src/makeghrepo/cli.py tests/test_seedlock.py tests/test_cli.py scripts/regen-python-lock
+        run: uv run ruff format --diff src/makeghrepo/seedlock.py src/makeghrepo/cli.py src/makeghrepo/gitops.py tests/test_seedlock.py tests/test_cli.py tests/test_gitops.py scripts/regen-python-lock
       - name: Lint this change
-        run: uv run ruff check src/makeghrepo/seedlock.py src/makeghrepo/cli.py tests/test_seedlock.py tests/test_cli.py scripts/regen-python-lock
+        run: uv run ruff check src/makeghrepo/seedlock.py src/makeghrepo/cli.py src/makeghrepo/gitops.py tests/test_seedlock.py tests/test_cli.py tests/test_gitops.py scripts/regen-python-lock

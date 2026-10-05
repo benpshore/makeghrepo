@@ -408,8 +408,129 @@ def test_unpublished_resume_checks_committed_inputs(tmp_path, gh):
     lock.write_bytes(original)
     gh["calls"].clear()
     result = runner.invoke(app, ["again"], catch_exceptions=False)
-    assert result.exit_code == 1 and "Committed Python bootstrap inputs differ" in result.output
+    assert result.exit_code == 1 and "Cannot bootstrap" in result.output
     assert gh["calls"] == []
+
+
+def test_unpublished_resume_validates_main_instead_of_repaired_feature(tmp_path, gh):
+    args = ["again", "python", "--lib", "sqlite", "api"]
+    assert runner.invoke(app, args, catch_exceptions=False).exit_code == 0
+    dest = tmp_path / "again"
+    repo = git.Repo(dest)
+    lock = dest / "uv.lock"
+    good_lock = lock.read_bytes()
+    lock.write_text("stale main lock")
+    gitops.commit_all(dest, "stale inputs on main")
+    stale_main = repo.heads.main.commit.hexsha
+    repo.git.checkout("-b", "repaired-feature")
+    lock.write_bytes(good_lock)
+    gitops.commit_all(dest, "repair checked-out feature")
+    repaired_head = repo.head.commit.hexsha
+    assert repaired_head != stale_main
+    gh["calls"].clear()
+
+    result = runner.invoke(app, ["again"], catch_exceptions=False)
+    assert result.exit_code == 1 and "Cannot bootstrap" in result.output
+    assert gh["calls"] == []
+    assert repo.heads.main.commit.hexsha == stale_main
+
+    # Positive control: repair only the publication ref; the feature stays checked out.
+    repo.heads.main.set_commit(repaired_head)
+    result = runner.invoke(app, ["again"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert gh["calls"][-1][-1] is True
+
+
+@pytest.mark.parametrize("python", [False, True])
+def test_initial_commit_inputs_are_rechecked_before_publication(tmp_path, gh, monkeypatch, python):
+    original_commit = gitops.commit_all
+
+    def changed_during_commit(dest, message="setup"):
+        filename = "uv.lock" if python else "pyproject.toml"
+        (dest / filename).write_text("fixture input changed during commit")
+        original_commit(dest, message)
+
+    monkeypatch.setattr(gitops, "commit_all", changed_during_commit)
+    args = ["initial", "python"] if python else ["initial"]
+    result = runner.invoke(app, args, catch_exceptions=False)
+    assert result.exit_code == 1
+    assert gh["calls"] == []
+    assert git.Repo(tmp_path / "initial").head.is_valid()
+
+
+@pytest.mark.parametrize("damaged_languages", [[], None, "python"])
+def test_damaged_resume_plan_cannot_skip_python_validation(tmp_path, gh, damaged_languages):
+    assert runner.invoke(app, ["again", "python"], catch_exceptions=False).exit_code == 0
+    dest = tmp_path / "again"
+    original = gitops.read_marker(dest)
+    gitops.write_marker(dest, {**original, "languages": damaged_languages})
+    gh["calls"].clear()
+    result = runner.invoke(app, ["again"], catch_exceptions=False)
+    assert result.exit_code == 1
+    assert gh["calls"] == []
+
+    gitops.write_marker(dest, original)
+    result = runner.invoke(app, ["again"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize("filename", ["pyproject.toml", "uv.lock"])
+@pytest.mark.parametrize("location", ["worktree", "publication"])
+def test_neutral_plan_rejects_python_inputs_in_either_tree(tmp_path, gh, filename, location):
+    assert runner.invoke(app, ["neutral"], catch_exceptions=False).exit_code == 0
+    dest = tmp_path / "neutral"
+    path = dest / filename
+    path.write_text("fixture Python input")
+    if location == "publication":
+        gitops.commit_all(dest, "Python input on publication main")
+        git.Repo(dest).git.checkout("-b", "neutral-feature")
+        path.unlink()
+        gitops.commit_all(dest, "remove input only on feature")
+        assert not path.exists()
+    gh["calls"].clear()
+
+    result = runner.invoke(app, ["neutral"], catch_exceptions=False)
+    assert result.exit_code == 1 and "Language-neutral plan conflicts" in result.output
+    assert gh["calls"] == []
+
+
+@pytest.mark.parametrize("python", [False, True])
+def test_publication_callback_pushes_validated_commit_despite_later_ref_changes(
+    tmp_path, gh, monkeypatch, python
+):
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    remote = git.Repo.init(tmp_path / "remote.git", bare=True)
+    captured = {}
+
+    def configure_all(full_name, *, private, push, log):
+        dest = tmp_path / "frozen"
+        repo = git.Repo(dest)
+        captured["validated"] = repo.heads.main.commit.hexsha
+        repo.create_remote("origin", str(remote.git_dir))
+        filename = "uv.lock" if python else "pyproject.toml"
+        (dest / filename).write_text("later incompatible input")
+        gitops.commit_all(dest, "move main after validation")
+        assert repo.heads.main.commit.hexsha != captured["validated"]
+        assert push is not None
+        push()
+        return []
+
+    monkeypatch.setattr(github, "configure_all", configure_all)
+    args = ["frozen", "python", "--lib", "sqlite", "api"] if python else ["frozen"]
+    result = runner.invoke(app, args, catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert remote.heads.main.commit.hexsha == captured["validated"]
+    tracking = git.Repo(tmp_path / "frozen").heads.main.tracking_branch()
+    assert tracking.path == "refs/remotes/origin/main"
+    if python:
+        seedlock.validate_contents(
+            gitops.commit_files(remote.heads.main.commit, seedlock.PYTHON_INPUTS),
+            ["python", "sqlite", "api"],
+            "frozen",
+            lib=True,
+        )
+    else:
+        assert gitops.commit_files(remote.heads.main.commit, seedlock.PYTHON_INPUTS) == {}
 
 
 def test_resume_lookup_failure_never_pushes_or_configures(tmp_path, gh, monkeypatch):
