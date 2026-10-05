@@ -22,6 +22,7 @@ class ReleaseVersionTests(unittest.TestCase):
 
     def test_real_git_lookup_uses_source_not_newer_tag(self):
         with tempfile.TemporaryDirectory() as directory:
+
             def git(*args):
                 return subprocess.check_output(["git", *args], cwd=directory, text=True).strip()
 
