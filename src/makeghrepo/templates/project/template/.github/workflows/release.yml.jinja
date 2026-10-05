@@ -1,86 +1,11 @@
 name: Release
 
-# Publish: push a tag, e.g. `git tag v0.1.1 && git push --tags`.
-[% if py and not private %]
-# Every merge to main is also released automatically by auto-release.yml.
-[% endif %]
+# Manual stable tags and retries use the same checks/artifacts as main pushes.
+# Private Actions remain disabled by repository creation policy.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
-permissions:
-  contents: read
-
-jobs:
-  release:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-[% if py %]
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - name: Tag matches computed project version
-        run: test "$(uvx uv-dynamic-versioning)" = "${GITHUB_REF_NAME#v}"
-      - run: uv sync --locked
-      - run: uv run pytest
-      - run: uv audit --locked --preview-features audit-command
-      - run: uv build
-[% endif %]
-[% if rs %]
-      - name: Tag matches Cargo.toml version
-        run: test "v$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')" = "$GITHUB_REF_NAME"
-      - run: cargo test
-      - name: Build release binary
-        run: |
-          cargo build --release
-          mkdir -p dist
-          cp "target/release/[[ project_name ]]" "dist/[[ project_name ]]-$(uname -m)-linux"
-          (cd dist && sha256sum -- * > SHA256SUMS)
-[% endif %]
-[% if cmake and not objc and not objcpp %]
-      - name: Build release binaries (Release, linux x86_64)
-        run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build
-          ctest --test-dir build --output-on-failure
-          mkdir -p dist
-          for bin in build/[[ package_name ]]_*; do cp "$bin" "dist/$(basename "$bin")-linux-x86_64"; done
-          (cd dist && sha256sum -- * > SHA256SUMS)
-[% endif %]
-[% if go %]
-      - run: go test ./...
-      - name: Build release binaries (linux amd64 + arm64, static)
-        run: |
-          mkdir -p dist
-          for arch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o "dist/[[ project_name ]]-linux-$arch" .
-          done
-          (cd dist && sha256sum -- * > SHA256SUMS)
-[% endif %]
-[% if rb %]
-      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
-        with:
-          ruby-version: "3.4"
-          bundler-cache: true
-      - run: bundle exec rake test
-[% endif %]
-[% if npm %]
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-      - run: npm ci
-      - name: Pack the release tarball
-        run: |
-          mkdir -p dist
-          npm pack --pack-destination dist
-          (cd dist && sha256sum -- * > SHA256SUMS)
-[% endif %]
-      - name: Publish GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes[[ ' dist/*' if py or rs or go or npm or (cmake and not objc and not objcpp) else '' ]]
+[% set automatic = false %]
+[% include '_release-pipeline.jinja' %]

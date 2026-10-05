@@ -1,0 +1,246 @@
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+[% if automatic %]
+      # A main push waits for CI on the exact source, even when creation options
+      # make checks optional for merging. Release verification stays required.
+      - name: Wait for this commit's ci check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 75); do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?check_name=ci&per_page=100" \
+              --jq '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last | .conclusion // "pending"')
+            case "$state" in
+              success) exit 0 ;;
+              pending) sleep 20 ;;
+              *) echo "::error::ci concluded '$state' on $SHA; not releasing it"; exit 1 ;;
+            esac
+          done
+          echo "::error::timed out waiting for ci on $SHA"
+          exit 1
+[% endif %]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 .github/release-tools.py select[[ '' if automatic else ' --tag "$TAG"' ]] >> "$GITHUB_OUTPUT"
+
+  # All selected build/test commands run on a read-only runner. Mixed stacks
+  # share one selected version and dist directory; publication needs this whole
+  # job, so a later Rust/npm build cannot leave Python alone publicly released.
+  build:
+    needs: plan
+    runs-on: [[ 'macos-latest' if swift or objc or objcpp else 'ubuntu-latest' ]]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      SOURCE: ${{ needs.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Materialize the release version without pushing a branch
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE"
+          if git rev-parse --verify "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            test "$(git rev-parse "v$VERSION^{commit}")" = "$SOURCE"
+          else
+            git -c user.name=CI -c user.email=ci@example.invalid tag -a "v$VERSION" -m "v$VERSION"
+          fi
+          python3 .github/release-tools.py prepare --version "$VERSION"
+[% if py %]
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv sync --locked
+      - run: uv run pytest
+      - run: uv audit --locked --preview-features audit-command
+      - run: uv build
+[% endif %]
+[% if rs %]
+      - name: Rust release checks and binary
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile
+          cargo test --locked
+          cargo build --release --locked
+          cp "target/release/[[ project_name ]]" "dist/[[ project_name ]]-$VERSION-$(uname -s)-$(uname -m)"
+[% endif %]
+[% if swift %]
+      # The generated Swift package is a library: validate it, without claiming
+      # an executable artifact that its Package.swift does not define.
+      - run: swift test
+      - run: swift build -c release
+[% endif %]
+[% if cmake %]
+      - name: CMake release checks and binaries
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+          for bin in build/[[ package_name ]]_*; do
+            test -f "$bin" && test -x "$bin"
+            cp "$bin" "dist/$(basename "$bin")-$VERSION-$(uname -s)-$(uname -m)"
+          done
+[% endif %]
+[% if go %]
+      - run: go test ./...
+      - name: Go Linux release binaries
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o "dist/[[ project_name ]]-$VERSION-linux-$arch" .
+          done
+[% endif %]
+[% if rb %]
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+      - run: bundle exec rake test
+[% endif %]
+[% if npm or api %]
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+[% endif %]
+[% if npm %]
+      - run: npm ci --ignore-scripts
+      - name: Pack versioned npm payload without lifecycle scripts
+        run: npm pack --ignore-scripts --pack-destination dist
+[% endif %]
+[% if api %]
+      - run: npx --yes @stoplight/spectral-cli@6.16.3 lint openapi.yaml --fail-severity=warn
+[% endif %]
+      - name: Verify versioned manifests, package metadata and complete payloads
+        run: python3 .github/release-tools.py inventory --version "$VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dist
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      SOURCE: ${{ needs.plan.outputs.sha }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist
+      # This inline verifier belongs to the reviewed workflow, not downloaded
+      # repository code. Inventories are data: fixed names, source/version,
+      # size and digest must agree before the token is exposed to publication.
+      - name: Verify complete immutable artifact set
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib, json, os, re
+          from pathlib import Path
+          version, source = os.environ["VERSION"], os.environ["SOURCE"]
+          assert re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version)
+          assert re.fullmatch(r"[a-f0-9]{40}", source)
+          root = Path("dist")
+          data = json.loads((root / "inventory.json").read_text())
+          assert data["version"] == version and data["source"] == source
+          expected = {"inventory.json"}
+          assets = data["assets"]
+          assert len({asset["name"] for asset in assets}) == len(assets)
+          assert "release-manifests.json" in {asset["name"] for asset in assets}
+          for asset in assets:
+              assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+-]*", asset["name"])
+              path = root / asset["name"]
+              assert path.is_file() and not path.is_symlink()
+              content = path.read_bytes()
+              assert len(content) == asset["size"] and len(content) > 0
+              assert hashlib.sha256(content).hexdigest() == asset["sha256"]
+              expected.add(path.name)
+          assert {p.name for p in root.iterdir()} == expected
+          # Only verified payloads enter the upload directory; inventories stay
+          # private workflow evidence rather than becoming release attachments.
+          payload = Path("payload")
+          payload.mkdir()
+          for asset in assets:
+              (root / asset["name"]).rename(payload / asset["name"])
+          Path("expected-assets.json").write_text(json.dumps(assets))
+          PYCODE
+      - name: Tag, upload draft, then publish all artifacts together
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          verify_remote_assets() {
+            gh api "repos/$GH_REPO/releases/tags/$tag" > release.json
+            python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          expected = json.loads(Path("expected-assets.json").read_text())
+          actual = json.loads(Path("release.json").read_text())["assets"]
+          assert {a["name"] for a in actual} == {a["name"] for a in expected}
+          for wanted in expected:
+              found = next(a for a in actual if a["name"] == wanted["name"])
+              assert found["size"] == wanted["size"]
+              assert found.get("digest") == "sha256:" + wanted["sha256"]
+          PYCODE
+          }
+          # Allocation collisions fail rather than retag a different commit.
+          if gh api "repos/$GH_REPO/git/ref/tags/$tag" > ref.json 2>/dev/null; then
+            type=$(jq -r .object.type ref.json)
+            sha=$(jq -r .object.sha ref.json)
+            while [ "$type" = tag ]; do
+              gh api "repos/$GH_REPO/git/tags/$sha" > ref.json
+              type=$(jq -r .object.type ref.json)
+              sha=$(jq -r .object.sha ref.json)
+            done
+            test "$type" = commit && test "$sha" = "$SOURCE"
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$SOURCE"
+          fi
+          if gh release view "$tag" --json isDraft --jq .isDraft > draft.txt 2>/dev/null; then
+            # Never clobber a public release on retry. Require its full remote
+            # digest/size inventory; an older incomplete release needs explicit
+            # human repair rather than pretending this attempt completed it.
+            if [ "$(cat draft.txt)" != true ]; then
+              verify_remote_assets
+              exit 0
+            fi
+          else
+            gh release create "$tag" --draft --verify-tag --target "$SOURCE" --generate-notes
+          fi
+          gh release upload "$tag" payload/* --clobber
+          verify_remote_assets
+          gh release edit "$tag" --draft=false --latest
