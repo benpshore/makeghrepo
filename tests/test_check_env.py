@@ -19,6 +19,7 @@ def test_check_env_filters_uv_controls_without_changing_parent(monkeypatch):
         "UV_ENV_FILE": "/synthetic/credentials.env",
         "UV_NO_ENV_FILE": "0",
         "UV_PROJECT": "/synthetic/other-project",
+        "UV_NO_PROJECT": "1",
         "UV_WORKING_DIR": "/synthetic/other-directory",
         "UV_PROJECT_ENVIRONMENT": "/synthetic/other-environment",
         "KEEP_ME": "1",
@@ -35,6 +36,7 @@ def test_every_check_stage_receives_uv_policy(tmp_path, monkeypatch, skip):
     parent = {
         "UV_ENV_FILE": "/synthetic/credentials.env",
         "UV_PROJECT_ENVIRONMENT": "/synthetic/other-environment",
+        "UV_NO_PROJECT": "1",
     }
     if skip:
         parent["MAKEGHREPO_SKIP_LOCAL_CHECKS"] = "1"
@@ -59,6 +61,7 @@ def test_every_check_stage_receives_uv_policy(tmp_path, monkeypatch, skip):
     for _, env in calls:
         assert "UV_ENV_FILE" not in env
         assert "UV_PROJECT_ENVIRONMENT" not in env
+        assert "UV_NO_PROJECT" not in env
         assert env["UV_NO_ENV_FILE"] == "1"
 
 
@@ -101,6 +104,41 @@ def write_inert_project(path: Path):
         '[project]\nname="inert-project"\nversion="0.1.0"\n'
         'requires-python=">=3.12"\ndependencies=[]\n'
     )
+
+
+def test_real_uv_run_keeps_project_with_unrelated_active_env(tmp_path, monkeypatch, uv_executable):
+    """UV_NO_PROJECT must not bypass the environment made by the setup phase."""
+    project = tmp_path / "daughter"
+    write_inert_project(project)
+    active = tmp_path / "unrelated-active"
+    base = inert_uv_env(tmp_path) | {"PATH": str(Path(sys.executable).parent)}
+    subprocess.run(
+        [uv_executable, "venv", "--offline", "--python", sys.executable, str(active)],
+        cwd=tmp_path, env=base, capture_output=True, check=True,
+    )  # fmt: skip
+    parent = base | {"UV_NO_PROJECT": "1", "VIRTUAL_ENV": str(active)}
+    before_parent = parent.copy()
+    monkeypatch.setattr(os, "environ", parent)
+    # UV_NO_PROJECT applies to run: sync still creates the daughter environment.
+    subprocess.run(
+        [uv_executable, "sync", "--offline", "--python", sys.executable],
+        cwd=project, env=parent, capture_output=True, check=True,
+    )  # fmt: skip
+    assert (project / ".venv" / "pyvenv.cfg").is_file()
+    command = [
+        uv_executable, "run", "--offline", "--no-sync", "python", "-c",
+        "import sys; print(sys.prefix)",
+    ]  # fmt: skip
+    # Positive control: the inherited override selects the unrelated active venv.
+    before = subprocess.run(command, cwd=project, env=parent, capture_output=True, text=True)
+    assert before.returncode == 0, before.stderr
+    assert Path(before.stdout.strip()).resolve() == active.resolve()
+    after = subprocess.run(
+        command, cwd=project, env=scaffold.check_env(), capture_output=True, text=True
+    )
+    assert after.returncode == 0, after.stderr
+    assert Path(after.stdout.strip()).resolve() == (project / ".venv").resolve()
+    assert parent == before_parent
 
 
 @pytest.mark.parametrize("control", ["UV_PROJECT_ENVIRONMENT", "UV_PROJECT", "UV_WORKING_DIR"])
