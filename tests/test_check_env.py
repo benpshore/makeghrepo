@@ -123,7 +123,9 @@ def test_real_uv_sync_stays_in_daughter(tmp_path, monkeypatch, uv_executable, co
     before_metadata = (redirected_env / "pyvenv.cfg").read_bytes()
     after_project = tmp_path / "daughter"
     write_inert_project(after_project)
-    after = subprocess.run(command, cwd=after_project, env=scaffold.check_env(), capture_output=True)
+    after = subprocess.run(
+        command, cwd=after_project, env=scaffold.check_env(), capture_output=True
+    )
     assert after.returncode == 0, after.stderr
     assert (after_project / ".venv" / "pyvenv.cfg").is_file()
     assert (after_project / "uv.lock").is_file()
