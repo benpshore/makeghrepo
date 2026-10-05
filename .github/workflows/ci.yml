@@ -196,6 +196,23 @@ jobs:
         run: cargo build --release --locked
       - name: Offline bootstrap latency and ordering probe
         run: python3 ../scripts/perf-probe ./target/release/makeghrepo
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Parity with freshly generated Python output
+        working-directory: .
+        run: |
+          set -euo pipefail
+          uv sync --locked
+          staging=$(mktemp -d)
+          uv run scripts/regen-golden --out "$staging"
+          n=0
+          for snapshot in "$staging"/*.golden; do
+            combo=$(basename "$snapshot" .golden)
+            ./rust/target/release/makeghrepo --snapshot --combo "$combo" | cmp - "$snapshot"
+            n=$((n + 1))
+          done
+          echo "$n current-template outputs reproduced by Python and Rust"
+      # The committed snapshots remain an independent required check. Fresh
+      # parity does not replace approved golden regeneration or turn ci green.
       - name: Parity with the Python renderer (every golden snapshot)
         run: |
           set -euo pipefail
@@ -234,11 +251,28 @@ jobs:
           name: rustfmt-patch
           path: ${{ runner.temp }}/rustfmt.patch
 
+  # Focused output/fixture checks run independently of golden comparisons.
+  # Intentional snapshot drift still fails test/rust and the required ci gate;
+  # this job gives useful release evidence while approved regeneration waits.
+  release-fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv sync --locked
+      - name: Release fixtures and generated workflow invariants
+        run: uv run pytest tests/test_generated_releases.py tests/test_generated_release_tools.py tests/test_workflows.py -q
+
   # The single required check in the branch ruleset ("ci"): passes only if every job above passed.
   ci:
     name: ci
     if: always()
-    needs: [test, plan, templates, actionlint, rust, distribution]
+    needs: [test, plan, templates, actionlint, rust, distribution, release-fixtures]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

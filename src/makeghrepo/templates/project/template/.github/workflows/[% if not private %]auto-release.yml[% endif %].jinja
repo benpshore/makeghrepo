@@ -1,0 +1,12 @@
+name: Auto-release
+
+# Public projects release every CI-verified main push, independently of stack.
+# Source versions remain seeds; the isolated build materializes the selected
+# minor version. No branch/version PR, PAT, or recursive tag-trigger is needed.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+[% set automatic = true %]
+[% include '_release-pipeline.jinja' %]

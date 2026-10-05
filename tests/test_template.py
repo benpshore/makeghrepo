@@ -37,6 +37,7 @@ BASE = {
     ".gitignore", ".editorconfig", "README.md", "AGENTS.md", "CLAUDE.md", "SECURITY.md",
     ".github/dependabot.yml", ".github/pull_request_template.md", ".github/workflows/ci.yml",
     ".github/workflows/release.yml", ".github/workflows/codeql.yml",
+    ".github/workflows/auto-release.yml", ".github/release-tools.py",
     ".github/ISSUE_TEMPLATE/bug.yml", ".github/ISSUE_TEMPLATE/feature.yml",
     ".github/ISSUE_TEMPLATE/epic.yml", ".github/ISSUE_TEMPLATE/config.yml",
 }  # fmt: skip

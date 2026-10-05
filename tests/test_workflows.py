@@ -15,9 +15,8 @@ def workflows(request, tmp_path):
         else gs.render_combo(request.param, tmp_path / "quiet-otter")
     )
     directory = root / ".github/workflows"
-    has_release = request.param == "makeghrepo" or (
-        "python" in gs.COMBOS[request.param]["languages"]
-        and not gs.COMBOS[request.param].get("private", False)
+    has_release = request.param == "makeghrepo" or not gs.COMBOS[request.param].get(
+        "private", False
     )
     assert (directory / "auto-release.yml").exists() is has_release
     return directory
@@ -39,7 +38,7 @@ def test_ci_preserves_running_and_pending_main_runs(workflows):
 def test_auto_release_queues_instead_of_replacing_pending_runs(workflows):
     path = workflows / "auto-release.yml"
     if not path.exists():
-        return  # Auto-release is only generated for public Python projects.
+        return  # Auto-release is generated for every public project.
     release = yaml.safe_load(path.read_text())
     # One shared queue serializes tag allocation; false alone only retains
     # one pending run, so a third merge would silently lose a release.
@@ -56,13 +55,14 @@ def test_auto_release_keeps_exact_sha_checkout_and_ci_gate(workflows):
     if not path.exists():
         return
     release = yaml.safe_load(path.read_text())
-    steps = release["jobs"]["release"]["steps"]
+    job = release["jobs"]["plan"] if "plan" in release["jobs"] else release["jobs"]["release"]
+    steps = job["steps"]
     wait_index, wait = next(
         (i, step)
         for i, step in enumerate(steps)
         if step.get("name") == "Wait for this commit's ci check"
     )
-    env = release["jobs"]["release"].get("env", {}) | wait.get("env", {})
+    env = job.get("env", {}) | wait.get("env", {})
     assert env["SHA"] == "${{ github.sha }}"
     assert "commits/$SHA/check-runs?check_name=ci" in wait["run"]
     assert '.app.slug == "github-actions"' in wait["run"]

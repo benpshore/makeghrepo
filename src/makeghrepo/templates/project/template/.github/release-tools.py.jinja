@@ -1,0 +1,204 @@
+"""One tag owns each build's version; working-tree seed versions are not releases.
+
+No branch bump is pushed: protection remains intact and a token-created release
+PR cannot accidentally depend on suppressed recursive CI. Instead the isolated
+build materializes Cargo/npm/OpenAPI versions, validates them, and records those
+manifests in the release. Both generator implementations ship this exact helper.
+"""
+
+import argparse
+import email
+import hashlib
+import json
+import platform
+import re
+import subprocess
+import tarfile
+import tomllib
+import zipfile
+from pathlib import Path
+
+STABLE = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+
+
+def git(*args):
+    # Only fixed Git subcommands and validated tag arguments are used here.
+    return subprocess.check_output(["git", *args], text=True).splitlines()  # noqa: S603, S607
+
+
+def select(tags, source_tags):
+    stable = {
+        tag: tuple(map(int, STABLE.fullmatch(tag).groups()))
+        for tag in tags
+        if STABLE.fullmatch(tag)
+    }
+    existing = sorted(set(source_tags) & stable.keys())
+    if len(existing) > 1:
+        raise ValueError("ambiguous stable source tags; select one manually")
+    if existing:
+        return existing[0][1:]
+    major, minor, _ = max(stable.values(), default=(0, 0, 0))
+    return f"{major}.{minor + 1}.0"
+
+
+def prepare(version):
+    if not STABLE.fullmatch("v" + version):
+        raise ValueError("release version must be stable semver")
+    manifests = {}
+    cargo = Path("Cargo.toml")
+    if cargo.exists():
+        content = cargo.read_text()
+        start = content.index("[package]")
+        end = content.find("\n[", start + 1)
+        end = len(content) if end < 0 else end
+        section, count = re.subn(
+            r'^version\s*=\s*"[^"\n]*"', f'version = "{version}"', content[start:end], flags=re.M
+        )
+        if count != 1:
+            raise ValueError("Cargo package must have one explicit version")
+        cargo.write_text(content[:start] + section + content[end:])
+        manifests["Cargo.toml"] = version
+    package = Path("package.json")
+    if package.exists():
+        data = json.loads(package.read_text())
+        data["version"] = version
+        package.write_text(json.dumps(data, indent=2) + "\n")
+        lock = Path("package-lock.json")
+        if lock.exists():
+            data = json.loads(lock.read_text())
+            data["version"] = version
+            if "" in data.get("packages", {}):
+                data["packages"][""]["version"] = version
+            lock.write_text(json.dumps(data, indent=2) + "\n")
+        manifests["package.json"] = version
+    contract = Path("openapi.yaml")
+    if contract.exists():
+        content = contract.read_text()
+        start = content.index("\ninfo:\n")
+        match = re.search(r"\n[^\s#][^\n]*:", content[start + 1 :])
+        end = start + 1 + match.start() if match else len(content)
+        section, count = re.subn(
+            r"^  version:.*$", f"  version: {version}", content[start:end], flags=re.M
+        )
+        if count != 1:
+            raise ValueError("OpenAPI info must have one explicit version")
+        contract.write_text(content[:start] + section + content[end:])
+        manifests["openapi.yaml"] = version
+    return manifests
+
+
+def inventory(version, source):
+    root = Path("dist")
+    manifests = json.loads((root / "release-manifests.json").read_text())
+    if manifests["version"] != version or manifests["source"] != source:
+        raise ValueError("materialized manifests name a different release")
+    if (
+        Path("Cargo.toml").exists()
+        and tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"] != version
+    ):
+        raise ValueError("Cargo build version drifted")
+    if Path("package.json").exists():
+        if json.loads(Path("package.json").read_text())["version"] != version:
+            raise ValueError("npm build version drifted")
+        archives = list(root.glob("*.tgz"))
+        if len(archives) != 1:
+            raise ValueError("npm release requires exactly one tarball")
+        with tarfile.open(archives[0]) as archive:
+            data = json.load(archive.extractfile("package/package.json"))
+            if data["version"] != version:
+                raise ValueError("packed npm version drifted")
+    if Path("pyproject.toml").exists():
+        wheels, sdists = list(root.glob("*.whl")), list(root.glob("*.tar.gz"))
+        if len(wheels) != 1 or len(sdists) != 1:
+            raise ValueError("Python release requires one wheel and one sdist")
+        with zipfile.ZipFile(wheels[0]) as archive:
+            names = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
+            if len(names) != 1:
+                raise ValueError("wheel requires one metadata record")
+            wheel_info = archive.read(names[0]).decode()
+        with tarfile.open(sdists[0]) as archive:
+            names = [n for n in archive.getnames() if n.count("/") == 1 and n.endswith("/PKG-INFO")]
+            if len(names) != 1:
+                raise ValueError("sdist requires one root metadata record")
+            sdist_info = archive.extractfile(names[0]).read().decode()
+        for content in (wheel_info, sdist_info):
+            if email.message_from_string(content)["Version"] != version:
+                raise ValueError("built Python version drifted")
+    if (
+        Path("openapi.yaml").exists()
+        and (root / "openapi.yaml").read_bytes() != Path("openapi.yaml").read_bytes()
+    ):
+        raise ValueError("attached OpenAPI contract drifted")
+    native_suffix = f"{platform.system()}-{platform.machine()}"
+    required = []
+    if Path("Cargo.toml").exists():
+        name = tomllib.loads(Path("Cargo.toml").read_text())["package"]["name"]
+        required.append(root / f"{name}-{version}-{native_suffix}")
+    if Path("go.mod").exists():
+        module = re.search(r"^module\s+(\S+)", Path("go.mod").read_text(), re.M).group(1)
+        name = module.rsplit("/", 1)[-1]
+        required.extend(root / f"{name}-{version}-linux-{arch}" for arch in ("amd64", "arm64"))
+    if Path("CMakeLists.txt").exists():
+        targets = re.findall(
+            r"^add_program\(([A-Za-z0-9_]+)\s", Path("CMakeLists.txt").read_text(), re.M
+        )
+        required.extend(root / f"{target}-{version}-{native_suffix}" for target in targets)
+    for path in required:
+        if not path.is_file() or not path.read_bytes():
+            raise ValueError(f"required binary is missing: {path.name}")
+    # One checksum document covers every prepared payload, including contracts
+    # and manifests; it excludes itself and the transfer-only inventory.
+    lines = []
+    for path in sorted(root.iterdir()):
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("release payload must contain regular files")
+        lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n")
+    (root / "SHA256SUMS").write_text("".join(lines))
+    assets = []
+    for path in sorted(root.iterdir()):
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("release payload must contain regular files")
+        content = path.read_bytes()
+        if not content:
+            raise ValueError("release payload cannot be empty")
+        assets.append(
+            {"name": path.name, "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+        )
+    (root / "inventory.json").write_text(
+        json.dumps({"version": version, "source": source, "assets": assets})
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=["select", "prepare", "inventory"])
+    parser.add_argument("--tag")
+    parser.add_argument("--version")
+    args = parser.parse_args()
+    source = git("rev-parse", "HEAD")[0]
+    if args.action == "select":
+        if args.tag:
+            if (
+                not STABLE.fullmatch(args.tag)
+                or git("rev-parse", f"{args.tag}^{{commit}}")[0] != source
+            ):
+                raise ValueError("manual recovery requires this source's stable tag")
+            version = args.tag[1:]
+        else:
+            version = select(git("tag", "--list"), git("tag", "--points-at", "HEAD"))
+        print(f"version={version}")
+        print(f"sha={source}")
+    elif args.action == "prepare":
+        manifests = prepare(args.version)
+        Path("dist").mkdir(exist_ok=True)
+        Path("dist/release-manifests.json").write_text(
+            json.dumps({"version": args.version, "source": source, "materialized": manifests})
+        )
+        if Path("openapi.yaml").exists():
+            Path("dist/openapi.yaml").write_bytes(Path("openapi.yaml").read_bytes())
+    else:
+        inventory(args.version, source)
+
+
+if __name__ == "__main__":
+    main()
