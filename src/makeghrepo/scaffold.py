@@ -59,18 +59,22 @@ SETUP_LEN = {lang.id: lang.setup_len for lang in LANGS.values() if lang.setup_le
 _SCRUBBED_PREFIXES = ("GH_", "GITHUB_")
 _SCRUBBED_NAMES = {
     "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS",
-    "UV_GITHUB_TOKEN", "UV_ENV_FILE", "UV_PROJECT", "UV_WORKING_DIR", "UV_PROJECT_ENVIRONMENT",
+    "UV_GITHUB_TOKEN", "UV_ENV_FILE", "UV_PROJECT", "UV_NO_PROJECT",
+    "UV_WORKING_DIR", "UV_PROJECT_ENVIRONMENT",
 }  # fmt: skip
 
 
 def check_env() -> dict[str, str]:
-    """Filter check credentials and keep uv on the selected daughter project.
+    """Filter check credentials and inherited uv project-selection overrides.
 
     A forwarded UV_ENV_FILE can reload stripped credentials in a later uv run.
     uv's project/working-directory/environment overrides can instead redirect
     lock or sync to unrelated files, including an existing Python environment.
+    UV_NO_PROJECT bypasses project discovery for uv run and can select an
+    unrelated active VIRTUAL_ENV even after sync created the daughter's .venv.
     Drop those controls and explicitly disable dotenv loading, without changing
-    the parent's environment used by gh or unrelated tool settings.
+    the parent's environment used by gh. Normal uv workspace/config discovery
+    and unrelated tool settings remain in effect; this is not a sandbox.
     """
     env = {
         key: value
