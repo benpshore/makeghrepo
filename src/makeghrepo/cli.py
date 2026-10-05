@@ -10,10 +10,10 @@ from typing import Annotated
 
 import typer
 
-from makeghrepo import names, registry
+from makeghrepo import inputs, names
 
 app = typer.Typer(add_completion=True, context_settings={"help_option_names": ["-h", "--help"]})
-LANGS = registry.load()
+LANGS = inputs.LANGS
 
 
 class ProjectLicense(StrEnum):
@@ -86,21 +86,21 @@ def main(
     description: Annotated[str | None, typer.Option("--description", hidden=True)] = None,
     year: Annotated[str | None, typer.Option("--year", hidden=True)] = None,
 ) -> None:
-    # Copier imports its platform probe machinery; keep help/version independent
-    # of that renderer and every external command as well as GitPython.
-    from makeghrepo import scaffold
-
-    words = list(words or [])
-    # A leading non-language word is the name; otherwise pick a random one.
-    raw_name = words.pop(0) if words and scaffold.language(words[0]) is None else None
-    langs: list[str] = []
-    for word in words:
-        lang = scaffold.language(word)
-        if lang is None:
-            raise fail(f"unknown language {word!r}. Choose from: {', '.join(scaffold.LANGUAGES)}")
-        langs += [lang] if lang not in langs else []
+    try:
+        raw_name, langs = inputs.parse_words(list(words or []))
+        # Reject invalid names before any authenticated gh operation. Normalization
+        # is retained for compatibility; it never selects a different action. Apply
+        # language-specific restrictions later: a resume uses its recorded languages.
+        if raw_name is not None:
+            names.validate_name(names.normalize_name(raw_name))
+    except ValueError as exc:
+        raise fail(str(exc)) from exc
     if lib and "python" not in langs:
         raise fail("--lib only applies to python; add `python` to the language list")
+
+    # Only validated positional actions reach the renderer. Copier remains the
+    # rendering implementation; parsing/help/version need none of its probes.
+    from makeghrepo import scaffold
 
     if render is not None:
         try:
@@ -181,6 +181,8 @@ def main(
                 "a resume never changes licensing. Re-run without --license"
             )
         recorded = [str(lang) for lang in marker.get("languages") or []]
+        if any(lang not in LANGS for lang in recorded):
+            raise fail(f"{dest} has an unknown recorded language; review its resume marker")
         if langs and langs != recorded:
             typer.echo(f"note: ignoring languages on resume; using {', '.join(recorded) or 'none'}")
         langs = recorded
