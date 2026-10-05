@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Generate candidate Python seed artifacts in trusted development/CI only.
+
+This executes dependency/build code. It never updates packaged files or golden
+snapshots; review the output and provenance before importing a candidate.
+"""
+
+# Assertions validate this standalone maintenance experiment, like bootstrap-check.
+# ruff: noqa: S101
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+import copier
+
+from makeghrepo import registry, scaffold, seedlock
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--out", type=Path, required=True)
+OUT = parser.parse_args().out.resolve()
+OUT.mkdir(parents=True, exist_ok=False)
+HOME_DIR = OUT / "home"
+HOME_DIR.mkdir()
+ENV = {
+    "PATH": os.environ["PATH"],
+    "HOME": str(HOME_DIR),
+    "UV_CACHE_DIR": str(OUT / "cache"),
+    "UV_NO_CONFIG": "1",
+    "UV_NO_ENV_FILE": "1",
+    "UV_PYTHON_DOWNLOADS": "never",
+}
+UV = shutil.which("uv")
+if UV is None:
+    raise RuntimeError("uv is required for trusted seed generation")
+
+
+def run(dest, *args):
+    command = [UV, *args]
+    print(f"RUN {dest.name}: {' '.join(args)}", flush=True)
+    subprocess.run(command, cwd=dest, env=ENV, check=True)
+
+
+def data(name):
+    return {
+        "project_name": name,
+        "package_name": name.replace("-", "_"),
+        "description": name,
+        "author_name": "Seed fixture",
+        "github_owner": "fixture-owner",
+        "year": "2026",
+        "private": False,
+        "py_lib": True,
+        "project_license": "none",
+        "languages": ["python", "api", "sqlite"],
+    }
+
+
+def lock(dest, *args):
+    run(dest, "lock", "--python", sys.executable, "--no-config", *args)
+
+
+def normalized(contents, name):
+    result = tomllib.loads(contents)
+    roots = [p for p in result["package"] if p.get("source") == {"editable": "."}]
+    if len(roots) != 1 or roots[0]["name"] != name:
+        raise AssertionError("lock must contain exactly the expected editable project")
+    roots[0]["name"] = "makeghrepo-seed"
+    result["package"].sort(key=lambda package: package["name"])
+    return result
+
+
+seed = OUT / "seed"
+scaffold.render(seed, data("makeghrepo-seed"))
+(seed / "uv.lock").unlink(missing_ok=True)
+lock(seed, "--default-index", "https://pypi.org/simple")
+seed_lock = (seed / "uv.lock").read_text()
+needle = 'name = "makeghrepo-seed"\n'
+if seed_lock.count(needle) != 1:
+    raise AssertionError("the root identity must have exactly one substitution site")
+prefix, suffix = seed_lock.split(needle)
+template = (
+    "[% raw %]"
+    + prefix
+    + "[% endraw %]"
+    + "name = [[ project_name | to_json ]]\n"
+    + "[% raw %]"
+    + suffix
+    + "[% endraw %]"
+)
+template_dir = OUT / "template"
+shutil.copytree(Path(scaffold.__file__).parent / "templates/project", template_dir)
+(template_dir / "template/[% if py %]uv.lock[% endif %].jinja").write_text(template)
+(OUT / "python-uv.lock.jinja").write_text(template)
+reports = []
+for name in ("lunar-panda", "cedar-otter"):
+    dest = OUT / name
+    values = data(name)
+    copier.run_copy(
+        str(template_dir),
+        str(dest),
+        data={**registry.derived(scaffold.LANGS, values["languages"]), **values},
+        defaults=True,
+        unsafe=False,
+        quiet=True,
+        overwrite=False,
+    )
+    actual = (dest / "uv.lock").read_text()
+    assert normalized(actual, name) == normalized(seed_lock, "makeghrepo-seed")
+    lock(dest, "--check", "--offline")
+    assert (dest / "uv.lock").read_text() == actual
+    fresh = OUT / f"{name}-fresh"
+    scaffold.render(fresh, values)
+    (fresh / "uv.lock").unlink(missing_ok=True)
+    lock(fresh, "--default-index", "https://pypi.org/simple")
+    assert normalized((fresh / "uv.lock").read_text(), name) == normalized(actual, name)
+    run(dest, "sync", "--locked", "--python", sys.executable, "--no-config")
+    run(dest, "run", "--no-sync", "ruff", "format", "--check")
+    run(dest, "run", "--no-sync", "ruff", "check")
+    run(dest, "run", "--no-sync", "pytest", "-q")
+    run(dest, "build", "--no-config")
+    assert (dest / "uv.lock").read_text() == actual
+    reports.append({"name": name, "lock_sha256": hashlib.sha256(actual.encode()).hexdigest()})
+
+provenance = {
+    "source_commit": os.environ.get("GITHUB_SHA", "local"),
+    "run_id": os.environ.get("GITHUB_RUN_ID", "local"),
+    "python": sys.version,
+    "uv": subprocess.check_output([UV, "--version"], env=ENV, text=True).strip(),
+    "seed_sha256": hashlib.sha256(seed_lock.encode()).hexdigest(),
+    "template_sha256": hashlib.sha256(template.encode()).hexdigest(),
+    "manifest_sha256": hashlib.sha256((seed / "pyproject.toml").read_bytes()).hexdigest(),
+    "index": "https://pypi.org/simple",
+    "cases": reports,
+}
+(OUT / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+contract = {
+    "schema": 1,
+    "manifest": seedlock.manifest_contract(
+        tomllib.loads((seed / "pyproject.toml").read_text()), "makeghrepo-seed", lib=True
+    ),
+    "lock_sha256": seedlock.digest(
+        seedlock.lock_contract(tomllib.loads(seed_lock), "makeghrepo-seed")
+    ),
+    "provenance": provenance,
+}
+(OUT / "python-seed.json").write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n")
+print("SEED_PROVENANCE=" + json.dumps(provenance, sort_keys=True), flush=True)
+# These bytes are generated public package metadata, not process/environment data.
+print("SEED_TEMPLATE_BASE64=" + base64.b64encode(template.encode()).decode(), flush=True)
+print("SEED_FEASIBILITY_PASSED", flush=True)

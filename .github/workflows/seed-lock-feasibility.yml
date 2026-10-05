@@ -1,0 +1,108 @@
+name: Python seed validation
+
+on:
+  push:
+    branches: [agent/olga/packaged-python-lock]
+
+permissions:
+  contents: read
+
+jobs:
+  seed-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.23"
+          python-version: "3.14.8"
+      - run: uv sync --locked
+      - name: Git identity for synthetic bootstrap tests
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.invalid"
+      - name: Verify packaged locks and bootstrap behavior
+        run: uv run pytest tests/test_seedlock.py tests/test_cli.py tests/test_gitops.py
+      - name: Format check for this change
+        run: uv run ruff format --diff src/makeghrepo/seedlock.py src/makeghrepo/cli.py src/makeghrepo/gitops.py tests/test_seedlock.py tests/test_cli.py tests/test_gitops.py scripts/regen-python-lock
+      - name: Lint this change
+        run: uv run ruff check src/makeghrepo/seedlock.py src/makeghrepo/cli.py src/makeghrepo/gitops.py tests/test_seedlock.py tests/test_cli.py tests/test_gitops.py scripts/regen-python-lock
+
+  # Verify the reviewed source's checks that the unchanged golden gate skipped.
+  # The fixed ref keeps this evidence tied to that source, not a later branch tip.
+  python-post-golden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 2d54b7075fd0481eadef9651bae9796627a060f2
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record tested source
+        run: |
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.23"
+          python-version: "3.14.8"
+      - name: Install
+        id: install
+        run: uv sync --locked
+      - name: Audit dependencies
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: uv audit --locked --preview-features audit-command
+      - name: Build
+        id: build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: uv build
+      - name: Install as a uv tool and smoke test
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          uv tool install dist/*.whl
+          makeghrepo --help
+
+  rust-post-golden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 2d54b7075fd0481eadef9651bae9796627a060f2
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record tested source
+        run: |
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+      - name: Toolchain
+        id: toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+          cargo --version
+          rustc --version
+      - name: Format
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo fmt --check
+      - name: Clippy
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Build
+        id: build
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo build --release --locked
+      - name: Dry run
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          ./target/release/makeghrepo quiet-otter rust docker --render "$RUNNER_TEMP/dry" >/dev/null
+          test -f "$RUNNER_TEMP/dry/Cargo.toml" && test -f "$RUNNER_TEMP/dry/Dockerfile"
+          ./target/release/makeghrepo --version

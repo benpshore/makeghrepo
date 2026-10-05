@@ -110,13 +110,60 @@ def test_remote_main_distinguishes_empty_published_and_unreachable(tmp_path):
 
     (dest / "ready.txt").write_text("ready")
     gitops.commit_all(dest)
-    gitops.push_main(dest)
+    gitops.push_main(dest, gitops.main_commit(dest).hexsha)
     assert gitops.remote_has_main(dest) is True
 
     repo.git.remote("set-url", "origin", str(tmp_path / "missing.git"))
     with pytest.raises(git.GitCommandError):
         gitops.remote_has_main(dest)
-
     repo.git.remote("remove", "origin")
     with pytest.raises(git.GitCommandError):
         gitops.remote_has_main(dest)
+
+
+def test_push_publishes_frozen_main_commit_after_main_and_head_change(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    dest = tmp_path / "local"
+    remote = git.Repo.init(tmp_path / "remote.git", bare=True)
+    gitops.init(dest)
+    repo = git.Repo(dest)
+    repo.create_remote("origin", str(remote.git_dir))
+    (dest / "input.txt").write_text("validated input")
+    gitops.commit_all(dest)
+    publication = gitops.main_commit(dest)
+    assert gitops.commit_files(publication, ("input.txt",)) == {"input.txt": b"validated input"}
+
+    (dest / "input.txt").write_text("later input")
+    gitops.commit_all(dest, "advance local main after validation")
+    repo.git.checkout("-b", "feature")
+    assert repo.head.commit.hexsha != publication.hexsha
+    assert gitops.main_commit(dest).hexsha == repo.heads.main.commit.hexsha
+    gitops.push_main(dest, publication.hexsha)
+
+    assert remote.heads.main.commit.hexsha == publication.hexsha
+    assert remote.heads.main.commit.tree["input.txt"].data_stream.read() == b"validated input"
+    assert repo.heads.main.tracking_branch().path == "refs/remotes/origin/main"
+
+
+def test_main_commit_does_not_fall_back_to_a_different_head(tmp_path):
+    repo = git.Repo.init(tmp_path, initial_branch="feature")
+    (tmp_path / "input.txt").write_text("feature only")
+    gitops.commit_all(tmp_path)
+    assert repo.head.is_valid()
+    with pytest.raises(RuntimeError, match="refs/heads/main"):
+        gitops.main_commit(tmp_path)
+
+
+def test_commit_files_rejects_symlink_blobs(tmp_path):
+    gitops.init(tmp_path)
+    (tmp_path / "actual.txt").write_text("fixture input")
+    (tmp_path / "input.txt").symlink_to("actual.txt")
+    gitops.commit_all(tmp_path)
+    with pytest.raises(ValueError, match="regular file"):
+        gitops.commit_files(gitops.main_commit(tmp_path), ("input.txt",))
+
+
+@pytest.mark.parametrize("mutable_ref", ["main", "HEAD", "refs/heads/main"])
+def test_push_requires_a_commit_id(tmp_path, mutable_ref):
+    with pytest.raises(ValueError, match="immutable commit ID"):
+        gitops.push_main(tmp_path, mutable_ref)

@@ -10,7 +10,7 @@ from typing import Annotated
 
 import typer
 
-from makeghrepo import names, registry
+from makeghrepo import names, registry, seedlock
 
 app = typer.Typer(add_completion=True, context_settings={"help_option_names": ["-h", "--help"]})
 LANGS = registry.load()
@@ -184,12 +184,14 @@ def main(
         if langs and langs != recorded:
             typer.echo(f"note: ignoring languages on resume; using {', '.join(recorded) or 'none'}")
         langs = recorded
+        lib = bool(marker.get("lib", False))
         typer.echo(f"resuming {dest}")
     elif on_github:
         raise fail(f"{repo} already exists on GitHub")
     else:
         try:
             _project_name(name, langs)
+            seedlock.require_supported(langs)
         except ValueError as exc:
             raise fail(str(exc)) from exc
         typer.echo(f"creating {dest} [{', '.join(langs) or 'any language'}]")
@@ -210,7 +212,7 @@ def main(
         # A fresh host or CI runner may have no git identity configured anywhere;
         # fall back to the authenticated GitHub user so `git commit` never fails on that.
         gitops.ensure_identity(dest, author_name, f"{owner}@users.noreply.github.com")
-        # Written before the smoke test so an interrupted first run can still resume.
+        # Written before bootstrap validation so an interrupted first run can resume.
         gitops.write_marker(dest, {
             "schema": 1,
             "name": name,
@@ -222,11 +224,32 @@ def main(
             "created_by": f"makeghrepo {_version()}",
         })  # fmt: skip
 
-    if not resume or not gitops.has_commits(dest):  # earlier check/commit failed
+    # Published projects may have ordinary later manifest edits. A configuration
+    # retry must neither recheck them against the seed nor push subsequent work.
+    try:
+        pushed = on_github and gitops.remote_has_main(dest)
+    except git.GitCommandError as exc:
+        raise fail(
+            f"{exc}\nCould not check remote main; refusing to push. "
+            "Local project is intact; re-run to retry."
+        ) from exc
+
+    if not pushed:
         try:
-            scaffold.smoke_test(dest, langs, typer.echo)
-            gitops.commit_all(dest, "setup")
-        except (RuntimeError, git.GitCommandError) as exc:
+            working_inputs = seedlock.validate_bootstrap(dest, langs, name, lib=lib)
+            if "python" in langs:
+                typer.echo("using packaged Python lock; local install/test/build were not run")
+            if not gitops.has_commits(dest):
+                gitops.commit_all(dest, "setup")
+            # Commit creation can change staged inputs. Always check the actual
+            # main commit afterward, including initial creation and neutral plans.
+            publication = gitops.main_commit(dest)
+            committed_inputs = gitops.commit_files(publication, seedlock.PYTHON_INPUTS)
+            seedlock.validate_contents(committed_inputs, langs, name, lib=lib)
+            if committed_inputs != working_inputs:
+                raise ValueError("Committed Python bootstrap inputs differ from local files")
+            publication_sha = publication.hexsha
+        except (ValueError, RuntimeError, KeyError, OSError, git.GitCommandError) as exc:
             raise fail(
                 f"{exc}\nNothing was published. Fix it, then re-run the same command."
             ) from exc
@@ -248,14 +271,7 @@ def main(
         raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
 
     # Bootstrap only: a configuration rerun must never publish subsequent local work.
-    try:
-        pushed = on_github and gitops.remote_has_main(dest)
-    except git.GitCommandError as exc:
-        raise fail(
-            f"{exc}\nCould not check remote main; refusing to push. "
-            "Local project is intact; re-run to retry."
-        ) from exc
-    push = None if pushed else lambda: gitops.push_main(dest)
+    push = None if pushed else lambda: gitops.push_main(dest, publication_sha)
     failed = github.configure_all(repo, private=private, push=push, log=typer.echo)
     typer.echo(f"\nhttps://github.com/{repo}\ncd {dest}")
     if failed:

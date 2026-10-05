@@ -89,8 +89,38 @@ def commit_all(path: Path, message: str = "setup") -> None:
     repo.git.commit("-m", message)
 
 
-def push_main(path: Path) -> None:
-    git.Repo(path).git.push("-u", "origin", "main")
+def main_commit(path: Path) -> git.Commit:
+    """Resolve the bootstrap publication branch, independent of the current HEAD."""
+    try:
+        return git.Repo(path).commit("refs/heads/main")
+    except (git.exc.BadName, git.exc.BadObject, ValueError, git.GitCommandError) as exc:
+        raise RuntimeError("Bootstrap publication requires a committed refs/heads/main") from exc
+
+
+def commit_files(commit: git.Commit, filenames: tuple[str, ...]) -> dict[str, bytes]:
+    """Read bounded regular input blobs from an immutable commit, without checkout."""
+    contents = {}
+    for filename in filenames:
+        try:
+            item = commit.tree[filename]
+        except KeyError:
+            continue
+        if item.type != "blob" or item.mode not in (0o100644, 0o100755) or item.size > 1_000_000:
+            raise ValueError(f"Committed {filename} must be a regular file smaller than 1 MB")
+        contents[filename] = item.data_stream.read()
+    return contents
+
+
+def push_main(path: Path, commit: str) -> None:
+    """Publish the validated commit ID even if local main/HEAD changes afterward."""
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit):
+        raise ValueError("Bootstrap push requires an immutable commit ID")
+    repo = git.Repo(path)
+    repo.git.push("origin", f"{commit}:refs/heads/main")
+    # A SHA refspec cannot set a branch upstream with -u; preserve bootstrap's
+    # ordinary main tracking configuration explicitly after a successful push.
+    repo.git.config("branch.main.remote", "origin")
+    repo.git.config("branch.main.merge", "refs/heads/main")
 
 
 def validate_origin(path: Path, full_name: str) -> None:
