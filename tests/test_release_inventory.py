@@ -28,7 +28,10 @@ class ReleaseInventoryTests(unittest.TestCase):
             dist.mkdir()
             version, source = "0.36.0", "a" * 40
             slots = {
-                "python": [f"makeghrepo-{version}-py3-none-any.whl", f"makeghrepo-{version}.tar.gz"],
+                "python": [
+                    f"makeghrepo-{version}-py3-none-any.whl",
+                    f"makeghrepo-{version}.tar.gz",
+                ],
                 **{
                     target: [f"makeghrepo-{target}", f"makeghrepo-{target}.sha256"]
                     for target in (
@@ -99,7 +102,8 @@ class ReleaseInventoryTests(unittest.TestCase):
                 " elif args[1]=='--method': data['tag']=True\n"
                 " elif 'releases/tags' in args[1]:\n"
                 "  assets=json.loads(Path('expected-assets.json').read_text())\n"
-                "  print(json.dumps({'assets':[dict(a,digest='sha256:'+a['sha256']) for a in assets]}))\n"
+                "  records=[dict(a,digest='sha256:'+a['sha256']) for a in assets]\n"
+                "  print(json.dumps({'assets':records}))\n"
                 " else: sys.exit(2)\n"
                 "elif args[:2]==['release','view']:\n"
                 " if 'draft' not in data: sys.exit(1)\n"
