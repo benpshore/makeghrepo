@@ -4,7 +4,7 @@ import git
 import pytest
 from typer.testing import CliRunner
 
-from makeghrepo import github, gitops, scaffold
+from makeghrepo import github, gitops, scaffold, seedlock
 from makeghrepo.cli import app
 
 runner = CliRunner()
@@ -26,18 +26,25 @@ def gh(tmp_path, monkeypatch):
         return state["failed"]
 
     monkeypatch.setattr(github, "configure_all", configure_all)
-    monkeypatch.setattr(scaffold, "smoke_test", lambda *a: None)  # covered in test_template
-    return state
+    executed = []
+
+    def forbidden(*args, **kwargs):
+        executed.append(args)
+        raise AssertionError("bootstrap must not execute local package checks")
+
+    monkeypatch.setattr(scaffold, "smoke_test", forbidden)
+    yield state
+    assert executed == []
 
 
 def test_name_and_languages(tmp_path, gh):
-    result = runner.invoke(app, ["My Repo", "python", "c++"])
+    result = runner.invoke(app, ["My Repo", "python", "rest"])
     assert result.exit_code == 0, result.output
     repo = git.Repo(tmp_path / "my-repo")
     assert [c.message.strip() for c in repo.iter_commits()] == ["setup"]
     assert repo.active_branch.name == "main" and not repo.is_dirty(untracked_files=True)
     tracked = repo.git.ls_files()
-    assert "pyproject.toml" in tracked and "src/main.cpp" in tracked
+    assert "pyproject.toml" in tracked and "openapi.yaml" in tracked and "uv.lock" in tracked
     assert gh["calls"][0][:3] == ("create", "me/my-repo", tmp_path / "my-repo")
     assert gh["calls"][1] == ("configure", "me/my-repo", False, True)
 
@@ -51,10 +58,10 @@ def test_no_args_random_name_any_language(tmp_path, gh):
 
 
 def test_language_first_means_random_name(tmp_path, gh):
-    result = runner.invoke(app, ["rust"])
+    result = runner.invoke(app, ["python"])
     assert result.exit_code == 0, result.output
     (created,) = tmp_path.iterdir()
-    assert created.name != "rust" and (created / "Cargo.toml").exists()
+    assert created.name != "python" and (created / "pyproject.toml").exists()
 
 
 def test_private(tmp_path, gh):
@@ -198,16 +205,18 @@ def test_failed_steps_exit_2_with_rerun_hint(tmp_path, gh):
     assert "re-run: makeghrepo partial" in result.output
 
 
-def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):
-    def broken(*a):
-        raise RuntimeError("ruff failed")
+def test_failed_seed_validation_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):
+    validate = seedlock.validate_bootstrap
 
-    monkeypatch.setattr(scaffold, "smoke_test", broken)
+    def broken(*args, **kwargs):
+        raise ValueError("seed validation failed")
+
+    monkeypatch.setattr(seedlock, "validate_bootstrap", broken)
     result = runner.invoke(app, ["fixme", "python"])
     assert result.exit_code == 1 and "re-run the same command" in result.output
     assert gh["calls"] == []  # nothing published
 
-    monkeypatch.setattr(scaffold, "smoke_test", lambda *a: None)  # user fixed it
+    monkeypatch.setattr(seedlock, "validate_bootstrap", validate)
     result = runner.invoke(app, ["fixme", "python"])
     assert result.exit_code == 0, result.output
     assert [c.message.strip() for c in git.Repo(tmp_path / "fixme").iter_commits()] == ["setup"]
@@ -289,11 +298,11 @@ def test_private_flag_on_a_public_github_repo_is_refused(tmp_path, gh):
 def test_resume_uses_the_marker_languages(tmp_path, gh, monkeypatch):
     seen = []
 
-    def broken(dest, langs, log):
+    def broken(dest, langs, name, *, lib):
         seen.append(list(langs))
         raise RuntimeError("check failed")
 
-    monkeypatch.setattr(scaffold, "smoke_test", broken)
+    monkeypatch.setattr(seedlock, "validate_bootstrap", broken)
     assert runner.invoke(app, ["polyglot", "python"]).exit_code == 1
     result = runner.invoke(app, ["polyglot", "rust"])
     assert result.exit_code == 1
@@ -336,6 +345,69 @@ def test_rust_refuses_a_name_starting_with_a_digit(tmp_path, gh):
 def test_python_accepts_a_name_starting_with_a_digit(tmp_path, gh):
     assert runner.invoke(app, ["7up", "python"]).exit_code == 0
     assert (tmp_path / "7up" / "src" / "_7up").is_dir()
+
+
+@pytest.mark.parametrize("name", ["lunar-panda", "cedar-otter"])
+@pytest.mark.parametrize("private", [False, True])
+def test_demonstrated_bootstrap_commits_seed_and_publishes_without_checks(tmp_path, gh, name, private):
+    args = [name, "python", "--lib", "sqlite", "api"]
+    if private:
+        args.append("--private")
+    result = runner.invoke(app, args, catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    dest = tmp_path / name
+    repo = git.Repo(dest)
+    assert repo.head.commit.tree["uv.lock"].data_stream.read() == (dest / "uv.lock").read_bytes()
+    assert [call[0] for call in gh["calls"]] == ["create", "configure"]
+    assert gh["calls"][-1][-1] is True
+    assert "local install/test/build were not run" in result.output
+    assert not (dest / ".venv").exists()
+
+
+@pytest.mark.parametrize("langs", [["js"], ["rust"], ["python", "docker"], ["sqlite"]])
+def test_unsupported_bootstrap_never_creates_remote_or_runs_checks(tmp_path, gh, langs):
+    result = runner.invoke(app, ["uncovered", *langs], catch_exceptions=False)
+    assert result.exit_code == 1
+    assert "another lock plan" in result.output
+    assert gh["calls"] == []
+    assert not (tmp_path / "uncovered").exists()
+
+
+def test_unpublished_resume_rechecks_seed_even_with_existing_commit(tmp_path, gh):
+    assert runner.invoke(app, ["again", "python"], catch_exceptions=False).exit_code == 0
+    dest = tmp_path / "again"
+    (dest / "uv.lock").unlink()
+    gh["calls"].clear()
+    result = runner.invoke(app, ["again"], catch_exceptions=False)
+    assert result.exit_code == 1 and "Cannot bootstrap" in result.output
+    assert gh["calls"] == []
+
+
+def test_published_retry_accepts_later_manifests_without_pushing(tmp_path, gh, monkeypatch):
+    assert runner.invoke(app, ["again", "python"], catch_exceptions=False).exit_code == 0
+    dest = tmp_path / "again"
+    (dest / "uv.lock").unlink()
+    (dest / "pyproject.toml").write_text("later user edits")
+    gh["existing"].add("me/again")
+    gh["calls"].clear()
+    monkeypatch.setattr(gitops, "remote_has_main", lambda _: True)
+    result = runner.invoke(app, ["again"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert gh["calls"] == [("configure", "me/again", False, False)]
+
+
+def test_unpublished_resume_checks_committed_inputs(tmp_path, gh):
+    assert runner.invoke(app, ["again", "python"], catch_exceptions=False).exit_code == 0
+    dest = tmp_path / "again"
+    lock = dest / "uv.lock"
+    original = lock.read_bytes()
+    lock.write_text("incorrect committed data")
+    gitops.commit_all(dest, "change lock")
+    lock.write_bytes(original)
+    gh["calls"].clear()
+    result = runner.invoke(app, ["again"], catch_exceptions=False)
+    assert result.exit_code == 1 and "Committed Python bootstrap inputs differ" in result.output
+    assert gh["calls"] == []
 
 
 def test_resume_lookup_failure_never_pushes_or_configures(tmp_path, gh, monkeypatch):

@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-"""Trusted CI experiment: instantiate one uv seed through real Copier/Jinja."""
+"""Generate candidate Python seed artifacts in trusted development/CI only.
 
+This executes dependency/build code. It never updates packaged files or golden
+snapshots; review the output and provenance before importing a candidate.
+"""
+
+import argparse
 import base64
 import hashlib
 import json
@@ -13,9 +18,11 @@ from pathlib import Path
 
 import copier
 
-from makeghrepo import registry, scaffold
+from makeghrepo import registry, scaffold, seedlock
 
-OUT = Path("out/seed-lock-feasibility").resolve()
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--out", type=Path, required=True)
+OUT = parser.parse_args().out.resolve()
 OUT.mkdir(parents=True, exist_ok=False)
 HOME_DIR = OUT / "home"
 HOME_DIR.mkdir()
@@ -69,6 +76,7 @@ def normalized(contents, name):
 
 seed = OUT / "seed"
 scaffold.render(seed, data("makeghrepo-seed"))
+(seed / "uv.lock").unlink(missing_ok=True)
 lock(seed, "--default-index", "https://pypi.org/simple")
 seed_lock = (seed / "uv.lock").read_text()
 needle = 'name = "makeghrepo-seed"\n'
@@ -99,6 +107,7 @@ for name in ("lunar-panda", "cedar-otter"):
     assert (dest / "uv.lock").read_text() == actual
     fresh = OUT / f"{name}-fresh"
     scaffold.render(fresh, values)
+    (fresh / "uv.lock").unlink(missing_ok=True)
     lock(fresh, "--default-index", "https://pypi.org/simple")
     assert normalized((fresh / "uv.lock").read_text(), name) == normalized(actual, name)
     run(dest, "sync", "--locked", "--python", sys.executable, "--no-config")
@@ -121,6 +130,15 @@ provenance = {
     "cases": reports,
 }
 (OUT / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+contract = {
+    "schema": 1,
+    "manifest": seedlock.manifest_contract(
+        tomllib.loads((seed / "pyproject.toml").read_text()), "makeghrepo-seed", lib=True
+    ),
+    "lock_sha256": seedlock.digest(seedlock.lock_contract(tomllib.loads(seed_lock), "makeghrepo-seed")),
+    "provenance": provenance,
+}
+(OUT / "python-seed.json").write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n")
 print("SEED_PROVENANCE=" + json.dumps(provenance, sort_keys=True), flush=True)
 # These bytes are generated public package metadata, not process/environment data.
 print("SEED_TEMPLATE_BASE64=" + base64.b64encode(template.encode()).decode(), flush=True)
