@@ -1,63 +1,64 @@
 name: Release
 
-# Manual fallback only: every ordinary merge to main is released automatically
-# by auto-release.yml, which tags the merged commit before this workflow ever
-# sees a ref. The one thing that workflow can't do for itself is recover if it
-# pushes that tag but then fails before publishing the GitHub release (network
-# blip, `gh release create` hiccup, etc.) — the tag already exists at that
-# point, so re-pushing it is a no-op that fires nothing here. For that case,
-# run this workflow by hand against the existing tag:
-#   gh workflow run release.yml --ref vX.Y.Z
-#
-# `version` is dynamic (`uv-dynamic-versioning`, derived from git tags — see
-# pyproject.toml), so a manually-pushed tag is also a fully valid way to cut a
-# release by hand: nothing else needs bumping or committing first, and
-# auto-release.yml only reacts to pushes on `main`, not to tags, so it won't
-# collide with one.
-#
-# Keep the checkout/setup-uv/test/audit/build steps and pinned action SHAs
-# below in sync with auto-release.yml's — duplicated rather than shared via a
-# reusable workflow, since that would need cross-job artifact passing that
-# adds more untestable surface than the duplication it removes, for two files
-# this short.
+# Manual/tag recovery shares the entire build and publication pipeline with
+# auto-release. A partial attempt remains a draft until every artifact exists;
+# recovery uses the existing tag's exact source instead of allocating a bump.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+  queue: max
+
 permissions:
   contents: read
 
 jobs:
-  release:
-    name: release
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
+      checks: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          enable-cache: true
-      - name: Git identity for tests
-        run: |
-          git config --global user.name "CI"
-          git config --global user.email "ci@example.invalid"
-      - name: Tag matches computed project version
-        run: test "$(uvx uv-dynamic-versioning)" = "${GITHUB_REF_NAME#v}"
-      - name: Install
-        run: uv sync --locked
-      - name: Test
-        run: uv run pytest
-      - name: Audit dependencies
-        run: uv audit --locked --preview-features audit-command
-      - name: Build
-        run: uv build
-      - name: Publish GitHub release
+      - name: Wait for this commit's ci check
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 75); do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?check_name=ci&per_page=100" \
+              --jq '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last | .conclusion // "pending"')
+            case "$state" in
+              success) exit 0 ;;
+              pending) sleep 20 ;;
+              *) echo "::error::ci concluded '$state' on $SHA; not releasing it"; exit 1 ;;
+            esac
+          done
+          echo "::error::timed out waiting for ci on $SHA"
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 scripts/release-version --tag "$TAG" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: plan
+    uses: ./.github/workflows/release-build.yml
+    permissions:
+      contents: write
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      sha: ${{ needs.plan.outputs.sha }}

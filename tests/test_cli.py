@@ -4,7 +4,7 @@ import git
 import pytest
 from typer.testing import CliRunner
 
-from makeghrepo import github, gitops, scaffold
+from makeghrepo import github, gitops, inputs, scaffold
 from makeghrepo.cli import app
 
 runner = CliRunner()
@@ -164,6 +164,64 @@ def test_unknown_language(tmp_path, gh):
     assert result.exit_code == 1
     assert "cobol" in result.output
     assert not (tmp_path / "x").exists()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["..", "python"],
+        ["", "python"],
+        ["python", "another-name"],
+        ["sample", "cobol"],
+        ["sample", "python\n"],
+        ["sample", "--lib"],
+    ],
+)
+def test_invalid_input_stops_before_auth_or_render(tmp_path, monkeypatch, args):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("invalid input reached an external operation")
+
+    monkeypatch.setenv("MAKEGHREPO_DIR", str(tmp_path))
+    monkeypatch.setattr(github, "current_user", forbidden)
+    monkeypatch.setattr(scaffold, "render", forbidden)
+    # A forbidden call must escape, not masquerade as the expected validation exit.
+    result = runner.invoke(app, args, catch_exceptions=False)
+    assert result.exit_code == 1, result.output
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("operation", ["auth", "render"])
+def test_invalid_input_guard_detects_forbidden_calls(tmp_path, gh, monkeypatch, operation):
+    def broken_dispatch(words):
+        if operation == "auth":
+            github.current_user()
+        else:
+            scaffold.render(tmp_path, {})
+
+    # Exercise the actual regression guard with a deliberately broken dispatcher.
+    # Removing catch_exceptions=False above would make this positive control fail.
+    monkeypatch.setattr(inputs, "parse_words", broken_dispatch)
+    with pytest.raises(AssertionError, match="invalid input reached an external operation"):
+        test_invalid_input_stops_before_auth_or_render(tmp_path, monkeypatch, ["..", "python"])
+
+
+def test_unknown_resume_language_is_rejected(tmp_path, gh):
+    assert runner.invoke(app, ["again", "python"]).exit_code == 0
+    dest = tmp_path / "again"
+    marker = gitops.read_marker(dest)
+    gitops.write_marker(dest, {**marker, "languages": ["python", "arbitrary-action"]})
+    gh["calls"].clear()
+    result = runner.invoke(app, ["again"])
+    assert result.exit_code == 1
+    assert "unknown recorded language" in result.output
+    assert gh["calls"] == []
+
+
+def test_resume_validates_recorded_languages_instead_of_ignored_arguments(tmp_path, gh):
+    assert runner.invoke(app, ["7up", "python"]).exit_code == 0
+    result = runner.invoke(app, ["7up", "rust"])
+    assert result.exit_code == 0, result.output
+    assert "ignoring languages on resume; using python" in result.output
 
 
 def test_rerun_resumes_without_rescaffolding(tmp_path, gh):
