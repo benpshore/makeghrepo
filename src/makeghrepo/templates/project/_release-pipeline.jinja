@@ -17,9 +17,10 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       sha: ${{ steps.version.outputs.sha }}
     steps:
-[% if automatic %]
-      # A main push waits for CI on the exact source, even when creation options
-      # make checks optional for merging. Release verification stays required.
+[% if automatic or not private %]
+      # Public automatic/manual releases wait for CI on the exact source, even
+      # for component-only stacks or optional merge checks. Private policy
+      # stays local-only while Actions is disabled by repository creation.
       - name: Wait for this commit's ci check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -133,6 +134,8 @@ jobs:
 [% endif %]
 [% if npm %]
       - run: npm ci --ignore-scripts
+      - run: npm --ignore-scripts run --if-present lint
+      - run: npm --ignore-scripts run --if-present test
       - name: Pack versioned npm payload without lifecycle scripts
         run: npm pack --ignore-scripts --pack-destination dist
 [% endif %]
