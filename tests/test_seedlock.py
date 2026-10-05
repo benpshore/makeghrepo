@@ -183,3 +183,30 @@ def test_uv_accepts_seed_offline_with_empty_cache(tmp_path, name, lib, langs):
     assert result.returncode == 0, result.stdout + result.stderr
     assert (dest / "uv.lock").read_bytes() == before
     assert not (dest / ".venv").exists()
+
+
+@pytest.mark.slow
+def test_maintenance_generator_emits_reviewable_candidates_without_replacing_package(tmp_path):
+    source = Path(scaffold.__file__).resolve().parents[2]
+    template = (
+        source / "src/makeghrepo/templates/project/template/[% if py %]uv.lock[% endif %].jinja"
+    )
+    packaged_contract = source / "src/makeghrepo/data/python-seed.json"
+    before = (template.read_bytes(), packaged_contract.read_bytes())
+    output = tmp_path / "candidate"
+    result = subprocess.run(
+        [sys.executable, source / "scripts/regen-python-lock", "--out", str(output)],
+        cwd=source,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    candidate = json.loads((output / "python-seed.json").read_text())
+    assert candidate["schema"] == 1
+    case_names = {case["name"] for case in candidate["provenance"]["cases"]}
+    assert case_names == {"lunar-panda", "cedar-otter"}
+    assert candidate["manifest"] == json.loads(before[1])["manifest"]
+    assert (output / "python-uv.lock.jinja").is_file()
+    assert (template.read_bytes(), packaged_contract.read_bytes()) == before

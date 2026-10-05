@@ -49,9 +49,8 @@ def manifest_contract(manifest: dict, name: str, *, lib: bool) -> dict:
     ):
         raise ValueError("Python authors do not match the packaged template")
     authors[0]["name"] = "<author>"
-    if "license" in project:
-        if project.pop("license") != "MIT":
-            raise ValueError("Python license does not match the packaged template")
+    if "license" in project and project.pop("license") != "MIT":
+        raise ValueError("Python license does not match the packaged template")
     expected_scripts = None if lib else {name: f"{names.package_name(name)}:main"}
     if project.pop("scripts", None) != expected_scripts:
         raise ValueError("Python entry points do not match the recorded library choice")
