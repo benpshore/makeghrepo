@@ -78,7 +78,9 @@ class ReleaseInventoryTests(unittest.TestCase):
             )
             self.assertNotEqual(failed.returncode, 0)
             self.assertTrue(json.loads((root / "state.json").read_text())["draft"])
-            retry = subprocess.run(["bash", "-c", publication], cwd=root, env=env, capture_output=True)
+            retry = subprocess.run(
+                ["bash", "-c", publication], cwd=root, env=env, capture_output=True
+            )
             self.assertEqual(retry.returncode, 0, retry.stderr.decode())
             self.assertFalse(json.loads((root / "state.json").read_text())["draft"])
 
@@ -109,7 +111,9 @@ class ReleaseInventoryTests(unittest.TestCase):
             checksum.write_text("incorrect checksum\n")
             with self.assertRaisesRegex(ValueError, "checksum"):
                 record(slot, root, "0.36.0", "b" * 40)
-            checksum.write_text(f"{hashlib.sha256(binary.read_bytes()).hexdigest()}  {binary.name}\n")
+            checksum.write_text(
+                f"{hashlib.sha256(binary.read_bytes()).hexdigest()}  {binary.name}\n"
+            )
             record(slot, root, "0.36.0", "b" * 40)
             inventory = json.loads((root / f"{slot}.json").read_text())
             self.assertEqual(inventory["source"], "b" * 40)
@@ -137,7 +141,9 @@ class ReleaseInventoryTests(unittest.TestCase):
         self.assertIn('test "$sha" = "$SOURCE"', publication)
         for entry in ("auto-release.yml", "release.yml"):
             data = yaml.safe_load((ROOT / ".github/workflows" / entry).read_text())
-            self.assertEqual(data["jobs"]["release"]["uses"], "./.github/workflows/release-build.yml")
+            self.assertEqual(
+                data["jobs"]["release"]["uses"], "./.github/workflows/release-build.yml"
+            )
 
 
 if __name__ == "__main__":
