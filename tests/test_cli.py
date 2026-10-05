@@ -166,6 +166,48 @@ def test_unknown_language(tmp_path, gh):
     assert not (tmp_path / "x").exists()
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["..", "python"],
+        ["", "python"],
+        ["python", "another-name"],
+        ["sample", "cobol"],
+        ["sample", "python\n"],
+        ["sample", "--lib"],
+    ],
+)
+def test_invalid_input_stops_before_auth_or_render(tmp_path, monkeypatch, args):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("invalid input reached an external operation")
+
+    monkeypatch.setenv("MAKEGHREPO_DIR", str(tmp_path))
+    monkeypatch.setattr(github, "current_user", forbidden)
+    monkeypatch.setattr(scaffold, "render", forbidden)
+    result = runner.invoke(app, args)
+    assert result.exit_code == 1, result.output
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_unknown_resume_language_is_rejected(tmp_path, gh):
+    assert runner.invoke(app, ["again", "python"]).exit_code == 0
+    dest = tmp_path / "again"
+    marker = gitops.read_marker(dest)
+    gitops.write_marker(dest, {**marker, "languages": ["python", "arbitrary-action"]})
+    gh["calls"].clear()
+    result = runner.invoke(app, ["again"])
+    assert result.exit_code == 1
+    assert "unknown recorded language" in result.output
+    assert gh["calls"] == []
+
+
+def test_resume_validates_recorded_languages_instead_of_ignored_arguments(tmp_path, gh):
+    assert runner.invoke(app, ["7up", "python"]).exit_code == 0
+    result = runner.invoke(app, ["7up", "rust"])
+    assert result.exit_code == 0, result.output
+    assert "ignoring languages on resume; using python" in result.output
+
+
 def test_rerun_resumes_without_rescaffolding(tmp_path, gh):
     assert runner.invoke(app, ["again", "python"]).exit_code == 0
     gh["existing"].add("me/again")
