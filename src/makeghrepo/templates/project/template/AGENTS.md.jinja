@@ -11,8 +11,10 @@
 - Python: use **uv** only (`uv add`, `uv run`). Never pip.
 - The version is the git tag; never edit a version field by hand.
 [% endif %]
-[% if py and not private %]
-- Every merge to `main` is released automatically (next minor version, wheel and sdist attached).
+[% if not private %]
+- Every CI-verified main push is released automatically with the next stable minor version. Manual stable tags use the same build/publication checks.
+- Cargo/npm/OpenAPI fields are scaffold seed versions. Release builds materialize the selected tag version without pushing a version-bump branch. Inspect attached release-manifests.json, package metadata and checksums for the release version/source.
+- All supported artifacts must pass before a draft release becomes public. A failed upload remains a draft; retry the source/tag without retagging or changing protections.
 [% endif %]
 - Before committing, run:
 

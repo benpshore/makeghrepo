@@ -17,3 +17,17 @@ Other accounts must use a squash PR with passing, up-to-date `ci`. Agents must u
 [% else %]
 GitHub Actions is disabled and no ruleset is installed for this private repo on GitHub Free. Run checks locally. Agents still work on branches and open PRs (see `AGENTS.md`).
 [% endif %]
+
+## Releases
+
+[% if not private %]
+Every push to `main` waits for CI on that exact commit, selects the next stable minor version, and builds every supported selected payload before publication. A manual `vMAJOR.MINOR.PATCH` tag or a workflow retry uses the same pipeline. Existing source tags are reused; unrelated preview/malformed tags do not affect numbering. Ambiguous stable tags and collisions fail safely.
+[% else %]
+Actions remain disabled for this private repository. No automatic-release workflow is generated. The tag-driven release definition remains available if the owner separately changes that policy.
+[% endif %]
+
+Versions in Cargo/npm/OpenAPI source files start at `0.1.0` as scaffold seeds. In an isolated release build they are materialized to the selected tag version; Python wheel/sdist metadata derives from that local tag. No protected source branch is bumped. The release's `release-manifests.json` records the exact source and materialized versions, and `SHA256SUMS` covers attached payloads. An API selection attaches the correspondingly versioned OpenAPI contract.
+
+Coverage: Python wheel/sdist; Rust binaries for the build host; Go static Linux amd64/arm64 binaries; CMake binaries for the build host; npm tarballs with lifecycle scripts disabled. Swift is a library scaffold (validated, no executable defined); Ruby has no gemspec (tests, no gem artifact). Base, database, shell, Docker and other component selections produce manifest/checksum evidence with GitHub's source archives, without claiming database/application implementation, container deployment, registry publishing or unsupported binaries. Mixed stacks build their supported payloads together; all must succeed.
+
+Only a fresh publisher runner receives write authority, and it executes no project code. Uploads first form a draft release. The complete remote digest/size inventory must match before the draft becomes public. Retry failed drafts using their source/tag; existing public releases are verified without overwrite. Older incomplete public releases require explicit review.
