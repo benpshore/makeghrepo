@@ -191,7 +191,11 @@ jobs:
             done
             test "$type" = commit && test "$sha" = "$SOURCE"
           else
-            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$SOURCE"
+            # Preserve annotated release tags for Git versioning consumers;
+            # the ref names an immutable tag object peeled to the checked source.
+            object=$(gh api --method POST "repos/$GH_REPO/git/tags" \
+              -f tag="$tag" -f message="$tag" -f object="$SOURCE" -f type=commit --jq .sha)
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$object"
           fi
           if gh release view "$tag" --json isDraft --jq .isDraft > draft.txt 2>/dev/null; then
             # Never clobber a public release on retry. Require its full remote
