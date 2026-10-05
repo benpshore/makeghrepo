@@ -10,9 +10,7 @@ import pytest
 
 from makeghrepo import scaffold, seedlock
 
-LANGUAGES = [
-    ["python"], ["python", "sqlite"], ["python", "api"], ["python", "sqlite", "api"]
-]
+LANGUAGES = [["python"], ["python", "sqlite"], ["python", "api"], ["python", "sqlite", "api"]]
 
 
 def render(dest, name="lunar-panda", *, lib=True, private=False, license_choice="none", langs=None):
@@ -26,13 +24,21 @@ def render(dest, name="lunar-panda", *, lib=True, private=False, license_choice=
 
 
 @pytest.mark.parametrize("name", ["lunar-panda", "cedar-otter"])
-@pytest.mark.parametrize("lib,private,license_choice", [(True, False, "none"), (False, True, "MIT")])
+@pytest.mark.parametrize(
+    "lib,private,license_choice", [(True, False, "none"), (False, True, "MIT")]
+)
 @pytest.mark.parametrize("langs", LANGUAGES)
 def test_packaged_contract_accepts_rendered_variants(
     tmp_path, monkeypatch, name, lib, private, license_choice, langs
 ):
-    dest = render(tmp_path / "project", name, lib=lib, private=private,
-                  license_choice=license_choice, langs=langs)
+    dest = render(
+        tmp_path / "project",
+        name,
+        lib=lib,
+        private=private,
+        license_choice=license_choice,
+        langs=langs,
+    )
 
     def forbidden(*args, **kwargs):
         pytest.fail("data validation invoked a subprocess")
@@ -41,11 +47,26 @@ def test_packaged_contract_accepts_rendered_variants(
     seedlock.validate_bootstrap(dest, langs, name, lib=lib)
 
 
-@pytest.mark.parametrize("mutation", [
-    "dependency", "source", "build", "entry-point", "python", "lock-hash",
-    "lock-version", "lock-source", "lock-root", "lock-extra", "missing-lock",
-    "symlink-lock", "unknown-tool", "optional-dependency", "build-hook",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "dependency",
+        "source",
+        "build",
+        "entry-point",
+        "python",
+        "lock-hash",
+        "lock-version",
+        "lock-source",
+        "lock-root",
+        "lock-extra",
+        "missing-lock",
+        "symlink-lock",
+        "unknown-tool",
+        "optional-dependency",
+        "build-hook",
+    ],
+)
 def test_changed_bootstrap_data_is_refused_without_execution(tmp_path, monkeypatch, mutation):
     dest = render(tmp_path / "project")
     manifest = dest / "pyproject.toml"
@@ -74,14 +95,14 @@ def test_changed_bootstrap_data_is_refused_without_execution(tmp_path, monkeypat
     else:
         contents = manifest.read_text()
         replacements = {
-            "dependency": ('dependencies = []', 'dependencies = ["requests"]'),
+            "dependency": ("dependencies = []", 'dependencies = ["requests"]'),
             "build": ('"hatchling.build"', '"other.build"'),
             "python": ('">=3.14"', '">=3.12"'),
         }
         additions = {
             "source": '\n[tool.uv.sources]\npytest = {path = "../elsewhere"}\n',
             "entry-point": '\n[project.scripts]\nextra = "extra:main"\n',
-            "unknown-tool": '\n[tool.unknown]\noption = true\n',
+            "unknown-tool": "\n[tool.unknown]\noption = true\n",
             "optional-dependency": '\n[project.optional-dependencies]\nextra = ["requests"]\n',
             "build-hook": '\n[tool.hatch.build.hooks.custom]\npath = "hook.py"\n',
         }
@@ -119,11 +140,20 @@ def test_recorded_seed_template_digest_matches_packaged_bytes():
     source = Path(scaffold.__file__).parent
     contract = json.loads((source / "data/python-seed.json").read_text())
     template = source / "templates/project/template/[% if py %]uv.lock[% endif %].jinja"
-    assert hashlib.sha256(template.read_bytes()).hexdigest() == contract["provenance"]["template_sha256"]
+    assert (
+        hashlib.sha256(template.read_bytes()).hexdigest()
+        == contract["provenance"]["template_sha256"]
+    )
     assert contract["schema"] == 1
-    assert tomllib.loads(template.read_text().replace("[% raw %]", "").replace(
-        "[% endraw %]", ""
-    ).replace("[[ project_name | to_json ]]", '"makeghrepo-seed"'))["requires-python"] == ">=3.14"
+    assert (
+        tomllib.loads(
+            template.read_text()
+            .replace("[% raw %]", "")
+            .replace("[% endraw %]", "")
+            .replace("[[ project_name | to_json ]]", '"makeghrepo-seed"')
+        )["requires-python"]
+        == ">=3.14"
+    )
 
 
 @pytest.mark.slow
@@ -138,10 +168,17 @@ def test_uv_accepts_seed_offline_with_empty_cache(tmp_path, name, lib, langs):
     assert uv is not None
     result = subprocess.run(
         [uv, "lock", "--check", "--offline", "--no-config", "--python", sys.executable],
-        cwd=dest, capture_output=True, text=True, check=False,
-        env={"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home"),
-             "UV_CACHE_DIR": str(tmp_path / "cache"), "UV_NO_ENV_FILE": "1",
-             "UV_PYTHON_DOWNLOADS": "never"},
+        cwd=dest,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            "PATH": os.environ["PATH"],
+            "HOME": str(tmp_path / "home"),
+            "UV_CACHE_DIR": str(tmp_path / "cache"),
+            "UV_NO_ENV_FILE": "1",
+            "UV_PYTHON_DOWNLOADS": "never",
+        },
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (dest / "uv.lock").read_bytes() == before

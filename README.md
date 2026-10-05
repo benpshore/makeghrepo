@@ -22,8 +22,8 @@ prebuilt Rust command on Apple Silicon and Linux.
 makeghrepo                          # random name (e.g. quiet-otter), language-neutral
 makeghrepo quiet-otter              # named, language-neutral
 makeghrepo quiet-otter python       # one language
-makeghrepo quiet-otter rust docker  # several
-makeghrepo swift                    # first word is a language, so the name is random
+makeghrepo python --lib sqlite api # populated Python library repo with a packaged lock
+makeghrepo quiet-otter rust docker --render ./preview-rust
 makeghrepo quiet-otter --private
 makeghrepo quiet-otter python --license MIT # explicitly opt in to an MIT license
 makeghrepo quiet-otter python --lib # library layout, no console script (like `uv init --lib`)
@@ -33,6 +33,12 @@ makeghrepo quiet-otter python --render ./preview
 ```
 
 Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `postgres` `sql` `docker` `shell` `go` `ts` `ruby` `sqlite`. Aliases like `c++`, `objc++`, `rest`, `pg`, `golang`, `typescript` and `rb` also work.
+
+The Python CLI currently creates repositories for `python` (console or `--lib`),
+optionally with `sqlite` and/or `api`, and for language-neutral projects. Both
+public and private creation work in one command. Other combinations remain
+available through `--render`; bootstrap refuses them until a packaged lock plan
+is validated, without running their tools or creating an empty remote.
 
 `--render DIR` previews the packaged template offline, without authentication,
 GitHub requests, local checks, or creating a git repository or resume marker.
@@ -53,22 +59,36 @@ New projects have **no license by default**, whether public or private: no `LICE
 
 Projects go in `~/code/GitHub/<name>`. Set `MAKEGHREPO_DIR` to use another folder.
 
-No git identity or GitHub auth setup needed beyond `gh auth login`: makeghrepo falls back to a `users.noreply.github.com` commit identity if none is configured, and never touches your global git config.
+Authentication stays with `gh`: use its existing authentication or your already
+exported `GH_TOKEN`/`GITHUB_TOKEN`. makeghrepo does not require a new login, source
+dotfiles, or store tokens. It falls back to a `users.noreply.github.com` commit
+identity if none is configured, and never touches your global git config.
 
-Local checks run third-party code: npm packages, pinned `npx`/`uvx` tools, and the new project's own tests. They run with credential *channels* removed from the environment: no `GH_*`/`GITHUB_*` variables, no keyring session, no ssh agent. That is not isolation: a check can still read files under your home directory, including `gh`'s stored token (#113 tracks an OS-level sandbox). Until then, treat a generated project's checks like any code you run by hand. npm installs use `--ignore-scripts`. Checks that can't work on this machine are skipped and left to CI, which runs them on GitHub:
+Python creation renders a reviewed, packaged `uv.lock` through Copier, changing
+only the editable project's name. Before publication it validates the manifest
+and complete lock graph as data against the packaged contract. It runs no local
+dependency resolution, installation, probes, lint, tests, audit or builds. The
+result includes the lock required by generated CI and works when private Actions
+are disabled. This validates the scaffold inputs; it does not claim that checks
+ran on your machine. See [Python seed maintenance](docs/python-seed.md).
 
-- ObjC/ObjC++ need macOS.
-- Docker needs a daemon that answers `docker info`.
-- `cargo fmt`/`clippy` need their rustup components.
+The Rust executable retains its existing local checks. Those checks, and any
+checks you run yourself, execute third-party code under the same OS account.
+Environment filtering and virtual environments do not isolate home files,
+stored gh credentials, sockets or Git hooks/helpers. OS isolation remains a
+separate requirement; this change removes default package execution from the
+Python bootstrap path.
 
 Before the first commit, makeghrepo refuses to commit anything CI would reject: `.env` files, private keys, databases, OS junk. Rust and Ruby need a project name that starts with a letter.
 
-On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOCAL_CHECKS=1` to skip local lint/test/build even for tools that are installed — CI runs the same checks anyway. Lockfiles (`uv.lock`, `package-lock.json`) are still generated locally, since CI and the Dockerfiles depend on them.
+`MAKEGHREPO_SKIP_LOCAL_CHECKS` has no effect on Python CLI bootstrap: it never
+starts local checks. The development smoke-test runner and Rust executable still
+use that variable and still generate required locks when it is set.
 
 ## What it does
 
 1. Renders one copier template (`src/makeghrepo/templates/project/`). The shared base is always included; each language you name adds its own files.
-2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). If a check fails, nothing is published.
+2. Validates the supported Python manifest and packaged lock without executing dependencies. If validation fails, nothing is published. Published-repository configuration retries accept later manifest changes and never push subsequent local work.
 3. Runs `git init -b main`, `git add --all`, `git commit -m setup`.
 4. Creates the GitHub repo empty, then configures it:
    - squash-merge only (explicitly enabled; merge commits and rebase merges disabled), auto-merge and branch updates on, delete branches after merge, wiki off
@@ -79,7 +99,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
    - labels `epic` and `task`, and a Project board linked to the repo
    - notifications set to **Ignore**, and no CODEOWNERS file, so nothing pings you
 
-**Private repos on GitHub Free** can't have rulesets, secret scanning or code scanning, so makeghrepo skips them and leaves CodeQL out. It disables GitHub Actions before the first push to avoid using Actions minutes without an enforceable merge gate, and refuses that push if disabling Actions fails. Workflow files are still generated, but they do not run while Actions is disabled. Local checks are the only gate; skipped local checks have no CI fallback in this mode.
+**Private repos on GitHub Free** can't have rulesets, secret scanning or code scanning, so makeghrepo skips them and leaves CodeQL out. It disables GitHub Actions before the first push to avoid using Actions minutes without an enforceable merge gate, and refuses that push if disabling Actions fails. Workflow files are still generated, but they do not run while Actions is disabled. Python bootstrap validates packaged inputs without executing checks; run project checks explicitly in an environment you trust. No daughter CI run is required to obtain its initial lock.
 
 ## What every repo gets
 
@@ -94,7 +114,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 
 Main-push CI runs independently for each run; only superseded PR runs are canceled. Auto-releases use GitHub's native `queue: max` to serialize releases without replacing pending runs. The queue holds at most 100 pending runs; overflow runs are canceled. Queue order follows arrival at the concurrency group, not necessarily commit order. Failed CI still blocks that commit's release. These are platform limits on the every-merge release policy; see [GitHub's concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 
-| language | files | checks (locally and in CI) |
+| language | files | project checks (explicitly or in CI) |
 |---|---|---|
 | python | `pyproject.toml` (version from git tags), `src/<pkg>/`, `tests/` | ruff format + check, pytest, `uv audit`, `uv build` |
 | python --lib | same, minus the console script; adds `py.typed` | same checks |

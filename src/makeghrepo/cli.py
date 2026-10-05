@@ -245,7 +245,9 @@ def main(
                 tree = git.Repo(dest).head.commit.tree
                 for filename in ("pyproject.toml", "uv.lock"):
                     if tree[filename].data_stream.read() != (dest / filename).read_bytes():
-                        raise ValueError("Committed Python bootstrap inputs differ from local files")
+                        raise ValueError(
+                            "Committed Python bootstrap inputs differ from local files"
+                        )
         except (ValueError, RuntimeError, KeyError, OSError, git.GitCommandError) as exc:
             raise fail(
                 f"{exc}\nNothing was published. Fix it, then re-run the same command."

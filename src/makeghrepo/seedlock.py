@@ -22,9 +22,7 @@ PYTHON_COMPONENTS = frozenset({"python", "api", "sqlite"})
 
 def require_supported(languages: list[str]) -> None:
     """Fail before bootstrap for stacks without a validated packaged lock plan."""
-    if languages and not (
-        "python" in languages and set(languages) <= PYTHON_COMPONENTS
-    ):
+    if languages and not ("python" in languages and set(languages) <= PYTHON_COMPONENTS):
         raise ValueError(
             "Packaged bootstrap currently supports python with optional sqlite/api, "
             "or an empty language selection. This combination needs another lock plan. "
@@ -106,7 +104,9 @@ def validate_bootstrap(dest: Path, languages: list[str], name: str, *, lib: bool
         manifest = manifest_contract(_read_toml(dest / "pyproject.toml"), name, lib=lib)
         lock = lock_contract(_read_toml(dest / "uv.lock"), name)
         if manifest != contract["manifest"] or digest(lock) != contract["lock_sha256"]:
-            raise ValueError("manifest or lock differs from the packaged Python dependency contract")
+            raise ValueError(
+                "manifest or lock differs from the packaged Python dependency contract"
+            )
     except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError) as exc:
         raise ValueError(
             "Cannot bootstrap this Python project with the packaged lock. "

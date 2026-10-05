@@ -349,7 +349,9 @@ def test_python_accepts_a_name_starting_with_a_digit(tmp_path, gh):
 
 @pytest.mark.parametrize("name", ["lunar-panda", "cedar-otter"])
 @pytest.mark.parametrize("private", [False, True])
-def test_demonstrated_bootstrap_commits_seed_and_publishes_without_checks(tmp_path, gh, name, private):
+def test_demonstrated_bootstrap_commits_seed_and_publishes_without_checks(
+    tmp_path, gh, name, private
+):
     args = [name, "python", "--lib", "sqlite", "api"]
     if private:
         args.append("--private")

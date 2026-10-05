@@ -5,6 +5,9 @@ This executes dependency/build code. It never updates packaged files or golden
 snapshots; review the output and provenance before importing a candidate.
 """
 
+# Assertions validate this standalone maintenance experiment, like bootstrap-check.
+# ruff: noqa: S101
+
 import argparse
 import base64
 import hashlib
@@ -84,9 +87,13 @@ if seed_lock.count(needle) != 1:
     raise AssertionError("the root identity must have exactly one substitution site")
 prefix, suffix = seed_lock.split(needle)
 template = (
-    "[% raw %]" + prefix + "[% endraw %]"
-    + 'name = [[ project_name | to_json ]]\n'
-    + "[% raw %]" + suffix + "[% endraw %]"
+    "[% raw %]"
+    + prefix
+    + "[% endraw %]"
+    + "name = [[ project_name | to_json ]]\n"
+    + "[% raw %]"
+    + suffix
+    + "[% endraw %]"
 )
 template_dir = OUT / "template"
 shutil.copytree(Path(scaffold.__file__).parent / "templates/project", template_dir)
@@ -97,9 +104,13 @@ for name in ("lunar-panda", "cedar-otter"):
     dest = OUT / name
     values = data(name)
     copier.run_copy(
-        str(template_dir), str(dest),
+        str(template_dir),
+        str(dest),
         data={**registry.derived(scaffold.LANGS, values["languages"]), **values},
-        defaults=True, unsafe=False, quiet=True, overwrite=False,
+        defaults=True,
+        unsafe=False,
+        quiet=True,
+        overwrite=False,
     )
     actual = (dest / "uv.lock").read_text()
     assert normalized(actual, name) == normalized(seed_lock, "makeghrepo-seed")
@@ -135,7 +146,9 @@ contract = {
     "manifest": seedlock.manifest_contract(
         tomllib.loads((seed / "pyproject.toml").read_text()), "makeghrepo-seed", lib=True
     ),
-    "lock_sha256": seedlock.digest(seedlock.lock_contract(tomllib.loads(seed_lock), "makeghrepo-seed")),
+    "lock_sha256": seedlock.digest(
+        seedlock.lock_contract(tomllib.loads(seed_lock), "makeghrepo-seed")
+    ),
     "provenance": provenance,
 }
 (OUT / "python-seed.json").write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n")
