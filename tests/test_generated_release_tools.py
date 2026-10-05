@@ -33,7 +33,8 @@ class GeneratedReleaseToolsTests(unittest.TestCase):
                     '"node_modules/example":{"version":"9.0.0"}}}'
                 )
                 Path("openapi.yaml").write_text(
-                    "openapi: 3.1.0\ninfo:\n  title: fixture\n  version: 0.1.0\npaths:\n  /health: {}\n"
+                    "openapi: 3.1.0\ninfo:\n  title: fixture\n  version: 0.1.0\n"
+                    "paths:\n  /health: {}\n"
                 )
                 manifests = TOOLS["prepare"]("0.2.0")
                 self.assertEqual(set(manifests.values()), {"0.2.0"})
