@@ -203,6 +203,9 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertEqual(
                 data["jobs"]["release"]["uses"], "./.github/workflows/release-build.yml"
             )
+        automatic = yaml.safe_load((ROOT / ".github/workflows/auto-release.yml").read_text())
+        self.assertEqual(automatic[True]["push"], {"branches": ["main"]})
+        self.assertNotIn("pull_request", automatic[True])
 
 
 if __name__ == "__main__":
