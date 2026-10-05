@@ -27,6 +27,8 @@ def test_release_output_covers_public_stacks_and_preserves_private(combo, tmp_pa
     if not private:
         automatic = yaml.safe_load((directory / "auto-release.yml").read_text())
         assert automatic[True]["push"]["branches"] == ["main"]
+        assert "tags" not in automatic[True]["push"]
+        assert "pull_request" not in automatic[True]
         assert automatic["jobs"]["build"] == build
         assert automatic["jobs"]["publish"] == publisher
 

@@ -68,6 +68,22 @@ class GeneratedReleaseToolsTests(unittest.TestCase):
             finally:
                 os.chdir(previous)
 
+    def test_missing_rust_payload_prevents_transfer_inventory(self):
+        previous = Path.cwd()
+        with tempfile.TemporaryDirectory() as directory:
+            os.chdir(directory)
+            try:
+                Path("Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "0.2.0"\n')
+                Path("dist").mkdir()
+                Path("dist/release-manifests.json").write_text(
+                    json.dumps({"version": "0.2.0", "source": "a" * 40, "materialized": {}})
+                )
+                with self.assertRaisesRegex(ValueError, "required binary is missing"):
+                    TOOLS["inventory"]("0.2.0", "a" * 40)
+                self.assertFalse(Path("dist/inventory.json").exists())
+            finally:
+                os.chdir(previous)
+
 
 if __name__ == "__main__":
     unittest.main()
