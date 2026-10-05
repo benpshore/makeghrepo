@@ -3,7 +3,9 @@
 import hashlib
 import io
 import json
+import os
 import runpy
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -17,6 +19,69 @@ record = runpy.run_path(str(ROOT / "scripts/release-inventory"))["record"]
 
 
 class ReleaseInventoryTests(unittest.TestCase):
+    def test_failed_upload_never_publishes_and_draft_retry_completes(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/release-build.yml").read_text())
+        publication = workflow["jobs"]["publish"]["steps"][-1]["run"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = root / "bin"
+            tools.mkdir()
+            fake = tools / "gh"
+            # The fixture records public visibility, not just successful shell
+            # exit: a failed upload must retain the private draft, and retry
+            # must verify the remote digest before changing that visibility.
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json,os,sys\n"
+                "from pathlib import Path\n"
+                "args=sys.argv[1:]\n"
+                "state=Path('state.json')\n"
+                "data=json.loads(state.read_text()) if state.exists() else {}\n"
+                "if args[0]=='api':\n"
+                " if 'git/ref/tags' in args[1]:\n"
+                "  if not data.get('tag'): sys.exit(1)\n"
+                "  print(json.dumps({'object':{'type':'commit','sha':os.environ['SOURCE']}}))\n"
+                " elif args[1]=='--method': data['tag']=True\n"
+                " elif 'releases/tags' in args[1]:\n"
+                "  assets=json.loads(Path('expected-assets.json').read_text())\n"
+                "  print(json.dumps({'assets':[dict(a,digest='sha256:'+a['sha256']) for a in assets]}))\n"
+                " else: sys.exit(2)\n"
+                "elif args[:2]==['release','view']:\n"
+                " if 'draft' not in data: sys.exit(1)\n"
+                " print(str(data['draft']).lower())\n"
+                "elif args[:2]==['release','create']: data['draft']=True\n"
+                "elif args[:2]==['release','upload']:\n"
+                " if os.environ.get('FAIL_UPLOAD'): sys.exit(1)\n"
+                " data['uploaded']=True\n"
+                "elif args[:2]==['release','edit']:\n"
+                " assert data.get('uploaded')\n"
+                " data['draft']=False\n"
+                "else: sys.exit(2)\n"
+                "state.write_text(json.dumps(data))\n"
+            )
+            fake.chmod(0o755)
+            (root / "payload").mkdir()
+            (root / "payload" / "fixture.whl").write_bytes(b"verified inert payload")
+            (root / "expected-assets.json").write_text("[]")
+            env = os.environ | {
+                "PATH": f"{tools}:{os.environ['PATH']}",
+                "VERSION": "0.36.0",
+                "SOURCE": "b" * 40,
+                "GH_REPO": "fixture/no-remote",
+                "GH_TOKEN": "inert-fixture",
+            }
+            failed = subprocess.run(
+                ["bash", "-c", publication],
+                cwd=root,
+                env=env | {"FAIL_UPLOAD": "1"},
+                capture_output=True,
+            )
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertTrue(json.loads((root / "state.json").read_text())["draft"])
+            retry = subprocess.run(["bash", "-c", publication], cwd=root, env=env, capture_output=True)
+            self.assertEqual(retry.returncode, 0, retry.stderr.decode())
+            self.assertFalse(json.loads((root / "state.json").read_text())["draft"])
+
     def test_python_metadata_mismatch_fails_before_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
