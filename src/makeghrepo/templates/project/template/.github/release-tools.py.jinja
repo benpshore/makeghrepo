@@ -10,6 +10,7 @@ import argparse
 import email
 import hashlib
 import json
+import platform
 import re
 import subprocess
 import tarfile
@@ -118,6 +119,29 @@ def inventory(version, source):
     if Path("openapi.yaml").exists():
         if (root / "openapi.yaml").read_bytes() != Path("openapi.yaml").read_bytes():
             raise ValueError("attached OpenAPI contract drifted")
+    native_suffix = f"{platform.system()}-{platform.machine()}"
+    required = []
+    if Path("Cargo.toml").exists():
+        name = tomllib.loads(Path("Cargo.toml").read_text())["package"]["name"]
+        required.append(root / f"{name}-{version}-{native_suffix}")
+    if Path("go.mod").exists():
+        module = re.search(r"^module\s+(\S+)", Path("go.mod").read_text(), re.M).group(1)
+        name = module.rsplit("/", 1)[-1]
+        required.extend(root / f"{name}-{version}-linux-{arch}" for arch in ("amd64", "arm64"))
+    if Path("CMakeLists.txt").exists():
+        targets = re.findall(r"^add_program\(([A-Za-z0-9_]+)\s", Path("CMakeLists.txt").read_text(), re.M)
+        required.extend(root / f"{target}-{version}-{native_suffix}" for target in targets)
+    for path in required:
+        if not path.is_file() or not path.read_bytes():
+            raise ValueError(f"required binary is missing: {path.name}")
+    # One checksum document covers every prepared payload, including contracts
+    # and manifests; it excludes itself and the transfer-only inventory.
+    lines = []
+    for path in sorted(root.iterdir()):
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("release payload must contain regular files")
+        lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n")
+    (root / "SHA256SUMS").write_text("".join(lines))
     assets = []
     for path in sorted(root.iterdir()):
         if not path.is_file() or path.is_symlink():
