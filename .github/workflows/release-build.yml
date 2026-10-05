@@ -166,6 +166,20 @@ jobs:
         run: |
           set -euo pipefail
           tag="v$VERSION"
+          verify_remote_assets() {
+            gh api "repos/$GH_REPO/releases/tags/$tag" > release.json
+            python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          expected = json.loads(Path("expected-assets.json").read_text())
+          actual = json.loads(Path("release.json").read_text())["assets"]
+          assert {a["name"] for a in actual} == {a["name"] for a in expected}
+          for wanted in expected:
+              found = next(a for a in actual if a["name"] == wanted["name"])
+              assert found["size"] == wanted["size"]
+              assert found.get("digest") == "sha256:" + wanted["sha256"]
+          PYCODE
+          }
           # Allocation collisions fail rather than retag a different commit.
           if gh api "repos/$GH_REPO/git/ref/tags/$tag" > ref.json 2>/dev/null; then
             type=$(jq -r .object.type ref.json)
@@ -184,22 +198,12 @@ jobs:
             # digest/size inventory; an older incomplete release needs explicit
             # human repair rather than pretending this attempt completed it.
             if [ "$(cat draft.txt)" != true ]; then
-              gh api "repos/$GH_REPO/releases/tags/$tag" > release.json
-              python3 - <<'PYCODE'
-          import json
-          from pathlib import Path
-          expected = json.loads(Path("expected-assets.json").read_text())
-          actual = json.loads(Path("release.json").read_text())["assets"]
-          assert {a["name"] for a in actual} == {a["name"] for a in expected}
-          for wanted in expected:
-              found = next(a for a in actual if a["name"] == wanted["name"])
-              assert found["size"] == wanted["size"]
-              assert found.get("digest") == "sha256:" + wanted["sha256"]
-          PYCODE
+              verify_remote_assets
               exit 0
             fi
           else
             gh release create "$tag" --draft --verify-tag --target "$SOURCE" --generate-notes
           fi
           gh release upload "$tag" payload/* --clobber
+          verify_remote_assets
           gh release edit "$tag" --draft=false --latest

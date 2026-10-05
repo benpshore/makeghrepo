@@ -23,6 +23,7 @@ def test_version_selection_is_numeric_stable_and_retryable():
 def test_real_git_lookup_uses_source_not_newer_tag(tmp_path):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
+
     git("init")
     git("config", "user.name", "Release fixture")
     git("config", "user.email", "fixture@example.invalid")
@@ -34,5 +35,9 @@ def test_real_git_lookup_uses_source_not_newer_tag(tmp_path):
     git("checkout", source)
     output = subprocess.check_output([sys.executable, str(SCRIPT)], cwd=tmp_path, text=True)
     assert output == f"version=0.9.0\nsha={source}\n"
-    wrong = subprocess.run([sys.executable, str(SCRIPT), "--tag", "v0.10.0"], cwd=tmp_path, capture_output=True)
+    wrong = subprocess.run(
+        [sys.executable, str(SCRIPT), "--tag", "v0.10.0"],
+        cwd=tmp_path,
+        capture_output=True,
+    )
     assert wrong.returncode != 0

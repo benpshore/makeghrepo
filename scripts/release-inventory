@@ -44,11 +44,12 @@ def record(slot: str, root: Path, version: str, source: str) -> None:
         content = path.read_bytes()
         if not content or path.is_symlink():
             raise ValueError("release payload must be a nonempty regular file")
-        assets.append({"name": path.name, "size": len(content),
-                       "sha256": hashlib.sha256(content).hexdigest()})
-    (root / f"{slot}.json").write_text(json.dumps({
-        "version": version, "source": source, "assets": assets,
-    }))
+        assets.append(
+            {"name": path.name, "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+        )
+    (root / f"{slot}.json").write_text(
+        json.dumps({"version": version, "source": source, "assets": assets})
+    )
 
 
 if __name__ == "__main__":

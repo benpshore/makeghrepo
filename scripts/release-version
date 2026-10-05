@@ -16,8 +16,11 @@ STABLE = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 
 
 def select(tags: list[str], source_tags: list[str]) -> str:
-    stable = {tag: tuple(map(int, STABLE.fullmatch(tag).groups()))
-              for tag in tags if STABLE.fullmatch(tag)}
+    stable = {
+        tag: tuple(map(int, STABLE.fullmatch(tag).groups()))
+        for tag in tags
+        if STABLE.fullmatch(tag)
+    }
     existing = sorted(set(source_tags) & stable.keys())
     if len(existing) > 1:
         raise ValueError("source has multiple stable release tags; select one manually")
@@ -31,8 +34,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", help="explicit existing stable tag for manual recovery")
     args = parser.parse_args()
+
     def git(*argv: str) -> list[str]:
         return subprocess.check_output(["git", *argv], text=True).splitlines()
+
     source = git("rev-parse", "HEAD")[0]
     if args.tag:
         if not STABLE.fullmatch(args.tag):
