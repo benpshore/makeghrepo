@@ -34,6 +34,14 @@ makeghrepo quiet-otter python --render ./preview
 
 Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `postgres` `sql` `docker` `shell` `go` `ts` `ruby` `sqlite`. Aliases like `c++`, `objc++`, `rest`, `pg`, `golang`, `typescript` and `rb` also work.
 
+The first positional word is a repository name unless it is reserved by the
+installed language registry. Every later positional must be reserved; an unknown
+word is an error. Flags retain their explicit meanings, including
+`makeghrepo python --lib sqlite api`. Names keep their existing normalization
+(`My Repo` becomes `my-repo`); normalization never selects an action. Piped stdin
+is not a source of commands. Python dispatches the registry's declared actions
+through fixed `match`/`case` branches, then renders with Copier/Jinja.
+
 `--render DIR` previews the packaged template offline, without authentication,
 GitHub requests, local checks, or creating a git repository or resume marker.
 It preserves Copier in the Python installation; Copier may inspect local Git
