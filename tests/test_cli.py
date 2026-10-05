@@ -4,7 +4,7 @@ import git
 import pytest
 from typer.testing import CliRunner
 
-from makeghrepo import github, gitops, scaffold
+from makeghrepo import github, gitops, inputs, scaffold
 from makeghrepo.cli import app
 
 runner = CliRunner()
@@ -184,9 +184,25 @@ def test_invalid_input_stops_before_auth_or_render(tmp_path, monkeypatch, args):
     monkeypatch.setenv("MAKEGHREPO_DIR", str(tmp_path))
     monkeypatch.setattr(github, "current_user", forbidden)
     monkeypatch.setattr(scaffold, "render", forbidden)
-    result = runner.invoke(app, args)
+    # A forbidden call must escape, not masquerade as the expected validation exit.
+    result = runner.invoke(app, args, catch_exceptions=False)
     assert result.exit_code == 1, result.output
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("operation", ["auth", "render"])
+def test_invalid_input_guard_detects_forbidden_calls(tmp_path, gh, monkeypatch, operation):
+    def broken_dispatch(words):
+        if operation == "auth":
+            github.current_user()
+        else:
+            scaffold.render(tmp_path, {})
+
+    # Exercise the actual regression guard with a deliberately broken dispatcher.
+    # Removing catch_exceptions=False above would make this positive control fail.
+    monkeypatch.setattr(inputs, "parse_words", broken_dispatch)
+    with pytest.raises(AssertionError, match="invalid input reached an external operation"):
+        test_invalid_input_stops_before_auth_or_render(tmp_path, monkeypatch, ["..", "python"])
 
 
 def test_unknown_resume_language_is_rejected(tmp_path, gh):
