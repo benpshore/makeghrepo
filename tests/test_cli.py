@@ -1,9 +1,9 @@
 import builtins
 import json
 import os
-from pathlib import Path
 import socket
 import subprocess
+from pathlib import Path
 
 import git
 import pytest

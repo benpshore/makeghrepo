@@ -153,7 +153,10 @@ def main(
         typer.Option(
             "--dry-run",
             "-n",
-            help="Show a plan without writing files or making network requests; --render is separate.",
+            help=(
+                "Show a plan without writing files or making network requests; "
+                "--render is separate."
+            ),
         ),
     ] = False,
     show_version: Annotated[
