@@ -1,4 +1,9 @@
+import builtins
 import json
+import os
+from pathlib import Path
+import socket
+import subprocess
 
 import git
 import pytest
@@ -8,6 +13,52 @@ from makeghrepo import github, gitops, scaffold
 from makeghrepo.cli import app
 
 runner = CliRunner()
+
+
+@pytest.fixture
+def forbid_effects(monkeypatch):
+    """Make any filesystem write, subprocess, or network connection fail in dry-run tests."""
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("dry-run attempted an external or mutating operation")
+
+    original_open = builtins.open
+
+    def read_only_open(file, mode="r", *args, **kwargs):
+        if any(flag in mode for flag in "wax+"):
+            forbidden(file, mode, *args, **kwargs)
+        return original_open(file, mode, *args, **kwargs)
+
+    original_path_open = Path.open
+
+    def read_only_path_open(path, mode="r", *args, **kwargs):
+        if any(flag in mode for flag in "wax+"):
+            forbidden(path, mode, *args, **kwargs)
+        return original_path_open(path, mode, *args, **kwargs)
+
+    original_os_open = os.open
+    write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+
+    def read_only_os_open(path, flags, *args, **kwargs):
+        if flags & write_flags:
+            forbidden(path, flags, *args, **kwargs)
+        return original_os_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", read_only_open)
+    monkeypatch.setattr(Path, "open", read_only_path_open)
+    monkeypatch.setattr(Path, "write_text", forbidden)
+    monkeypatch.setattr(Path, "write_bytes", forbidden)
+    monkeypatch.setattr(Path, "mkdir", forbidden)
+    monkeypatch.setattr(Path, "touch", forbidden)
+    monkeypatch.setattr(os, "open", read_only_os_open)
+    monkeypatch.setattr(os, "mkdir", forbidden)
+    monkeypatch.setattr(os, "remove", forbidden)
+    monkeypatch.setattr(os, "rename", forbidden)
+    monkeypatch.setattr(os, "replace", forbidden)
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
 
 
 @pytest.fixture
@@ -125,6 +176,43 @@ def test_unsupported_license_is_rejected_before_github(tmp_path, monkeypatch):
     assert "arbitrary" in result.output
     assert calls == []
     assert not (tmp_path / "licensing").exists()
+
+
+def test_dry_run_shows_plan_without_effects(tmp_path, gh, forbid_effects):
+    result = runner.invoke(
+        app,
+        ["My Project", "python", "c++", "--private", "--license", "MIT", "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Project: my-project" in result.output
+    assert "Languages: python, cpp" in result.output
+    assert f"Destination: {tmp_path / 'my-project'}" in result.output
+    assert "Visibility requested: private" in result.output
+    assert "License requested: MIT" in result.output
+    assert "no files or directories were written" in result.output
+    assert "no network requests were made" in result.output
+    assert "Unverified:" in result.output
+    assert list(tmp_path.iterdir()) == []
+    assert gh["calls"] == []
+
+
+@pytest.mark.parametrize(
+    "args, message",
+    [
+        (["project", "cobol", "--dry-run"], "unknown language 'cobol'"),
+        (["project", "--dry-run", "--render", "preview"], "cannot be combined"),
+    ],
+)
+def test_dry_run_rejects_invalid_requests_without_effects(
+    tmp_path, gh, forbid_effects, args, message
+):
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 1
+    assert message in result.output
+    assert list(tmp_path.iterdir()) == []
+    assert gh["calls"] == []
 
 
 @pytest.mark.parametrize("choice", ["none", "MIT"])
