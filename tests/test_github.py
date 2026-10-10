@@ -27,6 +27,30 @@ def test_settings_match_shared_policy(private, github_defaults):
     assert github.settings_body(private) == expected
 
 
+def test_prepare_configuration_validates_identity_and_builds_payloads(calls, github_defaults):
+    configuration = github.prepare_configuration("me", private=False)
+
+    assert configuration.owner == "me"
+    assert configuration.owner_id == 123
+    assert configuration.private is False
+    assert (
+        configuration.settings["security_and_analysis"]["secret_scanning_push_protection"]
+        == {"status": "enabled"}
+    )
+    assert configuration.rulesets == (
+        github.ruleset_body(),
+        github.review_ruleset_body(123),
+    )
+    assert configuration.rulesets[0] == github_defaults["ruleset"]
+
+
+def test_prepare_configuration_rejects_mismatched_account_before_creation(monkeypatch):
+    monkeypatch.setattr(github, "api", lambda *_a, **_kw: {"login": "other", "id": 123})
+
+    with pytest.raises(github.GhError, match="verified matching personal account ID"):
+        github.prepare_configuration("me", private=False)
+
+
 class Calls(list):
     responses: dict
     fail_on: tuple
@@ -44,6 +68,8 @@ def calls(monkeypatch):
         joined = " ".join(args)
         if any(f in joined for f in recorded.fail_on):
             raise github.GhError(f"boom: {joined}")
+        if args == ("api", "-X", "GET", "user"):
+            return '{"login": "me", "id": 123}'
         if args == ("api", "-X", "GET", "repos/me/r"):
             return '{"owner": {"type": "User", "login": "me", "id": 123}}'
         fallback = "[]" if "rulesets?" in joined else ""
@@ -133,15 +159,20 @@ def _paths(calls):
     return [a[3] if a[0] == "api" else " ".join(a[:2]) for a, _ in calls]
 
 
-def test_public_settles_settings_before_fanout_before_ruleset(calls):
-    """Push protection precedes the push and ruleset. Other steps are independent."""
+def test_public_settings_and_rulesets_precede_first_push(calls):
+    """The empty repo is protected before main is published."""
     calls.responses.update({"GET": "[]", "graphql": _graphql_projects({"number": 1, "title": "r"})})
-    failed = github.configure_all("me/r", private=False, push=lambda: None, log=lambda _: None)
+
+    def push():
+        calls.append((("push-main",), None))
+
+    failed = github.configure_all("me/r", private=False, push=push, log=lambda _: None)
     assert failed == []
     paths = _paths(calls)
     settings_idx = paths.index("repos/me/r")
     ruleset_idx = paths.index("repos/me/r/rulesets?includes_parents=false&per_page=100&page=1")
-    assert settings_idx < ruleset_idx
+    push_idx = paths.index("push-main")
+    assert settings_idx < ruleset_idx < push_idx
     fanout_paths = {
         "repos/me/r/vulnerability-alerts",
         "repos/me/r/automated-security-fixes",
@@ -157,29 +188,27 @@ def test_public_settles_settings_before_fanout_before_ruleset(calls):
     assert mute == {"subscribed": False, "ignored": True}
 
 
-def test_ruleset_does_not_wait_for_slow_project(calls, monkeypatch):
-    project_started = threading.Event()
-    project_finished = threading.Event()
-    ruleset_started = threading.Event()
+def test_ruleset_finishes_before_independent_project_setup(calls, monkeypatch):
+    events = []
 
     def slow_project(_):
-        project_started.set()
-        ruleset_started.wait(0.5)
-        project_finished.set()
+        events.append("project")
+        time.sleep(0.1)
 
-    def check_ruleset(_):
-        assert project_started.wait(0.5)
-        assert not project_finished.is_set()
-        ruleset_started.set()
+    def check_ruleset(*_):
+        events.append("ruleset")
 
     monkeypatch.setattr(github, "configure_project", slow_project)
     monkeypatch.setattr(github, "configure_ruleset", check_ruleset)
-    failed = github.configure_all("me/r", private=False, push=lambda: None, log=lambda _: None)
+    failed = github.configure_all(
+        "me/r", private=False, push=lambda: events.append("push"), log=lambda _: None
+    )
     assert failed == []
-    assert project_finished.is_set()
+    assert events[0] == "ruleset"
+    assert "project" in events and "push" in events
 
 
-def test_push_failure_skips_ruleset_even_with_slow_project(calls, monkeypatch):
+def test_rulesets_are_installed_even_if_initial_push_later_fails(calls, monkeypatch):
     project_started = threading.Event()
 
     def slow_project(_):
@@ -195,7 +224,29 @@ def test_push_failure_skips_ruleset_even_with_slow_project(calls, monkeypatch):
     )
     assert failed == ["push main"]
     assert project_started.is_set()
-    assert not any("rulesets" in path for path in _paths(calls))
+    assert any("rulesets" in path for path in _paths(calls))
+
+
+def test_ruleset_failure_blocks_initial_push_and_can_be_retried(calls):
+    calls.fail_on = ("rulesets?includes_parents=false",)
+    pushed = []
+    logs = []
+
+    failed = github.configure_all(
+        "me/r", private=False, project=False, push=lambda: pushed.append(True), log=logs.append
+    )
+
+    assert failed == ["ruleset 'protect-main'", "push main"]
+    assert pushed == []
+    assert any("refusing to publish" in line for line in logs)
+    assert "push main" not in _paths(calls)
+
+    calls.fail_on = ()
+    failed = github.configure_all(
+        "me/r", private=False, project=False, push=lambda: pushed.append(True), log=lambda _: None
+    )
+    assert failed == []
+    assert pushed == [True]
 
 
 def test_private_skips_paid_features(calls):
@@ -281,20 +332,6 @@ def test_failures_are_collected_and_others_still_run(calls):
     # so a failure in either is reported under their combined name.
     assert failed == ["dependabot alerts + security fixes"]
     assert any("subscription" in p for p in _paths(calls))
-
-
-def test_push_failure_stops_before_ruleset(calls):
-    calls.responses["graphql"] = _graphql_projects({"number": 1, "title": "r"})
-
-    def bad_push():
-        raise RuntimeError("rejected")
-
-    failed = github.configure_all("me/r", private=False, push=bad_push, log=lambda _: None)
-    # push and project board are independent, concurrent fan-out steps: push
-    # failing doesn't stop project board from running (it's already in flight),
-    # it only skips the ruleset phase that comes strictly after the fan-out.
-    assert failed == ["push main"]
-    assert not any("rulesets" in p for p in _paths(calls))
 
 
 def test_fanout_failure_order_is_declared_not_completion(monkeypatch):

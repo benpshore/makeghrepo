@@ -19,9 +19,10 @@ def gh(tmp_path, monkeypatch):
     monkeypatch.setattr(github, "repo_exists", lambda r: r in state["existing"])
     monkeypatch.setattr(github, "is_private", lambda r: False)
     monkeypatch.setattr(github, "create_repo", lambda *a: state["calls"].append(("create", *a)))
+    monkeypatch.setattr(github, "prepare_configuration", lambda owner, private: (owner, private))
     monkeypatch.setattr(gitops, "remote_has_main", lambda _: False)
 
-    def configure_all(repo, *, private, push, log):
+    def configure_all(repo, *, private, configuration, push, log):
         state["calls"].append(("configure", repo, private, push is not None))
         return state["failed"]
 
@@ -40,6 +41,43 @@ def test_name_and_languages(tmp_path, gh):
     assert "pyproject.toml" in tracked and "src/main.cpp" in tracked
     assert gh["calls"][0][:3] == ("create", "me/my-repo", tmp_path / "my-repo")
     assert gh["calls"][1] == ("configure", "me/my-repo", False, True)
+
+
+def test_configuration_is_prepared_before_remote_creation(tmp_path, gh, monkeypatch):
+    events = []
+
+    def prepare(owner, private):
+        events.append("prepare")
+        return object()
+
+    monkeypatch.setattr(github, "prepare_configuration", prepare)
+    monkeypatch.setattr(github, "create_repo", lambda *args: events.append("create"))
+    monkeypatch.setattr(
+        github,
+        "configure_all",
+        lambda *args, **kwargs: events.append("configure") or [],
+    )
+
+    result = runner.invoke(app, ["ordered", "python"])
+
+    assert result.exit_code == 0, result.output
+    assert events == ["prepare", "create", "configure"]
+
+
+def test_configuration_preflight_failure_does_not_create_remote(tmp_path, gh, monkeypatch):
+    def fail_preflight(*args):
+        raise github.GhError("invalid owner identity")
+
+    monkeypatch.setattr(github, "prepare_configuration", fail_preflight)
+
+    result = runner.invoke(app, ["no-remote", "python"])
+
+    assert result.exit_code == 1
+    assert "No GitHub repository was created" in result.output
+    assert "Local project is intact" in result.output
+    assert gh["calls"] == []
+    assert gitops.read_marker(tmp_path / "no-remote") is not None
+    assert len(list(git.Repo(tmp_path / "no-remote").iter_commits())) == 1
 
 
 def test_no_args_random_name_any_language(tmp_path, gh):
@@ -196,6 +234,19 @@ def test_failed_steps_exit_2_with_rerun_hint(tmp_path, gh):
     result = runner.invoke(app, ["partial"])
     assert result.exit_code == 2
     assert "re-run: makeghrepo partial" in result.output
+
+
+def test_postcreation_settings_failure_keeps_remote_for_retry(tmp_path, gh):
+    gh["failed"] = ["ruleset 'protect-main'", "push main"]
+
+    result = runner.invoke(app, ["settings-failed", "python"])
+
+    assert result.exit_code == 2
+    assert gh["calls"][0][0] == "create"
+    assert gh["calls"][1][0] == "configure"
+    assert "repository was created but setup did not finish" in result.output
+    assert "does not delete it" in result.output
+    assert "re-run: makeghrepo settings-failed" in result.output
 
 
 def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):

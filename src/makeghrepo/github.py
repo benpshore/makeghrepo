@@ -10,6 +10,8 @@ import json
 import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,21 @@ LABELS = {"epic": "3E4B9E", "task": "C5DEF5"}
 
 class GhError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ConfigurationPlan:
+    """Settings payloads prepared before creating the repository resource.
+
+    Repository-scoped API calls still need the created repo. This plan only
+    captures request data and verifies the public-repo owner identity early.
+    """
+
+    owner: str
+    owner_id: int | None
+    private: bool
+    settings: dict[str, Any]
+    rulesets: tuple[dict[str, Any], ...]
 
 
 def gh(*args: str, body: Any = None) -> str:
@@ -58,8 +75,11 @@ def is_private(repo: str) -> bool:
 
 
 def create_repo(repo: str, source: Path, description: str, private: bool) -> None:
-    """Create an empty repo and add it as ``origin``. The push happens later, in
-    configure_all, once push protection is on."""
+    """Create an empty repo and add it as ``origin``.
+
+    Repo-scoped settings cannot be applied until GitHub has created this resource;
+    configure_all installs the required protections before the initial main push.
+    """
     gh("repo", "create", repo, "--private" if private else "--public",
        "--description", description, "--source", str(source), "--remote", "origin")  # fmt: skip
 
@@ -113,8 +133,50 @@ def review_ruleset_body(owner_id: int) -> dict[str, Any]:
     }
 
 
-def configure_ruleset(repo: str) -> None:
-    # Use GitHub's repository owner, never the caller or commit author identity.
+def prepare_configuration(owner_login: str, private: bool) -> ConfigurationPlan:
+    """Prepare and validate payloads before creating the GitHub repository.
+
+    Public rulesets need the personal account ID as a bypass actor. Fetch and
+    validate it now so identity or serialization errors cannot strand a newly
+    created, unprotected repository. The later repo-scoped call verifies that
+    the created repo has this same owner before installing those rules.
+    """
+    owner_id = None
+    rulesets: tuple[dict[str, Any], ...] = ()
+    if not private:
+        try:
+            user = api("GET", "user")
+        except (GhError, ValueError) as exc:
+            raise GhError(
+                f"could not verify the public repository owner before creation: {exc}"
+            ) from exc
+        candidate = user.get("id") if isinstance(user, dict) else None
+        login = user.get("login") if isinstance(user, dict) else None
+        if (
+            not isinstance(candidate, int)
+            or isinstance(candidate, bool)
+            or not 0 < candidate < 2**64
+            or not isinstance(login, str)
+            or login.casefold() != owner_login.casefold()
+        ):
+            raise GhError("owner push bypass requires a verified matching personal account ID")
+        owner_id = candidate
+        rulesets = (ruleset_body(), review_ruleset_body(owner_id))
+
+    settings = settings_body(private)
+    try:
+        # Validate the exact payload shapes that will later be sent to GitHub.
+        json.dumps({"settings": settings, "rulesets": rulesets})
+    except (TypeError, ValueError) as exc:
+        raise GhError("could not prepare GitHub settings before repository creation") from exc
+    return ConfigurationPlan(owner_login, owner_id, private, settings, rulesets)
+
+
+def configure_ruleset(
+    repo: str, configuration: ConfigurationPlan | None = None
+) -> None:
+    # The repository exists now; confirm its owner is a personal account before
+    # installing a bypass. The CLI also compares it with the precreation plan.
     owner = api("GET", f"repos/{repo}")["owner"]
     owner_id = owner.get("id")
     if (
@@ -122,11 +184,22 @@ def configure_ruleset(repo: str) -> None:
         or not isinstance(owner_id, int)
         or isinstance(owner_id, bool)
         or not 0 < owner_id < 2**64
-        or owner.get("login", "").lower() != repo.split("/")[0].lower()
+        or (
+            configuration is not None
+            and (
+                owner_id != configuration.owner_id
+                or owner.get("login", "").casefold() != configuration.owner.casefold()
+                or configuration.private
+            )
+        )
     ):
         raise GhError("owner push bypass requires a personal repository with a verified owner ID")
 
-    bodies = [ruleset_body(), review_ruleset_body(owner_id)]
+    bodies = (
+        deepcopy(configuration.rulesets)
+        if configuration is not None
+        else [ruleset_body(), review_ruleset_body(owner_id)]
+    )
     existing = []
     page = 1
     while True:
@@ -268,22 +341,34 @@ def configure_all(
     repo: str,
     *,
     private: bool,
+    configuration: ConfigurationPlan | None = None,
     project: bool = True,
     push: Callable[[], object] | None = None,
     log: Callable[[str], None] = print,
 ) -> list[str]:
-    """Apply every setting; return the names of failed steps (the rest still run).
+    """Apply repo-scoped settings and return failed steps for a safe retry.
 
-    Repo settings settle before the push. Independent steps then run concurrently;
-    the ruleset starts as soon as the push succeeds, without waiting for Project
-    board lookup or other unrelated steps to finish.
+    The CLI prepares payloads before creation. GitHub settings, Actions
+    permissions, rulesets, labels, Dependabot, and Project linking are repo-scoped
+    and require the created repository. Public rulesets and secret-scanning push
+    protection (or private Actions disablement) must settle before an initial
+    push. Remaining independent steps then run concurrently.
 
-    Publishing is gated on the relevant protection step: public repo settings
-    enable secret-scanning push protection; private repos must have Actions
-    disabled. If that prerequisite fails, independent settings still run, but
-    the push and the ruleset for that unpushed main are skipped. A settings-only
-    retry (push=None) can still repair protection on an existing main.
+    Creation and configuration are separate GitHub operations, not an atomic
+    transaction. On a post-creation failure the empty/partially configured repo
+    remains for an idempotent retry; it is never deleted as rollback. If a
+    prerequisite fails, independent settings still run, but main is not pushed.
+    A settings-only retry (push=None) can still repair protections on an existing
+    main.
     """
+    if configuration is None:
+        configuration = prepare_configuration(repo.split("/", 1)[0], private)
+    if (
+        configuration.private != private
+        or configuration.owner.casefold() != repo.split("/", 1)[0].casefold()
+    ):
+        raise GhError("prepared GitHub settings do not match repository owner or visibility")
+
     failed: list[str] = []
 
     def run(fn: Callable[[], object]) -> Exception | None:
@@ -304,13 +389,20 @@ def configure_all(
         # gate — the local smoke test is the only gate left for these repos.
         log("  - private repo: skipping ruleset, secret scanning, vuln reporting (need paid plan)")
 
-    settings_err = run(lambda: api("PATCH", f"repos/{repo}", settings_body(private)))
+    settings_err = run(lambda: api("PATCH", f"repos/{repo}", configuration.settings))
     report("repo settings", settings_err)
     actions_disabled = True  # only meaningful, and only checked below, when private
     if private:
         actions_err = run(lambda: disable_actions(repo))
         report("disable actions", actions_err)
         actions_disabled = actions_err is None
+
+    ruleset_err = None
+    # Install default-branch rules before the first push. Existing-main retries
+    # still repair the ruleset even if the settings PATCH failed.
+    if not private and (push is None or settings_err is None):
+        ruleset_err = run(lambda: configure_ruleset(repo, configuration))
+        report(f"ruleset '{RULESET_NAME}'", ruleset_err)
 
     fanout: list[tuple[str, Callable[[], object]]] = [
         # One task, alerts before fixes: enabling automated fixes while alerts
@@ -334,18 +426,24 @@ def configure_all(
     ]  # fmt: skip
     if project:
         fanout.append(("project board", lambda: configure_project(repo)))
-    push_blocked = bool(push) and (
-        not actions_disabled or (not private and settings_err is not None)
+    push_blocked = push is not None and (
+        not actions_disabled
+        or (not private and (settings_err is not None or ruleset_err is not None))
     )
-    if push and not actions_disabled:
+    if push is not None and not actions_disabled:
         # Refuse to push rather than risk a run: disabling Actions is the one
         # thing standing between a private repo and burning its own minutes.
         log("  - push main: skipped (couldn't disable Actions; refusing to risk a run)")
         failed.append("push main")
     elif push_blocked:
-        log("  - push main: skipped (couldn't enable push protection; refusing to publish)")
+        reason = (
+            "couldn't enable push protection"
+            if settings_err is not None
+            else "couldn't install public branch rulesets"
+        )
+        log(f"  - push main: skipped ({reason}; refusing to publish)")
         failed.append("push main")
-    elif push:
+    elif push is not None:
         fanout.append(("push main", push))
 
     # Submit the push first so a slow Project lookup cannot occupy its slot.
@@ -353,23 +451,14 @@ def configure_all(
     with ThreadPoolExecutor(max_workers=min(4, len(fanout))) as pool:
         futures = {}
         push_index = None
-        if push and not push_blocked:
+        if push is not None and not push_blocked:
             push_index = next(i for i, (_, fn) in enumerate(fanout) if fn is push)
             futures[push_index] = pool.submit(run, push)
         for i, (_, fn) in enumerate(fanout):
             if i not in futures:
                 futures[i] = pool.submit(run, fn)
-        push_failed = push_index is not None and futures[push_index].result() is not None
-        ruleset_err = (
-            run(lambda: configure_ruleset(repo))
-            if not private and not push_blocked and not push_failed
-            else None
-        )
         errors = [futures[i].result() for i in range(len(fanout))]
     for (name, _), err in zip(fanout, errors, strict=True):
         report(name, err)
-
-    if not private and not push_blocked and not push_failed:
-        report(f"ruleset '{RULESET_NAME}'", ruleset_err)
 
     return failed

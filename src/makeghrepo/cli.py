@@ -243,9 +243,27 @@ def main(
             private = actual_private
         else:
             private = want_private
-            github.create_repo(repo, dest, name, private)
     except github.GhError as exc:
         raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
+
+    try:
+        configuration = github.prepare_configuration(owner, private)
+    except github.GhError as exc:
+        recovery = (
+            "No GitHub repository was created."
+            if not on_github
+            else "No GitHub settings were changed."
+        )
+        raise fail(
+            f"GitHub configuration preflight failed: {exc}\n{recovery} "
+            "Local project is intact; fix the issue and re-run."
+        ) from exc
+
+    if not on_github:
+        try:
+            github.create_repo(repo, dest, name, private)
+        except github.GhError as exc:
+            raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
 
     # Bootstrap only: a configuration rerun must never publish subsequent local work.
     try:
@@ -256,8 +274,15 @@ def main(
             "Local project is intact; re-run to retry."
         ) from exc
     push = None if pushed else lambda: gitops.push_main(dest)
-    failed = github.configure_all(repo, private=private, push=push, log=typer.echo)
+    failed = github.configure_all(
+        repo, private=private, configuration=configuration, push=push, log=typer.echo
+    )
     typer.echo(f"\nhttps://github.com/{repo}\ncd {dest}")
     if failed:
+        if not on_github:
+            typer.echo(
+                "The GitHub repository was created but setup did not finish. "
+                "It remains available for retry; makeghrepo does not delete it."
+            )
         typer.echo(f"{len(failed)} step(s) failed. Fix, then re-run: makeghrepo {name}")
         raise typer.Exit(2)
