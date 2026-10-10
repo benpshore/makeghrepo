@@ -133,6 +133,10 @@ Both commands support `NAME LANG... --render DIR` for offline previews. Rust als
 supports `--snapshot [--combo NAME]` for golden comparisons. CI builds and tests
 Rust; using the prebuilt distribution requires no local compiler.
 
+The Python-only `--dry-run` option and explicit `refs/heads/main` ruleset scope
+are not yet implemented by the Rust command, whose rulesets remain scoped to the
+repository's default branch.
+
 ## Develop
 
 ```sh
