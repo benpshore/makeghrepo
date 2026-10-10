@@ -90,9 +90,7 @@ def _dry_run(
     base_dir = Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")).expanduser().resolve()
     try:
         if raw_name is None:
-            name = names.unique_random_name(
-                lambda candidate: (base_dir / candidate).exists()
-            )
+            name = names.unique_random_name(lambda candidate: (base_dir / candidate).exists())
         else:
             name = names.validate_name(names.normalize_name(raw_name))
         _project_name(name, langs)
