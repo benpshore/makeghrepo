@@ -152,6 +152,7 @@ def main(
         bool,
         typer.Option(
             "--dry-run",
+            "-n",
             help="Show a plan without writing files or making network requests; --render is separate.",
         ),
     ] = False,

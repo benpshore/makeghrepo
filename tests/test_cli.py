@@ -59,6 +59,21 @@ def forbid_effects(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     monkeypatch.setattr(socket, "create_connection", forbidden)
     monkeypatch.setattr(socket.socket, "connect", forbidden)
+    for function in (
+        "api",
+        "gh",
+        "current_user",
+        "repo_exists",
+        "is_private",
+        "prepare_configuration",
+        "create_repo",
+        "configure_all",
+    ):
+        monkeypatch.setattr(github, function, forbidden)
+    monkeypatch.setattr(scaffold, "render", forbidden)
+    monkeypatch.setattr(scaffold, "smoke_test", forbidden)
+    for function in ("init", "write_marker", "ensure_identity", "commit_all", "push_main"):
+        monkeypatch.setattr(gitops, function, forbidden)
 
 
 @pytest.fixture
@@ -178,10 +193,11 @@ def test_unsupported_license_is_rejected_before_github(tmp_path, monkeypatch):
     assert not (tmp_path / "licensing").exists()
 
 
-def test_dry_run_shows_plan_without_effects(tmp_path, gh, forbid_effects):
+@pytest.mark.parametrize("dry_flag", ["--dry-run", "-n"])
+def test_dry_run_shows_plan_without_effects(tmp_path, gh, forbid_effects, dry_flag):
     result = runner.invoke(
         app,
-        ["My Project", "python", "c++", "--private", "--license", "MIT", "--dry-run"],
+        ["My Project", "python", "c++", "--private", "--license", "MIT", dry_flag],
     )
 
     assert result.exit_code == 0, result.output
@@ -197,17 +213,18 @@ def test_dry_run_shows_plan_without_effects(tmp_path, gh, forbid_effects):
     assert gh["calls"] == []
 
 
+@pytest.mark.parametrize("dry_flag", ["--dry-run", "-n"])
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["project", "cobol", "--dry-run"], "unknown language 'cobol'"),
-        (["project", "--dry-run", "--render", "preview"], "cannot be combined"),
+        (["project", "cobol"], "unknown language 'cobol'"),
+        (["project", "--render", "preview"], "cannot be combined"),
     ],
 )
 def test_dry_run_rejects_invalid_requests_without_effects(
-    tmp_path, gh, forbid_effects, args, message
+    tmp_path, gh, forbid_effects, args, message, dry_flag
 ):
-    result = runner.invoke(app, args)
+    result = runner.invoke(app, [*args, dry_flag])
 
     assert result.exit_code == 1
     assert message in result.output
