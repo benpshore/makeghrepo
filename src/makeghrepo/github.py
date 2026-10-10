@@ -199,9 +199,7 @@ def prepare_configuration(owner_login: str, private: bool) -> ConfigurationPlan:
     return ConfigurationPlan(owner_login, owner_id, private, settings, rulesets)
 
 
-def configure_ruleset(
-    repo: str, configuration: ConfigurationPlan | None = None
-) -> None:
+def configure_ruleset(repo: str, configuration: ConfigurationPlan | None = None) -> None:
     # The repository exists now; confirm its owner is a personal account before
     # installing a bypass. The CLI also compares it with the precreation plan.
     owner = api("GET", f"repos/{repo}")["owner"]

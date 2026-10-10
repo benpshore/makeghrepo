@@ -33,10 +33,9 @@ def test_prepare_configuration_validates_identity_and_builds_payloads(calls, git
     assert configuration.owner == "me"
     assert configuration.owner_id == 123
     assert configuration.private is False
-    assert (
-        configuration.settings["security_and_analysis"]["secret_scanning_push_protection"]
-        == {"status": "enabled"}
-    )
+    assert configuration.settings["security_and_analysis"]["secret_scanning_push_protection"] == {
+        "status": "enabled"
+    }
     assert configuration.rulesets == github._ruleset_bodies(123)
     assert {
         **configuration.rulesets[0],
@@ -56,9 +55,7 @@ def test_configured_rulesets_cover_main_and_nonmain_default(calls):
     github.configure_ruleset("me/r", configuration)
     mocked_repo = {"default_branch": "develop"}
     posted = [
-        body
-        for args, body in calls
-        if args[:4] == ("api", "-X", "POST", "repos/me/r/rulesets")
+        body for args, body in calls if args[:4] == ("api", "-X", "POST", "repos/me/r/rulesets")
     ]
     assert len(posted) == 2
 
