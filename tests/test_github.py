@@ -37,11 +37,41 @@ def test_prepare_configuration_validates_identity_and_builds_payloads(calls, git
         configuration.settings["security_and_analysis"]["secret_scanning_push_protection"]
         == {"status": "enabled"}
     )
-    assert configuration.rulesets == (
-        github.ruleset_body(),
-        github.review_ruleset_body(123),
-    )
-    assert configuration.rulesets[0] == github_defaults["ruleset"]
+    assert configuration.rulesets == github._ruleset_bodies(123)
+    assert {
+        **configuration.rulesets[0],
+        "conditions": github_defaults["ruleset"]["conditions"],
+    } == github_defaults["ruleset"]
+    assert "refs/heads/main" in configuration.rulesets[0]["conditions"]["ref_name"]["include"]
+    assert configuration.rulesets[0]["rules"] == github_defaults["ruleset"]["rules"]
+    assert configuration.rulesets[0]["bypass_actors"] == []
+    assert configuration.rulesets[1]["rules"] == github_defaults["review_ruleset"]["rules"]
+    assert configuration.rulesets[1]["bypass_actors"] == [
+        {"actor_type": "User", "actor_id": 123, "bypass_mode": "always"}
+    ]
+
+
+def test_configured_rulesets_cover_main_and_nonmain_default(calls):
+    configuration = github.prepare_configuration("me", private=False)
+    github.configure_ruleset("me/r", configuration)
+    mocked_repo = {"default_branch": "develop"}
+    posted = [
+        body
+        for args, body in calls
+        if args[:4] == ("api", "-X", "POST", "repos/me/r/rulesets")
+    ]
+    assert len(posted) == 2
+
+    def applies(body, branch):
+        include = body["conditions"]["ref_name"]["include"]
+        return f"refs/heads/{branch}" in include or (
+            "~DEFAULT_BRANCH" in include and branch == mocked_repo["default_branch"]
+        )
+
+    for body in posted:
+        assert applies(body, "main")
+        assert applies(body, mocked_repo["default_branch"])
+        assert not applies(body, "feature")
 
 
 def test_prepare_configuration_rejects_mismatched_account_before_creation(monkeypatch):
@@ -49,6 +79,31 @@ def test_prepare_configuration_rejects_mismatched_account_before_creation(monkey
 
     with pytest.raises(github.GhError, match="verified matching personal account ID"):
         github.prepare_configuration("me", private=False)
+
+
+def test_configure_ruleset_rejects_owner_login_mismatch_without_plan(monkeypatch):
+    calls = []
+
+    def fake_api(method, path, body=None):
+        calls.append((method, path, body))
+        return {"owner": {"type": "User", "login": "someone-else", "id": 123}}
+
+    monkeypatch.setattr(github, "api", fake_api)
+
+    with pytest.raises(github.GhError, match="personal repository with a verified owner ID"):
+        github.configure_ruleset("me/r")
+
+    assert calls == [("GET", "repos/me/r", None)]
+
+
+def test_default_only_ruleset_scope_migrates_additively():
+    desired = github._ruleset_bodies(123)[0]["conditions"]
+    previous = {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}
+
+    assert github._scope_matches(previous, desired)
+    assert not github._scope_matches(
+        {"ref_name": {"include": ["refs/heads/develop"], "exclude": []}}, desired
+    )
 
 
 class Calls(list):
@@ -71,7 +126,12 @@ def calls(monkeypatch):
         if args == ("api", "-X", "GET", "user"):
             return '{"login": "me", "id": 123}'
         if args == ("api", "-X", "GET", "repos/me/r"):
-            return '{"owner": {"type": "User", "login": "me", "id": 123}}'
+            return json.dumps(
+                {
+                    "owner": {"type": "User", "login": "me", "id": 123},
+                    "default_branch": "develop",
+                }
+            )
         fallback = "[]" if "rulesets?" in joined else ""
         return next((v for k, v in recorded.responses.items() if k in joined), fallback)
 

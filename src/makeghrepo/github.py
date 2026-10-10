@@ -20,6 +20,7 @@ REVIEW_RULESET_NAME = "require-pr-and-ci"
 REQUIRED_CHECK = "ci"  # must match the job name in templates/*/.github/workflows/ci.yml
 GITHUB_ACTIONS_APP_ID = 15368  # only GitHub Actions may satisfy the required check
 LABELS = {"epic": "3E4B9E", "task": "C5DEF5"}
+MAIN_REF = "refs/heads/main"
 
 
 class GhError(RuntimeError):
@@ -133,6 +134,32 @@ def review_ruleset_body(owner_id: int) -> dict[str, Any]:
     }
 
 
+def _with_main_scope(body: dict[str, Any]) -> dict[str, Any]:
+    """Keep default-branch rules and explicitly protect the bootstrap branch."""
+    result = deepcopy(body)
+    include = result["conditions"]["ref_name"]["include"]
+    if MAIN_REF not in include:
+        include.append(MAIN_REF)
+    return result
+
+
+def _ruleset_bodies(owner_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    history, review = ruleset_body(), review_ruleset_body(owner_id)
+    return _with_main_scope(history), _with_main_scope(review)
+
+
+def _scope_matches(saved: Any, desired: dict[str, Any]) -> bool:
+    """Accept the previous default-only scope for safe additive migration."""
+    if saved == desired:
+        return True
+    previous = deepcopy(desired)
+    include = previous["ref_name"]["include"]
+    if MAIN_REF not in include:
+        return False
+    include.remove(MAIN_REF)
+    return saved == previous
+
+
 def prepare_configuration(owner_login: str, private: bool) -> ConfigurationPlan:
     """Prepare and validate payloads before creating the GitHub repository.
 
@@ -161,7 +188,7 @@ def prepare_configuration(owner_login: str, private: bool) -> ConfigurationPlan:
         ):
             raise GhError("owner push bypass requires a verified matching personal account ID")
         owner_id = candidate
-        rulesets = (ruleset_body(), review_ruleset_body(owner_id))
+        rulesets = _ruleset_bodies(owner_id)
 
     settings = settings_body(private)
     try:
@@ -179,11 +206,15 @@ def configure_ruleset(
     # installing a bypass. The CLI also compares it with the precreation plan.
     owner = api("GET", f"repos/{repo}")["owner"]
     owner_id = owner.get("id")
+    repo_owner = repo.split("/", 1)[0]
+    owner_login = owner.get("login")
     if (
         owner.get("type") != "User"
         or not isinstance(owner_id, int)
         or isinstance(owner_id, bool)
         or not 0 < owner_id < 2**64
+        or not isinstance(owner_login, str)
+        or owner_login.casefold() != repo_owner.casefold()
         or (
             configuration is not None
             and (
@@ -198,7 +229,7 @@ def configure_ruleset(
     bodies = (
         deepcopy(configuration.rulesets)
         if configuration is not None
-        else [ruleset_body(), review_ruleset_body(owner_id)]
+        else list(_ruleset_bodies(owner_id))
     )
     existing = []
     page = 1
@@ -223,8 +254,10 @@ def configure_ruleset(
         if matches:
             ids[name] = matches[0]["id"]
             saved = api("GET", f"repos/{repo}/rulesets/{ids[name]}")
-            if any(saved.get(k) != body[k] for k in ("target", "enforcement", "conditions")) or (
-                saved.get("bypass_actors") not in ([], body["bypass_actors"])
+            if (
+                any(saved.get(k) != body[k] for k in ("target", "enforcement"))
+                or not _scope_matches(saved.get("conditions"), body["conditions"])
+                or saved.get("bypass_actors") not in ([], body["bypass_actors"])
             ):
                 raise GhError(f"customized ruleset {name!r}; review its scope/bypasses manually")
             for rule in saved["rules"]:
