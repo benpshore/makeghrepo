@@ -239,9 +239,9 @@ def test_public_settings_and_rulesets_precede_first_push(calls):
     fanout_indices = [i for i, p in enumerate(paths) if p in fanout_paths]
     assert len(fanout_indices) == len(fanout_paths)  # sanity: all of them actually ran
     assert all(settings_idx < i for i in fanout_indices)
-    patch = next(b for a, b in calls if a[2] == "PATCH")
+    patch = next(b for a, b in calls if len(a) > 2 and a[2] == "PATCH")
     assert "secret_scanning_push_protection" in patch["security_and_analysis"]
-    mute = next(b for a, b in calls if a[3].endswith("/subscription"))
+    mute = next(b for a, b in calls if len(a) > 3 and a[3].endswith("/subscription"))
     assert mute == {"subscribed": False, "ignored": True}
 
 

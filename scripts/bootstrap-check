@@ -123,6 +123,8 @@ def gh_fixture(args):
                     "owner": {"type": "User", "login": OWNER, "id": OWNER_ID},
                 }
             )
+        if method == "GET" and path == "user":
+            return 0, json.dumps({"login": OWNER, "id": OWNER_ID})
         if method == "PATCH" and path == prefix:
             if state.get("failure") == "settings":
                 event["succeeded"] = False

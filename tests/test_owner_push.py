@@ -47,6 +47,7 @@ class OwnerPushTests(unittest.TestCase):
         )
         self.history = self.defaults["ruleset"]
         self.review = self.defaults["review_ruleset"]
+        self.protect_main, self.require_pr = github._ruleset_bodies(123)
 
     def legacy(self):
         return {
@@ -67,7 +68,7 @@ class OwnerPushTests(unittest.TestCase):
                     for _ in range(2):
                         api.calls.clear()
                         github.configure_ruleset("me/r")
-                        assert [c[2] for c in api.writes] == [self.review, self.history]
+                        assert [c[2] for c in api.writes] == [self.require_pr, self.protect_main]
                         assert {v["name"] for v in api.state.values()} == {
                             "another-rule",
                             "protect-main",
