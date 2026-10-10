@@ -1,4 +1,9 @@
+import builtins
 import json
+import os
+import socket
+import subprocess
+from pathlib import Path
 
 import git
 import pytest
@@ -11,6 +16,67 @@ runner = CliRunner()
 
 
 @pytest.fixture
+def forbid_effects(monkeypatch):
+    """Make any filesystem write, subprocess, or network connection fail in dry-run tests."""
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("dry-run attempted an external or mutating operation")
+
+    original_open = builtins.open
+
+    def read_only_open(file, mode="r", *args, **kwargs):
+        if any(flag in mode for flag in "wax+"):
+            forbidden(file, mode, *args, **kwargs)
+        return original_open(file, mode, *args, **kwargs)
+
+    original_path_open = Path.open
+
+    def read_only_path_open(path, mode="r", *args, **kwargs):
+        if any(flag in mode for flag in "wax+"):
+            forbidden(path, mode, *args, **kwargs)
+        return original_path_open(path, mode, *args, **kwargs)
+
+    original_os_open = os.open
+    write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+
+    def read_only_os_open(path, flags, *args, **kwargs):
+        if flags & write_flags:
+            forbidden(path, flags, *args, **kwargs)
+        return original_os_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", read_only_open)
+    monkeypatch.setattr(Path, "open", read_only_path_open)
+    monkeypatch.setattr(Path, "write_text", forbidden)
+    monkeypatch.setattr(Path, "write_bytes", forbidden)
+    monkeypatch.setattr(Path, "mkdir", forbidden)
+    monkeypatch.setattr(Path, "touch", forbidden)
+    monkeypatch.setattr(os, "open", read_only_os_open)
+    monkeypatch.setattr(os, "mkdir", forbidden)
+    monkeypatch.setattr(os, "remove", forbidden)
+    monkeypatch.setattr(os, "rename", forbidden)
+    monkeypatch.setattr(os, "replace", forbidden)
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    for function in (
+        "api",
+        "gh",
+        "current_user",
+        "repo_exists",
+        "is_private",
+        "prepare_configuration",
+        "create_repo",
+        "configure_all",
+    ):
+        monkeypatch.setattr(github, function, forbidden)
+    monkeypatch.setattr(scaffold, "render", forbidden)
+    monkeypatch.setattr(scaffold, "smoke_test", forbidden)
+    for function in ("init", "write_marker", "ensure_identity", "commit_all", "push_main"):
+        monkeypatch.setattr(gitops, function, forbidden)
+
+
+@pytest.fixture
 def gh(tmp_path, monkeypatch):
     """Fake GitHub: records calls; repos in `existing` already exist."""
     state = {"calls": [], "existing": set(), "failed": []}
@@ -19,9 +85,10 @@ def gh(tmp_path, monkeypatch):
     monkeypatch.setattr(github, "repo_exists", lambda r: r in state["existing"])
     monkeypatch.setattr(github, "is_private", lambda r: False)
     monkeypatch.setattr(github, "create_repo", lambda *a: state["calls"].append(("create", *a)))
+    monkeypatch.setattr(github, "prepare_configuration", lambda owner, private: (owner, private))
     monkeypatch.setattr(gitops, "remote_has_main", lambda _: False)
 
-    def configure_all(repo, *, private, push, log):
+    def configure_all(repo, *, private, configuration, push, log):
         state["calls"].append(("configure", repo, private, push is not None))
         return state["failed"]
 
@@ -40,6 +107,43 @@ def test_name_and_languages(tmp_path, gh):
     assert "pyproject.toml" in tracked and "src/main.cpp" in tracked
     assert gh["calls"][0][:3] == ("create", "me/my-repo", tmp_path / "my-repo")
     assert gh["calls"][1] == ("configure", "me/my-repo", False, True)
+
+
+def test_configuration_is_prepared_before_remote_creation(tmp_path, gh, monkeypatch):
+    events = []
+
+    def prepare(owner, private):
+        events.append("prepare")
+        return object()
+
+    monkeypatch.setattr(github, "prepare_configuration", prepare)
+    monkeypatch.setattr(github, "create_repo", lambda *args: events.append("create"))
+    monkeypatch.setattr(
+        github,
+        "configure_all",
+        lambda *args, **kwargs: events.append("configure") or [],
+    )
+
+    result = runner.invoke(app, ["ordered", "python"])
+
+    assert result.exit_code == 0, result.output
+    assert events == ["prepare", "create", "configure"]
+
+
+def test_configuration_preflight_failure_does_not_create_remote(tmp_path, gh, monkeypatch):
+    def fail_preflight(*args):
+        raise github.GhError("invalid owner identity")
+
+    monkeypatch.setattr(github, "prepare_configuration", fail_preflight)
+
+    result = runner.invoke(app, ["no-remote", "python"])
+
+    assert result.exit_code == 1
+    assert "No GitHub repository was created" in result.output
+    assert "Local project is intact" in result.output
+    assert gh["calls"] == []
+    assert gitops.read_marker(tmp_path / "no-remote") is not None
+    assert len(list(git.Repo(tmp_path / "no-remote").iter_commits())) == 1
 
 
 def test_no_args_random_name_any_language(tmp_path, gh):
@@ -87,6 +191,45 @@ def test_unsupported_license_is_rejected_before_github(tmp_path, monkeypatch):
     assert "arbitrary" in result.output
     assert calls == []
     assert not (tmp_path / "licensing").exists()
+
+
+@pytest.mark.parametrize("dry_flag", ["--dry-run", "-n"])
+def test_dry_run_shows_plan_without_effects(tmp_path, gh, forbid_effects, dry_flag):
+    result = runner.invoke(
+        app,
+        ["My Project", "python", "c++", "--private", "--license", "MIT", dry_flag],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Project: my-project" in result.output
+    assert "Languages: python, cpp" in result.output
+    assert f"Destination: {tmp_path / 'my-project'}" in result.output
+    assert "Visibility requested: private" in result.output
+    assert "License requested: MIT" in result.output
+    assert "no files or directories were written" in result.output
+    assert "no network requests were made" in result.output
+    assert "Unverified:" in result.output
+    assert list(tmp_path.iterdir()) == []
+    assert gh["calls"] == []
+
+
+@pytest.mark.parametrize("dry_flag", ["--dry-run", "-n"])
+@pytest.mark.parametrize(
+    "args, message",
+    [
+        (["project", "cobol"], "unknown language 'cobol'"),
+        (["project", "--render", "preview"], "cannot be combined"),
+    ],
+)
+def test_dry_run_rejects_invalid_requests_without_effects(
+    tmp_path, gh, forbid_effects, args, message, dry_flag
+):
+    result = runner.invoke(app, [*args, dry_flag])
+
+    assert result.exit_code == 1
+    assert message in result.output
+    assert list(tmp_path.iterdir()) == []
+    assert gh["calls"] == []
 
 
 @pytest.mark.parametrize("choice", ["none", "MIT"])
@@ -196,6 +339,19 @@ def test_failed_steps_exit_2_with_rerun_hint(tmp_path, gh):
     result = runner.invoke(app, ["partial"])
     assert result.exit_code == 2
     assert "re-run: makeghrepo partial" in result.output
+
+
+def test_postcreation_settings_failure_keeps_remote_for_retry(tmp_path, gh):
+    gh["failed"] = ["ruleset 'protect-main'", "push main"]
+
+    result = runner.invoke(app, ["settings-failed", "python"])
+
+    assert result.exit_code == 2
+    assert gh["calls"][0][0] == "create"
+    assert gh["calls"][1][0] == "configure"
+    assert "repository was created but setup did not finish" in result.output
+    assert "does not delete it" in result.output
+    assert "re-run: makeghrepo settings-failed" in result.output
 
 
 def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):

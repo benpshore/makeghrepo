@@ -50,6 +50,77 @@ def _project_name(raw: str, langs: list[str]) -> str:
     return name
 
 
+def _language(word: str) -> str | None:
+    """Resolve a registry language token without loading the template renderer."""
+    word = word.lower()
+    if word in LANGS:
+        return word
+    return next((lang.id for lang in LANGS.values() if word in lang.aliases), None)
+
+
+def _dry_run(
+    words: list[str],
+    *,
+    private: bool,
+    lib: bool,
+    project_license: ProjectLicense | None,
+    render: Path | None,
+    owner: str | None,
+    author: str | None,
+    description: str | None,
+    year: str | None,
+) -> None:
+    """Show a local bootstrap plan without importing or invoking effectful code."""
+    if render is not None:
+        raise fail("--dry-run cannot be combined with --render; --render writes preview files")
+    if any(value is not None for value in (owner, author, description, year)):
+        raise fail("--owner, --author, --description and --year require --render")
+
+    raw_name = words.pop(0) if words and _language(words[0]) is None else None
+    langs: list[str] = []
+    for word in words:
+        lang = _language(word)
+        if lang is None:
+            raise fail(f"unknown language {word!r}. Choose from: {', '.join(LANGS)}")
+        if lang not in langs:
+            langs.append(lang)
+    if lib and "python" not in langs:
+        raise fail("--lib only applies to python; add `python` to the language list")
+
+    base_dir = Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")).expanduser().resolve()
+    try:
+        if raw_name is None:
+            name = names.unique_random_name(lambda candidate: (base_dir / candidate).exists())
+        else:
+            name = names.validate_name(names.normalize_name(raw_name))
+        _project_name(name, langs)
+    except (ValueError, RuntimeError, FileNotFoundError) as exc:
+        raise fail(str(exc)) from exc
+
+    dest = base_dir / name
+    exists = dest.exists()
+    typer.echo("Dry run only: no files or directories were written; no network requests were made.")
+    typer.echo(f"Project: {name}")
+    typer.echo(f"Languages: {', '.join(langs) or 'any language'}")
+    typer.echo(f"Destination: {dest}")
+    typer.echo(f"Destination already exists: {'yes' if exists else 'no'}")
+    typer.echo(f"Visibility requested: {'private' if private else 'public'}")
+    typer.echo(f"License requested: {(project_license or ProjectLicense.NONE).value}")
+    typer.echo(f"Python library layout: {'yes' if lib else 'no'}")
+    typer.echo(
+        "Plan: inspect resume state, render and check a new project if needed, "
+        "prepare GitHub settings,"
+    )
+    typer.echo(
+        "then create or resume the repository, apply settings, and push main "
+        "after protections pass."
+    )
+    typer.echo(
+        "Unverified: GitHub identity/authentication, repository availability and remote state, "
+        "local resume metadata, and local tool availability."
+    )
+
+
 @app.command(
     help="Create a new GitHub repo, fully configured. Re-run the same command to resume.\n\n"
     f"Languages (any number, or none): {', '.join(LANGS)}.",
@@ -77,6 +148,17 @@ def main(
             "--render", metavar="DIR", help="Render offline into DIR; no checks, repo or GitHub."
         ),
     ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            "-n",
+            help=(
+                "Show a plan without writing files or making network requests; "
+                "--render is separate."
+            ),
+        ),
+    ] = False,
     show_version: Annotated[
         bool,
         typer.Option("--version", callback=_show_version, is_eager=True, help="Show the version."),
@@ -86,6 +168,20 @@ def main(
     description: Annotated[str | None, typer.Option("--description", hidden=True)] = None,
     year: Annotated[str | None, typer.Option("--year", hidden=True)] = None,
 ) -> None:
+    if dry_run:
+        _dry_run(
+            list(words or []),
+            private=private,
+            lib=lib,
+            project_license=project_license,
+            render=render,
+            owner=owner,
+            author=author,
+            description=description,
+            year=year,
+        )
+        return
+
     # Copier imports its platform probe machinery; keep help/version independent
     # of that renderer and every external command as well as GitPython.
     from makeghrepo import scaffold
@@ -243,9 +339,27 @@ def main(
             private = actual_private
         else:
             private = want_private
-            github.create_repo(repo, dest, name, private)
     except github.GhError as exc:
         raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
+
+    try:
+        configuration = github.prepare_configuration(owner, private)
+    except github.GhError as exc:
+        recovery = (
+            "No GitHub repository was created."
+            if not on_github
+            else "No GitHub settings were changed."
+        )
+        raise fail(
+            f"GitHub configuration preflight failed: {exc}\n{recovery} "
+            "Local project is intact; fix the issue and re-run."
+        ) from exc
+
+    if not on_github:
+        try:
+            github.create_repo(repo, dest, name, private)
+        except github.GhError as exc:
+            raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
 
     # Bootstrap only: a configuration rerun must never publish subsequent local work.
     try:
@@ -256,8 +370,15 @@ def main(
             "Local project is intact; re-run to retry."
         ) from exc
     push = None if pushed else lambda: gitops.push_main(dest)
-    failed = github.configure_all(repo, private=private, push=push, log=typer.echo)
+    failed = github.configure_all(
+        repo, private=private, configuration=configuration, push=push, log=typer.echo
+    )
     typer.echo(f"\nhttps://github.com/{repo}\ncd {dest}")
     if failed:
+        if not on_github:
+            typer.echo(
+                "The GitHub repository was created but setup did not finish. "
+                "It remains available for retry; makeghrepo does not delete it."
+            )
         typer.echo(f"{len(failed)} step(s) failed. Fix, then re-run: makeghrepo {name}")
         raise typer.Exit(2)
