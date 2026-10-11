@@ -78,7 +78,9 @@ protections changed by later setup, selection/preflight failures and retries.
 against disposable local bare remotes, including preflight failure, creation before
 origin, required-operation failure, readback discrepancies, project creation before
 link failure, safe retries and later-local-commit preservation. Distribution CI
-runs the expanded cases for the Python wheel and five common cases for Rust.
+runs the expanded cases for the candidate Python wheel and five common cases for
+Rust. Published older releases retain the common cases; no new guarantee is
+retroactively imposed on their acceptance checks.
 
 These fixtures prove control flow and recovery behavior, not live GitHub behavior.
 The final readbacks and push are separate requests: a concurrent external settings

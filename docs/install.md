@@ -104,8 +104,8 @@ public/private and licensed/unlicensed projects.
 The installed wheel and Rust binary run five common real-Git bootstrap/retry
 scenarios against a controlled GitHub fixture. Their resulting settings and
 rulesets are compared, allowing only Python's explicit `main` scope addition.
-Python additionally runs twelve required-setup/readback/partial-creation failure
-scenarios. Those publication and recovery guarantees are not asserted for Rust;
+The candidate Python wheel additionally runs twelve required-setup/readback/partial-creation
+failure scenarios. Published older releases retain the five common cases. Those publication and recovery guarantees are not asserted for Rust;
 see [the implementation differences](bootstrap-publication.md). All scenarios
 use local bare remotes and never call GitHub or change live policy.
 
