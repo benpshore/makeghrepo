@@ -113,7 +113,7 @@ def _dry_run(
     )
     typer.echo(
         "then create or resume the repository, apply settings, and push main "
-        "after protections pass."
+        "after all required setup and effective-setting readbacks pass."
     )
     typer.echo(
         "Unverified: GitHub identity/authentication, repository availability and remote state, "
@@ -363,8 +363,10 @@ def main(
 
     # Bootstrap only: a configuration rerun must never publish subsequent local work.
     try:
+        if on_github:
+            gitops.ensure_origin(dest, repo)
         pushed = on_github and gitops.remote_has_main(dest)
-    except git.GitCommandError as exc:
+    except (RuntimeError, git.GitCommandError) as exc:
         raise fail(
             f"{exc}\nCould not check remote main; refusing to push. "
             "Local project is intact; re-run to retry."

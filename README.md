@@ -52,7 +52,7 @@ requests. It reports GitHub identity, repository availability and remote state,
 local resume metadata, and local tool availability as unverified. It cannot be
 combined with `--render`; rendering writes preview files and is not a dry run.
 
-If anything fails, fix it and run the same command again. GitHub creation and its repo-scoped settings are separate operations, so a settings failure can leave an empty or partially configured remote. makeghrepo keeps that repository for a retry; it does not delete it as rollback. A rerun re-applies settings and pushes `main` only after the required protections are in place. Every setting is safe to re-apply.
+If anything fails, fix it and run the same command again. GitHub creation and its repo-scoped settings are separate operations, so a settings failure can leave an empty or partially configured remote. makeghrepo keeps that repository for a retry; it does not delete it as rollback. The Python command re-applies and reads back all required setup before pushing `main`. Every setting is safe to re-apply; see the [publication gate](docs/bootstrap-publication.md) for the required steps and Rust differences.
 
 makeghrepo only resumes folders it created itself. It records that, along with the visibility, languages and license you chose, in `.git/makeghrepo.json`, which is never committed. It refuses any other git repo at that path, so an unrelated local project can't be published by accident. A re-run keeps the original visibility, languages and license. `--private` on a repo created public is refused rather than ignored, and makeghrepo never changes an existing repo's visibility.
 
@@ -77,13 +77,13 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 1. Renders one copier template (`src/makeghrepo/templates/project/`). The shared base is always included; each language you name adds its own files.
 2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). If a check fails, nothing is published.
 3. Runs `git init -b main`, `git add --all`, `git commit -m setup`.
-4. Prepares the GitHub settings payloads and verifies the public account ID used by the owner bypass, before creating the remote.
+4. Python preflights payloads, the authenticated account ID, advertised classic-token scopes, and selected Project access before creating the remote.
 5. Creates the GitHub repo empty. Repo settings, Actions permissions, rulesets, labels, Dependabot, and Project links need that repository to exist, so creation and configuration cannot be atomic:
    - squash-merge only (explicitly enabled; merge commits and rebase merges disabled), auto-merge and branch updates on, delete branches after merge, wiki off
    - Dependabot alerts and security fixes
    - public repos: secret scanning, push protection, private vulnerability reporting
    - public personal repos: `protect-main` blocks force-push, deletion, and merge commits for everyone. A separate `require-pr-and-ci` ruleset requires a squash PR (0 approvals) and up-to-date passing `ci` from GitHub Actions, with a bypass for the exact repository owner. Both rulesets are installed before the initial push. The owner's own pushes need neither a PR nor passing CI; agents still use PRs and CI. See [owner pushes and migration](docs/owner-pushes.md) for the credential boundary and existing-repo setup.
-   - **pushes `main`** only after public push protection and rulesets are on or private Actions are disabled
+   - Python **pushes `main`** only after every required setup operation completes and its effective state passes independent readback
    - labels `epic` and `task`, and a Project board linked to the repo
    - notifications set to **Ignore**, and no CODEOWNERS file, so nothing pings you
 
@@ -133,9 +133,12 @@ Both commands support `NAME LANG... --render DIR` for offline previews. Rust als
 supports `--snapshot [--combo NAME]` for golden comparisons. CI builds and tests
 Rust; using the prebuilt distribution requires no local compiler.
 
-The Python-only `--dry-run` option and explicit `refs/heads/main` ruleset scope
-are not yet implemented by the Rust command, whose rulesets remain scoped to the
-repository's default branch.
+The Python-only `--dry-run`, explicit `refs/heads/main` ruleset scope, full
+required-setup completion gate, effective-setting readbacks, and missing-origin
+recovery are not implemented by Rust. Rust scopes rulesets to the default branch
+and can push concurrently with setup; it does not provide Python's publication
+safety contract. Shared renderer and resulting policy comparisons do not prove
+ordering or recovery parity. See the [publication gate](docs/bootstrap-publication.md).
 
 ## Develop
 

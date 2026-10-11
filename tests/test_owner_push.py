@@ -105,6 +105,44 @@ class OwnerPushTests(unittest.TestCase):
                 assert api.state[42] == legacy
                 assert len(api.writes) == failure
 
+    def test_ineffective_replacement_never_removes_legacy_gate(self):
+        legacy = self.legacy()
+        api = RulesetAPI({42: legacy})
+        original = api.__call__
+
+        def ineffective(method, path, body=None):
+            result = original(method, path, body)
+            if method == "POST":
+                # The endpoint says success but the new gate is not active.
+                api.state[43]["enforcement"] = "disabled"
+            return result
+
+        with patch.object(github, "api", ineffective), self.assertRaises(github.GhError):
+            github.configure_ruleset("me/r")
+        assert api.state[42] == legacy
+        assert len(api.writes) == 1
+        with patch.object(github, "api", api), self.assertRaises(github.GhError):
+            # A customized/disabled partial gate needs manual review on retry.
+            github.configure_ruleset("me/r")
+        assert api.state[42] == legacy
+
+    def test_existing_gate_cannot_omit_required_ci_or_disable_strictness(self):
+        for change in ("missing_ci", "strict", "create"):
+            with self.subTest(change=change):
+                legacy = self.legacy()
+                checks = legacy["rules"][4]["parameters"]
+                if change == "missing_ci":
+                    checks["required_status_checks"] = [{"context": "security"}]
+                elif change == "strict":
+                    checks["strict_required_status_checks_policy"] = False
+                else:
+                    checks["do_not_enforce_on_create"] = True
+                api = RulesetAPI({42: legacy})
+                with patch.object(github, "api", api), self.assertRaises(github.GhError):
+                    github.configure_ruleset("me/r")
+                assert api.state[42] == legacy
+                assert len(api.writes) == 1
+
     def test_unverified_owner_never_grants_bypass(self):
         owners = [
             {"type": "Organization", "login": "me", "id": 123},
@@ -163,4 +201,5 @@ class OwnerPushTests(unittest.TestCase):
         with patch.object(github, "api", api):
             github.configure_ruleset("me/r")
         assert any("page=2" in c[1] for c in api.calls)
-        assert api.calls[-1][:2] == ("PUT", "repos/me/r/rulesets/142")
+        assert api.writes[-1][:2] == ("PUT", "repos/me/r/rulesets/142")
+        assert api.calls[-1][:2] == ("GET", "repos/me/r/rulesets/142")

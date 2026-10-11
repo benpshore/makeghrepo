@@ -72,6 +72,12 @@ def gh_fixture(args):
     real = os.environ["ACCEPTANCE_GIT"]
 
     def handle(state):
+        if args == ["api", "--include", "--silent", "user"]:
+            if state.get("failure") == "preflight":
+                return 0, "X-OAuth-Scopes: repo, workflow"
+            return 0, "X-OAuth-Scopes: repo, workflow, project"
+        if args[:2] == ["project", "list"]:
+            return 0, json.dumps({"projects": state.get("projects", [])})
         if args[:2] == ["api", "user"]:
             return 0, OWNER
         if args[:2] == ["repo", "view"]:
@@ -83,6 +89,9 @@ def gh_fixture(args):
             subprocess.run(
                 [real, "init", "--bare", "-q", str(state_path().parent / "remote.git")], check=True
             )
+            record(state, "create", private=state["private"])
+            if state.get("failure") == "create":
+                return 1, "controlled failure after remote creation, before adding origin"
             subprocess.run(
                 [
                     real,
@@ -95,21 +104,56 @@ def gh_fixture(args):
                 ],
                 check=True,
             )
-            record(state, "create", private=state["private"])
             return 0, ""
         if args[:2] == ["api", "graphql"]:
+            query = " ".join(args)
+            if "projectV2(number:" in query:
+                record(state, "project-readback")
+                linked = state.get("linked") and state.get("failure") != "project-readback"
+                return 0, json.dumps(
+                    {
+                        "data": {
+                            "user": {
+                                "projectV2": {
+                                    "title": state["repo"].split("/")[1],
+                                    "repositories": {
+                                        "nodes": [{"nameWithOwner": state["repo"]}]
+                                        if linked
+                                        else [],
+                                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                    },
+                                }
+                            }
+                        }
+                    }
+                )
             return 0, json.dumps(
                 {
                     "data": {
                         "user": {
                             "projectsV2": {
-                                "nodes": [{"number": 1, "title": state["repo"].split("/")[1]}]
+                                "nodes": state.get("projects", []),
                             }
                         }
                     }
                 }
             )
-        if args[:2] in (["project", "link"], ["label", "create"]):
+        if args[:2] == ["project", "create"]:
+            project = {"number": 1, "title": state["repo"].split("/")[1]}
+            state.setdefault("projects", []).append(project)
+            record(state, "project-create")
+            return 0, json.dumps(project)
+        if args[:2] == ["project", "link"]:
+            record(state, "project-link")
+            if state.get("failure") == "project":
+                return 1, "controlled project link failure after board creation"
+            state["linked"] = True
+            return 0, ""
+        if args[:2] == ["label", "create"]:
+            record(state, "label", name=args[2])
+            if state.get("failure") == "labels":
+                return 1, "controlled label failure"
+            state.setdefault("labels", {})[args[2]] = args[args.index("--color") + 1]
             return 0, ""
         if args[:2] != ["api", "-X"]:
             return 1, "unexpected gh command: " + repr(args)
@@ -119,6 +163,8 @@ def gh_fixture(args):
         if method == "GET" and path == prefix:
             return 0, json.dumps(
                 {
+                    **state.get("settings", {}),
+                    "permissions": {"admin": True},
                     "private": state["private"],
                     "owner": {"type": "User", "login": OWNER, "id": OWNER_ID},
                 }
@@ -130,11 +176,17 @@ def gh_fixture(args):
                 event["succeeded"] = False
                 return 1, "controlled settings failure"
             state["settings"] = body
+            if state.get("failure") == "settings-readback":
+                state["settings"]["allow_merge_commit"] = True
         if path == prefix + "/actions/permissions":
             if state.get("failure") == "actions":
                 event["succeeded"] = False
                 return 1, "controlled Actions failure"
+            if method == "GET":
+                return 0, json.dumps(state.get("actions", {"enabled": True}))
             state["actions"] = body
+            if state.get("failure") == "actions-readback":
+                state["actions"]["enabled"] = True
         if "/rulesets" in path:
             if method == "GET":
                 if "?" in path:
@@ -154,6 +206,28 @@ def gh_fixture(args):
                     if r["id"] == int(path.rsplit("/", 1)[1])
                 )
                 state["rulesets"][index] = {"id": state["rulesets"][index]["id"], **body}
+        suffix = path.removeprefix(prefix + "/")
+        if suffix in {
+            "vulnerability-alerts",
+            "automated-security-fixes",
+            "private-vulnerability-reporting",
+            "subscription",
+        }:
+            if method == "PUT":
+                if state.get("failure") == suffix:
+                    event["succeeded"] = False
+                    return 1, "controlled required setup failure"
+                state[suffix] = body if body is not None else {"enabled": True}
+            if method == "GET":
+                if suffix == "vulnerability-alerts":
+                    return (0, "") if suffix in state else (1, "404 disabled")
+                value = state.get(suffix, {})
+                if suffix == "automated-security-fixes":
+                    value = {**value, "paused": False}
+                return 0, json.dumps(value)
+        if suffix.startswith("labels/") and method == "GET":
+            name = suffix.split("/")[1]
+            return 0, json.dumps({"name": name, "color": state["labels"].get(name, "")})
         return 0, "{}"
 
     code, output = transaction(handle)
@@ -174,7 +248,7 @@ def read_state(root):
     return json.loads((root / "state.json").read_text())
 
 
-def check_policy(state, private):
+def check_policy(state, private, python_gate=False):
     assert state["settings"]["allow_squash_merge"] is True
     assert state["settings"]["allow_merge_commit"] is False
     events = state["events"]
@@ -225,8 +299,20 @@ def check_policy(state, private):
             {"context": "ci", "integration_id": 15368}
         ]
 
+    if python_gate:
+        before = events[:push]
+        for suffix in ("vulnerability-alerts", "automated-security-fixes", "subscription"):
+            assert any(
+                e["kind"] == "api" and e["method"] == "GET" and e["path"].endswith("/" + suffix)
+                for e in before
+            )
+        assert any(e["kind"] == "project-readback" for e in before)
+        assert {e["name"] for e in before if e["kind"] == "label"} == {"epic", "task"}
+        assert sum(e["kind"] == "create" for e in events) == 1
+        assert sum(e["kind"] == "project-create" for e in events) == 1
 
-def scenario(executable, private, failure):
+
+def scenario(executable, private, failure, python_gate=False):
     real_git = shutil.which("git")
     assert real_git
     with tempfile.TemporaryDirectory(prefix="makeghrepo-bootstrap-") as temporary:
@@ -267,9 +353,15 @@ def scenario(executable, private, failure):
         }
         args = [executable, name, *(["--private"] if private else [])]
         start = time.monotonic()
-        command(args, env=env, expected=2 if failure else 0)
+        command(
+            args,
+            env=env,
+            expected=(1 if failure in {"create", "preflight"} else 2) if failure else 0,
+        )
         state = read_state(root)
-        if failure in {"settings", "actions"}:
+        if failure == "preflight":
+            assert not state["created"]
+        if (python_gate and failure) or failure in {"settings", "actions"}:
             assert not any(e["kind"] == "push" for e in state["events"])
         if failure:
             state["failure"] = None
@@ -280,7 +372,7 @@ def scenario(executable, private, failure):
         marker = json.loads((project / ".git" / "makeghrepo.json").read_text())
         assert marker["private"] is private and marker["license"] == "none"
         state = read_state(root)
-        check_policy(state, private)
+        check_policy(state, private, python_gate)
         remote_sha = command(
             [real_git, "--git-dir", str(root / "remote.git"), "rev-parse", "main"], env=env
         )
@@ -321,25 +413,49 @@ def main():
         "executables", nargs="+", help="Installed Python and/or Rust executable paths"
     )
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--python-executable",
+        type=Path,
+        help="Executable with the Python-only required setup/readback gate",
+    )
     args = parser.parse_args()
     evidence = {}
     for executable in args.executables:
         executable = str(Path(executable).resolve())
+        python_gate = bool(
+            args.python_executable and executable == str(args.python_executable.resolve())
+        )
+        cases = [
+            (False, None),
+            (True, None),
+            (False, "settings"),
+            (True, "actions"),
+            (False, "ruleset"),
+        ]
+        if python_gate:
+            cases += [
+                (False, failure)
+                for failure in (
+                    "preflight",
+                    "create",
+                    "settings-readback",
+                    "vulnerability-alerts",
+                    "automated-security-fixes",
+                    "private-vulnerability-reporting",
+                    "labels",
+                    "subscription",
+                    "project",
+                    "project-readback",
+                )
+            ] + [(True, "settings"), (True, "actions-readback")]
         results = [
-            scenario(executable, private, failure)
-            for private, failure in [
-                (False, None),
-                (True, None),
-                (False, "settings"),
-                (True, "actions"),
-                (False, "ruleset"),
-            ]
+            scenario(executable, private, failure, python_gate) for private, failure in cases
         ]
         evidence[executable] = results
-        print(f"{executable}: 5 real-Git bootstrap/retry scenarios passed")
+        print(f"{executable}: {len(results)} real-Git bootstrap/retry scenarios passed")
     normalized = []
     for results in evidence.values():
-        comparable = json.loads(json.dumps(results))
+        comparable = json.loads(json.dumps(results[:5]))
         for result in comparable:
             result.pop("elapsed_seconds", None)
             # Python explicitly protects its bootstrap branch; the Rust CLI
@@ -352,7 +468,7 @@ def main():
                     include.remove("refs/heads/main")
         normalized.append(comparable)
     assert all(result == normalized[0] for result in normalized), (
-        "Python/Rust configuration results differ outside the documented main-scope gap"
+        "Python/Rust configuration results differ outside the documented implementation differences"
     )
     if args.output:
         args.output.write_text(json.dumps(evidence, indent=2) + "\n")

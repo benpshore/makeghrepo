@@ -7,6 +7,7 @@ after a partial failure.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -40,6 +41,7 @@ class ConfigurationPlan:
     private: bool
     settings: dict[str, Any]
     rulesets: tuple[dict[str, Any], ...]
+    project: bool = True
 
 
 def gh(*args: str, body: Any = None) -> str:
@@ -160,7 +162,9 @@ def _scope_matches(saved: Any, desired: dict[str, Any]) -> bool:
     return saved == previous
 
 
-def prepare_configuration(owner_login: str, private: bool) -> ConfigurationPlan:
+def prepare_configuration(
+    owner_login: str, private: bool, *, project: bool = True
+) -> ConfigurationPlan:
     """Prepare and validate payloads before creating the GitHub repository.
 
     Public rulesets need the personal account ID as a bypass actor. Fetch and
@@ -168,38 +172,70 @@ def prepare_configuration(owner_login: str, private: bool) -> ConfigurationPlan:
     created, unprotected repository. The later repo-scoped call verifies that
     the created repo has this same owner before installing those rules.
     """
-    owner_id = None
+    if type(private) is not bool or type(project) is not bool:
+        raise GhError("visibility and project selection must be booleans")
+    try:
+        user = api("GET", "user")
+    except (GhError, ValueError) as exc:
+        raise GhError(f"could not verify the repository owner before creation: {exc}") from exc
+    candidate = user.get("id") if isinstance(user, dict) else None
+    login = user.get("login") if isinstance(user, dict) else None
+    if (
+        not isinstance(candidate, int)
+        or isinstance(candidate, bool)
+        or not 0 < candidate < 2**64
+        or not isinstance(login, str)
+        or login.casefold() != owner_login.casefold()
+    ):
+        raise GhError("owner push bypass requires a verified matching personal account ID")
+    owner_id = candidate
     rulesets: tuple[dict[str, Any], ...] = ()
     if not private:
-        try:
-            user = api("GET", "user")
-        except (GhError, ValueError) as exc:
-            raise GhError(
-                f"could not verify the public repository owner before creation: {exc}"
-            ) from exc
-        candidate = user.get("id") if isinstance(user, dict) else None
-        login = user.get("login") if isinstance(user, dict) else None
-        if (
-            not isinstance(candidate, int)
-            or isinstance(candidate, bool)
-            or not 0 < candidate < 2**64
-            or not isinstance(login, str)
-            or login.casefold() != owner_login.casefold()
-        ):
-            raise GhError("owner push bypass requires a verified matching personal account ID")
-        owner_id = candidate
         rulesets = _ruleset_bodies(owner_id)
 
+    # Inspect advertised classic OAuth scopes without reading or changing tokens.
+    # Fine-grained/App tokens do not advertise this header: their repo-specific
+    # permissions can only be checked once the repository exists.
+    headers = gh("api", "--include", "--silent", "user")
+    scopes_header = next(
+        (
+            line.split(":", 1)[1]
+            for line in headers.splitlines()
+            if line.lower().startswith("x-oauth-scopes:")
+        ),
+        None,
+    )
+    if scopes_header is not None:
+        scopes = {scope.strip() for scope in scopes_header.split(",")}
+        required = {"workflow"} | ({"project"} if project else set())
+        missing = required - scopes
+        if "repo" not in scopes and (private or "public_repo" not in scopes):
+            missing.add("repo" if private else "repo or public_repo")
+        if missing:
+            raise GhError("missing GitHub token scopes: " + ", ".join(sorted(missing)))
+    if project:
+        try:
+            listing = json.loads(
+                gh("project", "list", "--owner", owner_login, "--limit", "1", "--format", "json")
+            )
+        except (GhError, ValueError) as exc:
+            raise GhError(f"could not preflight the selected project setup: {exc}") from exc
+        if not isinstance(listing, dict) or not isinstance(listing.get("projects"), list):
+            raise GhError("could not verify access to the selected project setup")
+    if any(not re.fullmatch(r"[0-9a-fA-F]{6}", color) for color in LABELS.values()):
+        raise GhError("invalid label color in GitHub configuration")
     settings = settings_body(private)
     try:
         # Validate the exact payload shapes that will later be sent to GitHub.
-        json.dumps({"settings": settings, "rulesets": rulesets})
+        json.dumps({"settings": settings, "rulesets": rulesets, "labels": LABELS}, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise GhError("could not prepare GitHub settings before repository creation") from exc
-    return ConfigurationPlan(owner_login, owner_id, private, settings, rulesets)
+    return ConfigurationPlan(owner_login, owner_id, private, settings, rulesets, project)
 
 
-def configure_ruleset(repo: str, configuration: ConfigurationPlan | None = None) -> None:
+def configure_ruleset(
+    repo: str, configuration: ConfigurationPlan | None = None
+) -> tuple[dict[str, Any], ...]:
     # The repository exists now; confirm its owner is a personal account before
     # installing a bypass. The CLI also compares it with the precreation plan.
     owner = api("GET", f"repos/{repo}")["owner"]
@@ -291,6 +327,107 @@ def configure_ruleset(repo: str, configuration: ConfigurationPlan | None = None)
             api("PUT", f"repos/{repo}/rulesets/{match}", body)
         else:
             api("POST", f"repos/{repo}/rulesets", body)
+        # A successful write need not have taken effect. Verify the replacement
+        # gate before removing legacy PR/CI requirements from the history gate.
+        verify_rulesets(repo, (body,))
+    return tuple(bodies)
+
+
+def _contains(actual: Any, expected: Any) -> bool:
+    """Require every requested field; tolerate server-added object metadata."""
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and all(
+            key in actual and _contains(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            return False
+        remaining = list(actual)
+        for value in expected:
+            match = next((i for i, item in enumerate(remaining) if _contains(item, value)), None)
+            if match is None:
+                return False
+            remaining.pop(match)
+        return True
+    return type(actual) is type(expected) and actual == expected
+
+
+def _require(actual: Any, expected: Any, setting: str) -> None:
+    if not _contains(actual, expected):
+        raise GhError(f"effective {setting} does not match the required configuration")
+
+
+def verify_rulesets(repo: str, bodies: tuple[dict[str, Any], ...]) -> None:
+    existing = []
+    page = 1
+    while True:
+        batch = api("GET", f"repos/{repo}/rulesets?includes_parents=false&per_page=100&page={page}")
+        existing.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    for body in bodies:
+        matches = [rule for rule in existing if rule.get("name") == body["name"]]
+        if len(matches) != 1:
+            raise GhError(f"could not read back a unique ruleset {body['name']!r}")
+        saved = api("GET", f"repos/{repo}/rulesets/{matches[0]['id']}")
+        _require(saved, body, f"ruleset {body['name']!r}")
+        if body["name"] == REVIEW_RULESET_NAME:
+            rules = {rule["type"]: rule for rule in saved["rules"]}
+            checks = rules["required_status_checks"]["parameters"]
+            _require(
+                checks,
+                {
+                    "strict_required_status_checks_policy": True,
+                    "do_not_enforce_on_create": False,
+                },
+                "required CI gate",
+            )
+            if not any(
+                _contains(
+                    check,
+                    {
+                        "context": REQUIRED_CHECK,
+                        "integration_id": GITHUB_ACTIONS_APP_ID,
+                    },
+                )
+                for check in checks["required_status_checks"]
+            ):
+                raise GhError("effective ruleset is missing the required GitHub Actions ci check")
+            _require(
+                rules["pull_request"]["parameters"],
+                {
+                    "dismiss_stale_reviews_on_push": True,
+                    "required_review_thread_resolution": True,
+                    "allowed_merge_methods": ["squash"],
+                },
+                "required PR gate",
+            )
+
+
+def verify_repository(repo: str, configuration: ConfigurationPlan, *, settings: bool) -> None:
+    saved = api("GET", f"repos/{repo}")
+    saved = deepcopy(saved)
+    if isinstance(saved, dict) and isinstance(saved.get("owner"), dict):
+        login = saved["owner"].get("login")
+        if isinstance(login, str) and login.casefold() == configuration.owner.casefold():
+            saved["owner"]["login"] = configuration.owner
+    _require(
+        saved,
+        {
+            "private": configuration.private,
+            "owner": {"login": configuration.owner, "id": configuration.owner_id, "type": "User"},
+            "permissions": {"admin": True},
+        },
+        "repository identity, visibility and admin access",
+    )
+    if settings:
+        required = deepcopy(configuration.settings)
+        if configuration.private:
+            # Existing policy: Free private repos may silently reject auto-merge.
+            # It is advisory there, not a publication requirement.
+            required.pop("allow_auto_merge", None)
+        _require(saved, required, "repository settings")
 
 
 FIND_PROJECT_QUERY = """
@@ -319,10 +456,15 @@ def _find_project_by_title(owner: str, title: str) -> int:
         return number
     full = gh("project", "list", "--owner", owner, "--closed", "--limit", "1000",
               "--format", "json")  # fmt: skip
-    return next((p["number"] for p in json.loads(full)["projects"] if p["title"] == title), 0)
+    listing = json.loads(full)
+    projects = listing["projects"]
+    number = next((p["number"] for p in projects if p["title"] == title), 0)
+    if not number and (len(projects) >= 1000 or listing.get("totalCount", 0) > len(projects)):
+        raise GhError("project listing is incomplete; refusing to create a duplicate board")
+    return number
 
 
-def configure_project(repo: str) -> None:
+def configure_project(repo: str) -> int:
     """Link the repo to a same-named project, creating one if it doesn't exist."""
     owner, title = repo.split("/")
     number = _find_project_by_title(owner, title)
@@ -330,6 +472,53 @@ def configure_project(repo: str) -> None:
         created = gh("project", "create", "--owner", owner, "--title", title, "--format", "json")
         number = json.loads(created)["number"]
     gh("project", "link", str(number), "--owner", owner, "--repo", repo)
+    return number
+
+
+PROJECT_LINK_QUERY = """
+query($owner: String!, $number: Int!, $cursor: String) {
+  user(login: $owner) {
+    projectV2(number: $number) {
+      title
+      repositories(first: 100, after: $cursor) {
+        nodes { nameWithOwner }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+"""
+
+
+def verify_project(repo: str, number: int) -> None:
+    owner, title = repo.split("/")
+    cursor = None
+    seen = set()
+    while True:
+        args = [
+            "api",
+            "graphql",
+            "-f",
+            f"query={PROJECT_LINK_QUERY}",
+            "-f",
+            f"owner={owner}",
+            "-F",
+            f"number={number}",
+        ]
+        if cursor is not None:
+            args += ["-f", f"cursor={cursor}"]
+        board = json.loads(gh(*args))["data"]["user"]["projectV2"]
+        _require(board, {"title": title}, "project title")
+        repos = board["repositories"]
+        if any(node["nameWithOwner"].casefold() == repo.casefold() for node in repos["nodes"]):
+            return
+        info = repos["pageInfo"]
+        if info["hasNextPage"] is not True:
+            raise GhError("effective project link is missing")
+        cursor = info["endCursor"]
+        if not cursor or cursor in seen:
+            raise GhError("could not finish reading project repository links")
+        seen.add(cursor)
 
 
 def disable_actions(repo: str) -> None:
@@ -377,28 +566,22 @@ def configure_all(
     push: Callable[[], object] | None = None,
     log: Callable[[str], None] = print,
 ) -> list[str]:
-    """Apply repo-scoped settings and return failed steps for a safe retry.
+    """Apply every selected step, read back effective state, then publish main.
 
-    The CLI prepares payloads before creation. GitHub settings, Actions
-    permissions, rulesets, labels, Dependabot, and Project linking are repo-scoped
-    and require the created repository. Public rulesets and secret-scanning push
-    protection (or private Actions disablement) must settle before an initial
-    push. Remaining independent steps then run concurrently.
-
-    Creation and configuration are separate GitHub operations, not an atomic
-    transaction. On a post-creation failure the empty/partially configured repo
-    remains for an idempotent retry; it is never deleted as rollback. If a
-    prerequisite fails, independent settings still run, but main is not pushed.
-    A settings-only retry (push=None) can still repair protections on an existing
-    main.
+    All configured operations are required (Project only when selected). Writes
+    may run concurrently with other writes, never with the push. A failed write
+    or readback leaves the remote intact, blocks publication, and can be retried.
+    A settings-only retry never pushes later local work. Private auto-merge is
+    the sole advisory setting, as documented for the existing Free-plan policy.
     """
     if configuration is None:
-        configuration = prepare_configuration(repo.split("/", 1)[0], private)
+        configuration = prepare_configuration(repo.split("/", 1)[0], private, project=project)
     if (
         configuration.private != private
+        or configuration.project != project
         or configuration.owner.casefold() != repo.split("/", 1)[0].casefold()
     ):
-        raise GhError("prepared GitHub settings do not match repository owner or visibility")
+        raise GhError("prepared GitHub settings do not match owner, visibility or selected options")
 
     failed: list[str] = []
 
@@ -414,82 +597,140 @@ def configure_all(
         if err:
             failed.append(name)
 
+    def blocked() -> list[str]:
+        if push is not None:
+            log("  - push main: skipped (required setup failed; refusing to publish)")
+            failed.append("push main")
+        return failed
+
+    # After creation (or on resume), reject a wrong/changed remote before writes.
+    identity_err = run(lambda: verify_repository(repo, configuration, settings=False))
+    if identity_err:
+        report("repository access", identity_err)
+        return blocked()
+
     if private:
-        # GitHub Free: no rulesets, secret scanning or code scanning on private repos,
-        # and Actions get disabled below rather than left running with nothing to
-        # gate — the local smoke test is the only gate left for these repos.
         log("  - private repo: skipping ruleset, secret scanning, vuln reporting (need paid plan)")
+        log("  - private auto-merge is advisory (may be unavailable on GitHub Free)")
 
-    settings_err = run(lambda: api("PATCH", f"repos/{repo}", configuration.settings))
-    report("repo settings", settings_err)
-    actions_disabled = True  # only meaningful, and only checked below, when private
+    # Each successful write has an independent GET verifier. Do not trust the
+    # response body from PATCH/PUT/POST to establish effective configuration.
+    verifiers: list[tuple[str, Callable[[], object]]] = []
+
+    def apply(name: str, write: Callable[[], object], verify: Callable[[], object]) -> None:
+        err = run(write)
+        report(name, err)
+        if err is None:
+            verifiers.append((name, verify))
+
+    apply(
+        "repo settings",
+        lambda: api("PATCH", f"repos/{repo}", configuration.settings),
+        lambda: verify_repository(repo, configuration, settings=True),
+    )
     if private:
-        actions_err = run(lambda: disable_actions(repo))
-        report("disable actions", actions_err)
-        actions_disabled = actions_err is None
+        apply(
+            "disable actions",
+            lambda: disable_actions(repo),
+            lambda: _require(
+                api("GET", f"repos/{repo}/actions/permissions"),
+                {"enabled": False},
+                "Actions disablement",
+            ),
+        )
+    else:
+        desired_rulesets = configuration.rulesets
 
-    ruleset_err = None
-    # Install default-branch rules before the first push. Existing-main retries
-    # still repair the ruleset even if the settings PATCH failed.
-    if not private and (push is None or settings_err is None):
-        ruleset_err = run(lambda: configure_ruleset(repo, configuration))
-        report(f"ruleset '{RULESET_NAME}'", ruleset_err)
+        def install_rulesets() -> None:
+            nonlocal desired_rulesets
+            desired_rulesets = configure_ruleset(repo, configuration)
 
-    fanout: list[tuple[str, Callable[[], object]]] = [
-        # One task, alerts before fixes: enabling automated fixes while alerts
-        # are still off can 422. They're independent of everything else here,
-        # just not of each other.
-        ("dependabot alerts + security fixes", lambda: (
-            api("PUT", f"repos/{repo}/vulnerability-alerts"),
-            api("PUT", f"repos/{repo}/automated-security-fixes"),
-        )),
-    ]  # fmt: skip
+        # Settings-only retries still repair protection after a failed PATCH.
+        if push is None or "repo settings" not in failed:
+            apply(
+                f"ruleset '{RULESET_NAME}'",
+                install_rulesets,
+                lambda: verify_rulesets(repo, desired_rulesets),
+            )
+
+    alerts = f"repos/{repo}/vulnerability-alerts"
+    fixes = f"repos/{repo}/automated-security-fixes"
+    subscription = f"repos/{repo}/subscription"
+
+    def verify_dependabot() -> None:
+        # Alerts return 204 if enabled, and 404 (gh failure) if disabled.
+        api("GET", alerts)
+        _require(api("GET", fixes), {"enabled": True, "paused": False}, "Dependabot fixes")
+
+    def verify_labels() -> None:
+        for name, color in LABELS.items():
+            saved = api("GET", f"repos/{repo}/labels/{name}")
+            _require(saved, {"name": name}, f"label {name!r}")
+            if saved.get("color", "").casefold() != color.casefold():
+                raise GhError(f"effective label {name!r} color does not match")
+
+    fanout: list[tuple[str, Callable[[], object], Callable[[], object]]] = [
+        (
+            "dependabot alerts + security fixes",
+            lambda: (
+                api("PUT", alerts),
+                api("PUT", fixes),
+            ),
+            verify_dependabot,
+        ),
+        (
+            "labels: " + ", ".join(LABELS),
+            lambda: [
+                gh("label", "create", name, "--repo", repo, "--color", color, "--force")
+                for name, color in LABELS.items()
+            ],
+            verify_labels,
+        ),
+        (
+            "mute notifications (watch: ignore)",
+            lambda: api("PUT", subscription, {"subscribed": False, "ignored": True}),
+            lambda: _require(
+                api("GET", subscription),
+                {"subscribed": False, "ignored": True},
+                "notification subscription",
+            ),
+        ),
+    ]
     if not private:
         pvr = f"repos/{repo}/private-vulnerability-reporting"
-        fanout.append(("private vulnerability reporting", lambda: api("PUT", pvr)))
-    fanout += [
-        ("labels: " + ", ".join(LABELS), lambda: [
-            gh("label", "create", name, "--repo", repo, "--color", color, "--force")
-            for name, color in LABELS.items()
-        ]),
-        ("mute notifications (watch: ignore)",
-         lambda: api("PUT", f"repos/{repo}/subscription", {"subscribed": False, "ignored": True})),
-    ]  # fmt: skip
-    if project:
-        fanout.append(("project board", lambda: configure_project(repo)))
-    push_blocked = push is not None and (
-        not actions_disabled
-        or (not private and (settings_err is not None or ruleset_err is not None))
-    )
-    if push is not None and not actions_disabled:
-        # Refuse to push rather than risk a run: disabling Actions is the one
-        # thing standing between a private repo and burning its own minutes.
-        log("  - push main: skipped (couldn't disable Actions; refusing to risk a run)")
-        failed.append("push main")
-    elif push_blocked:
-        reason = (
-            "couldn't enable push protection"
-            if settings_err is not None
-            else "couldn't install public branch rulesets"
+        fanout.insert(
+            1,
+            (
+                "private vulnerability reporting",
+                lambda: api("PUT", pvr),
+                lambda: _require(api("GET", pvr), {"enabled": True}, "vulnerability reporting"),
+            ),
         )
-        log(f"  - push main: skipped ({reason}; refusing to publish)")
-        failed.append("push main")
-    elif push is not None:
-        fanout.append(("push main", push))
+    if project:
+        project_number = 0
 
-    # Submit the push first so a slow Project lookup cannot occupy its slot.
-    # Reporting remains in declared order after every in-flight step settles.
+        def link_project() -> None:
+            nonlocal project_number
+            project_number = configure_project(repo)
+
+        fanout.append(("project board", link_project, lambda: verify_project(repo, project_number)))
+
     with ThreadPoolExecutor(max_workers=min(4, len(fanout))) as pool:
-        futures = {}
-        push_index = None
-        if push is not None and not push_blocked:
-            push_index = next(i for i, (_, fn) in enumerate(fanout) if fn is push)
-            futures[push_index] = pool.submit(run, push)
-        for i, (_, fn) in enumerate(fanout):
-            if i not in futures:
-                futures[i] = pool.submit(run, fn)
-        errors = [futures[i].result() for i in range(len(fanout))]
-    for (name, _), err in zip(fanout, errors, strict=True):
+        futures = [pool.submit(run, write) for _, write, _ in fanout]
+        errors = [future.result() for future in futures]
+    for (name, _, verify), err in zip(fanout, errors, strict=True):
         report(name, err)
+        if err is None:
+            verifiers.append((name, verify))
 
+    # Every write has settled before this final gate. Missing, stale, malformed,
+    # unauthorized, or discrepant readback is a failure, never permission to push.
+    for name, verify in verifiers:
+        err = run(verify)
+        if err is not None:
+            report(name + " readback", err)
+    if failed:
+        return blocked()
+    if push is not None:
+        report("push main", run(push))
     return failed

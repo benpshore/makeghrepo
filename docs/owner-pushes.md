@@ -38,8 +38,9 @@ contract.
 
 Migration creates or updates `require-pr-and-ci` before removing PR/CI rules from
 `protect-main`. Extra checks and PR parameters are copied intact, and unrelated
-restrictions stay in the no-bypass ruleset. A failed write leaves the old gate in
-place; rerunning completes the migration. Customized scopes, hidden or unexpected
+restrictions stay in the no-bypass ruleset. Python independently reads back the replacement gate before removing the legacy
+gate. A failed write or ineffective replacement leaves the old gate in place;
+rerunning completes a valid partial migration. Customized scopes, hidden or unexpected
 bypasses, duplicate names, conflicting gate policies, or unrelated restrictions
 inside `require-pr-and-ci` require manual review before any ruleset is written.
 Other rulesets and classic branch protection are untouched and may still block
@@ -48,3 +49,12 @@ owner pushes; inspect those separately rather than deleting their requirements.
 For a repository without makeghrepo's local resume marker, apply the reviewed
 two-ruleset change directly in GitHub settings. Do not fabricate a marker or run
 the bootstrap command against an unrelated checkout.
+
+
+## Python publication gate
+
+Python waits for all required setup and independent effective-state readbacks
+before its first push, including the full two-ruleset policy and preserved custom
+restrictions. Rust retains its existing ordering and lacks this readback gate.
+Shared policy defaults and renderer tests establish neither ordering nor recovery
+parity; see [bootstrap publication](bootstrap-publication.md).

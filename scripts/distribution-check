@@ -253,7 +253,19 @@ def check_installed_tools(tools: dict[str, Path], version: str, root: Path, env:
     require(bootstrap.is_file(), "scripts/bootstrap-check is required for distribution acceptance")
     report = root / "bootstrap-evidence.json"
     checked = {name: tools[name] for name in ("python-wheel", "rust")}
-    run([sys.executable, bootstrap, *checked.values(), "--output", report], env=env, timeout=300)
+    run(
+        [
+            sys.executable,
+            bootstrap,
+            *checked.values(),
+            "--python-executable",
+            tools["python-wheel"],
+            "--output",
+            report,
+        ],
+        env=env,
+        timeout=600,
+    )
     bootstrap_results = json.loads(report.read_text())
     return {
         "render_cases": results,

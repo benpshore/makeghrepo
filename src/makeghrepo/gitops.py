@@ -96,7 +96,7 @@ def push_main(path: Path) -> None:
 def validate_origin(path: Path, full_name: str) -> None:
     """Refuse a resume whose effective fetch or push URLs target another repo.
 
-    A missing origin is normal after a failed create; create_repo adds it later.
+    A missing origin is normal after a failed create; ensure_origin repairs it.
     Ask git for expanded URLs so pushurl and insteadOf rewrites are checked too.
     Never print an unexpected URL: it could contain embedded credentials.
     """
@@ -121,6 +121,19 @@ def validate_origin(path: Path, full_name: str) -> None:
                 f"origin does not match {full_name}; restore its GitHub fetch and push URLs "
                 "before resuming"
             )
+
+
+def ensure_origin(path: Path, full_name: str) -> None:
+    """Repair only a missing origin on a marker-validated bootstrap resume.
+
+    Creation can succeed remotely before gh adds the local remote. Never replace
+    an existing origin, and check effective URLs (including Git rewrites) after
+    adding it, before a remote lookup or any push is permitted.
+    """
+    repo = git.Repo(path)
+    if "origin" not in repo.remotes:
+        repo.create_remote("origin", f"https://github.com/{full_name}.git")
+    validate_origin(path, full_name)
 
 
 def remote_has_main(path: Path) -> bool:

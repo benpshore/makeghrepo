@@ -101,10 +101,13 @@ release or remote tag is created. Installed tools must pass help/version checks
 and render matching file names, bytes, and executable bits for eight representative
 public/private and licensed/unlicensed projects.
 
-The installed wheel and Rust binary also run five real-Git bootstrap and retry
-scenarios against a controlled GitHub fixture, comparing their resulting settings,
-rulesets and push behavior. These tests use local bare remotes and never call
-GitHub or change live policy.
+The installed wheel and Rust binary run five common real-Git bootstrap/retry
+scenarios against a controlled GitHub fixture. Their resulting settings and
+rulesets are compared, allowing only Python's explicit `main` scope addition.
+Python additionally runs twelve required-setup/readback/partial-creation failure
+scenarios. Those publication and recovery guarantees are not asserted for Rust;
+see [the implementation differences](bootstrap-publication.md). All scenarios
+use local bare remotes and never call GitHub or change live policy.
 
 The workflow's optional `release` input runs the same installation/render checks
 against a published stable tag instead, verifying the native asset's checksum
