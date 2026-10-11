@@ -1,6 +1,5 @@
 import json
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -27,30 +26,80 @@ def test_settings_match_shared_policy(private, github_defaults):
     assert github.settings_body(private) == expected
 
 
-class Calls(list):
-    responses: dict
-    fail_on: tuple
+def test_prepare_configuration_validates_identity_and_builds_payloads(calls, github_defaults):
+    configuration = github.prepare_configuration("me", private=False)
+
+    assert configuration.owner == "me"
+    assert configuration.owner_id == 123
+    assert configuration.private is False
+    assert configuration.settings["security_and_analysis"]["secret_scanning_push_protection"] == {
+        "status": "enabled"
+    }
+    assert configuration.rulesets == github._ruleset_bodies(123)
+    assert {
+        **configuration.rulesets[0],
+        "conditions": github_defaults["ruleset"]["conditions"],
+    } == github_defaults["ruleset"]
+    assert "refs/heads/main" in configuration.rulesets[0]["conditions"]["ref_name"]["include"]
+    assert configuration.rulesets[0]["rules"] == github_defaults["ruleset"]["rules"]
+    assert configuration.rulesets[0]["bypass_actors"] == []
+    assert configuration.rulesets[1]["rules"] == github_defaults["review_ruleset"]["rules"]
+    assert configuration.rulesets[1]["bypass_actors"] == [
+        {"actor_type": "User", "actor_id": 123, "bypass_mode": "always"}
+    ]
 
 
-@pytest.fixture
-def calls(monkeypatch):
-    """Replace gh() with a recorder. Set calls.responses[substr] / calls.fail_on."""
-    recorded = Calls()
-    recorded.responses = {}
-    recorded.fail_on = ()
+def test_configured_rulesets_cover_main_and_nonmain_default(calls):
+    configuration = github.prepare_configuration("me", private=False)
+    github.configure_ruleset("me/r", configuration)
+    mocked_repo = {"default_branch": "develop"}
+    posted = [
+        body for args, body in calls if args[:4] == ("api", "-X", "POST", "repos/me/r/rulesets")
+    ]
+    assert len(posted) == 2
 
-    def fake_gh(*args, body=None):
-        recorded.append((args, body))
-        joined = " ".join(args)
-        if any(f in joined for f in recorded.fail_on):
-            raise github.GhError(f"boom: {joined}")
-        if args == ("api", "-X", "GET", "repos/me/r"):
-            return '{"owner": {"type": "User", "login": "me", "id": 123}}'
-        fallback = "[]" if "rulesets?" in joined else ""
-        return next((v for k, v in recorded.responses.items() if k in joined), fallback)
+    def applies(body, branch):
+        include = body["conditions"]["ref_name"]["include"]
+        return f"refs/heads/{branch}" in include or (
+            "~DEFAULT_BRANCH" in include and branch == mocked_repo["default_branch"]
+        )
 
-    monkeypatch.setattr(github, "gh", fake_gh)
-    return recorded
+    for body in posted:
+        assert applies(body, "main")
+        assert applies(body, mocked_repo["default_branch"])
+        assert not applies(body, "feature")
+
+
+def test_prepare_configuration_rejects_mismatched_account_before_creation(monkeypatch):
+    monkeypatch.setattr(github, "api", lambda *_a, **_kw: {"login": "other", "id": 123})
+
+    with pytest.raises(github.GhError, match="verified matching personal account ID"):
+        github.prepare_configuration("me", private=False)
+
+
+def test_configure_ruleset_rejects_owner_login_mismatch_without_plan(monkeypatch):
+    calls = []
+
+    def fake_api(method, path, body=None):
+        calls.append((method, path, body))
+        return {"owner": {"type": "User", "login": "someone-else", "id": 123}}
+
+    monkeypatch.setattr(github, "api", fake_api)
+
+    with pytest.raises(github.GhError, match="personal repository with a verified owner ID"):
+        github.configure_ruleset("me/r")
+
+    assert calls == [("GET", "repos/me/r", None)]
+
+
+def test_default_only_ruleset_scope_migrates_additively():
+    desired = github._ruleset_bodies(123)[0]["conditions"]
+    previous = {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}
+
+    assert github._scope_matches(previous, desired)
+    assert not github._scope_matches(
+        {"ref_name": {"include": ["refs/heads/develop"], "exclude": []}}, desired
+    )
 
 
 def test_create_repo_adds_remote_without_pushing(calls, tmp_path):
@@ -133,15 +182,20 @@ def _paths(calls):
     return [a[3] if a[0] == "api" else " ".join(a[:2]) for a, _ in calls]
 
 
-def test_public_settles_settings_before_fanout_before_ruleset(calls):
-    """Push protection precedes the push and ruleset. Other steps are independent."""
-    calls.responses.update({"GET": "[]", "graphql": _graphql_projects({"number": 1, "title": "r"})})
-    failed = github.configure_all("me/r", private=False, push=lambda: None, log=lambda _: None)
+def test_public_settings_and_rulesets_precede_first_push(calls):
+    """The empty repo is protected before main is published."""
+    calls.responses.update({"graphql": _graphql_projects({"number": 1, "title": "r"})})
+
+    def push():
+        calls.append((("push-main",), None))
+
+    failed = github.configure_all("me/r", private=False, push=push, log=lambda _: None)
     assert failed == []
     paths = _paths(calls)
     settings_idx = paths.index("repos/me/r")
     ruleset_idx = paths.index("repos/me/r/rulesets?includes_parents=false&per_page=100&page=1")
-    assert settings_idx < ruleset_idx
+    push_idx = paths.index("push-main")
+    assert settings_idx < ruleset_idx < push_idx
     fanout_paths = {
         "repos/me/r/vulnerability-alerts",
         "repos/me/r/automated-security-fixes",
@@ -149,44 +203,41 @@ def test_public_settles_settings_before_fanout_before_ruleset(calls):
         "repos/me/r/subscription",
     }
     fanout_indices = [i for i, p in enumerate(paths) if p in fanout_paths]
-    assert len(fanout_indices) == len(fanout_paths)  # sanity: all of them actually ran
-    assert all(settings_idx < i for i in fanout_indices)
-    patch = next(b for a, b in calls if a[2] == "PATCH")
+    assert len(fanout_indices) >= len(fanout_paths)  # sanity: all of them actually ran
+    assert all(settings_idx < i < push_idx for i in fanout_indices)
+    patch = next(b for a, b in calls if len(a) > 2 and a[2] == "PATCH")
     assert "secret_scanning_push_protection" in patch["security_and_analysis"]
-    mute = next(b for a, b in calls if a[3].endswith("/subscription"))
+    mute = next(
+        b for a, b in calls if len(a) > 3 and a[2] == "PUT" and a[3].endswith("/subscription")
+    )
     assert mute == {"subscribed": False, "ignored": True}
 
 
-def test_ruleset_does_not_wait_for_slow_project(calls, monkeypatch):
-    project_started = threading.Event()
-    project_finished = threading.Event()
-    ruleset_started = threading.Event()
+def test_ruleset_finishes_before_independent_project_setup(calls, monkeypatch):
+    events = []
 
     def slow_project(_):
-        project_started.set()
-        ruleset_started.wait(0.5)
-        project_finished.set()
-
-    def check_ruleset(_):
-        assert project_started.wait(0.5)
-        assert not project_finished.is_set()
-        ruleset_started.set()
+        events.append("project")
+        return 1
 
     monkeypatch.setattr(github, "configure_project", slow_project)
-    monkeypatch.setattr(github, "configure_ruleset", check_ruleset)
-    failed = github.configure_all("me/r", private=False, push=lambda: None, log=lambda _: None)
+    monkeypatch.setattr(github, "verify_project", lambda *_: None)
+    failed = github.configure_all(
+        "me/r", private=False, push=lambda: events.append("push"), log=lambda _: None
+    )
     assert failed == []
-    assert project_finished.is_set()
+    assert events == ["project", "push"]
 
 
-def test_push_failure_skips_ruleset_even_with_slow_project(calls, monkeypatch):
+def test_rulesets_are_installed_even_if_initial_push_later_fails(calls, monkeypatch):
     project_started = threading.Event()
 
     def slow_project(_):
         project_started.set()
-        time.sleep(0.1)
+        return 1
 
     monkeypatch.setattr(github, "configure_project", slow_project)
+    monkeypatch.setattr(github, "verify_project", lambda *_: None)
     failed = github.configure_all(
         "me/r",
         private=False,
@@ -195,10 +246,33 @@ def test_push_failure_skips_ruleset_even_with_slow_project(calls, monkeypatch):
     )
     assert failed == ["push main"]
     assert project_started.is_set()
-    assert not any("rulesets" in path for path in _paths(calls))
+    assert any("rulesets" in path for path in _paths(calls))
+
+
+def test_ruleset_failure_blocks_initial_push_and_can_be_retried(calls):
+    calls.fail_on = ("rulesets?includes_parents=false",)
+    pushed = []
+    logs = []
+
+    failed = github.configure_all(
+        "me/r", private=False, project=False, push=lambda: pushed.append(True), log=logs.append
+    )
+
+    assert failed == ["ruleset 'protect-main'", "push main"]
+    assert pushed == []
+    assert any("refusing to publish" in line for line in logs)
+    assert "push main" not in _paths(calls)
+
+    calls.fail_on = ()
+    failed = github.configure_all(
+        "me/r", private=False, project=False, push=lambda: pushed.append(True), log=lambda _: None
+    )
+    assert failed == []
+    assert pushed == [True]
 
 
 def test_private_skips_paid_features(calls):
+    calls.private = True
     github.configure_all("me/r", private=True, project=False, log=lambda _: None)
     paths = " ".join(_paths(calls))
     assert "rulesets" not in paths
@@ -210,6 +284,7 @@ def test_private_skips_paid_features(calls):
 def test_private_disables_actions_before_push(calls):
     """No Actions minutes to spend on a private repo: disabled before the first
     push, so ci.yml/release.yml/Dependabot never get a chance to trigger."""
+    calls.private = True
     order = []
     failed = github.configure_all(
         "me/r", private=True, project=False, push=lambda: order.append(len(calls)),
@@ -227,6 +302,7 @@ def test_private_disables_actions_before_push(calls):
 def test_push_skipped_entirely_when_actions_cannot_be_disabled(calls):
     """A private repo must never reach GitHub with Actions still enabled: if
     disabling them fails, push isn't attempted at all, not just reported."""
+    calls.private = True
     calls.fail_on = ("actions/permissions",)
     pushed = []
     failed = github.configure_all(
@@ -238,14 +314,13 @@ def test_push_skipped_entirely_when_actions_cannot_be_disabled(calls):
 
 
 def test_public_repo_leaves_actions_alone(calls):
-    calls.responses.update({"GET": "[]", "graphql": _graphql_projects()})
+    calls.responses.update({"graphql": _graphql_projects()})
     calls.responses["project create"] = '{"number": 1}'
     github.configure_all("me/r", private=False, log=lambda _: None)
     assert "repos/me/r/actions/permissions" not in _paths(calls)
 
 
 def test_public_settings_failure_blocks_push_and_ruleset_but_allows_retry(calls):
-    calls.responses["GET"] = "[]"
     calls.fail_on = ("api -X PATCH repos/me/r",)
     pushed = []
     failed = github.configure_all(
@@ -266,7 +341,6 @@ def test_public_settings_failure_blocks_push_and_ruleset_but_allows_retry(calls)
 
 
 def test_public_settings_failure_still_repairs_ruleset_when_main_already_exists(calls):
-    calls.responses["GET"] = "[]"
     calls.fail_on = ("api -X PATCH repos/me/r",)
     failed = github.configure_all("me/r", private=False, project=False, log=lambda _: None)
     assert failed == ["repo settings"]
@@ -274,7 +348,6 @@ def test_public_settings_failure_still_repairs_ruleset_when_main_already_exists(
 
 
 def test_failures_are_collected_and_others_still_run(calls):
-    calls.responses["GET"] = "[]"
     calls.fail_on = ("automated-security-fixes",)
     failed = github.configure_all("me/r", private=False, project=False, log=lambda _: None)
     # Alerts and security-fixes are one task (enabling fixes before alerts can 422),
@@ -283,32 +356,21 @@ def test_failures_are_collected_and_others_still_run(calls):
     assert any("subscription" in p for p in _paths(calls))
 
 
-def test_push_failure_stops_before_ruleset(calls):
-    calls.responses["graphql"] = _graphql_projects({"number": 1, "title": "r"})
-
-    def bad_push():
-        raise RuntimeError("rejected")
-
-    failed = github.configure_all("me/r", private=False, push=bad_push, log=lambda _: None)
-    # push and project board are independent, concurrent fan-out steps: push
-    # failing doesn't stop project board from running (it's already in flight),
-    # it only skips the ruleset phase that comes strictly after the fan-out.
-    assert failed == ["push main"]
-    assert not any("rulesets" in p for p in _paths(calls))
-
-
-def test_fanout_failure_order_is_declared_not_completion(monkeypatch):
-    """A later-declared fan-out step failing faster than an earlier one must not
-    reorder `failed` — pool.map preserves declared order, not completion order."""
+def test_fanout_failure_order_is_declared_not_completion(calls, monkeypatch):
+    """Failure reporting stays in declared order even when later steps fail first."""
+    calls.private = True
+    original = github.gh
+    mute_failed = threading.Event()
 
     def fake_gh(*args, body=None):
         joined = " ".join(args)
-        if "vulnerability-alerts" in joined:  # declared first, but slow
-            time.sleep(0.2)
+        if "vulnerability-alerts" in joined and "PUT" in args:
+            assert mute_failed.wait(5)
             raise github.GhError("alerts boom")
-        if "subscription" in joined:  # declared later, fails immediately
+        if "subscription" in joined and "PUT" in args:
+            mute_failed.set()
             raise github.GhError("mute boom")
-        return ""
+        return original(*args, body=body)
 
     monkeypatch.setattr(github, "gh", fake_gh)
     failed = github.configure_all("me/r", private=True, project=False, log=lambda _: None)

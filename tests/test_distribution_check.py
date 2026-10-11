@@ -105,3 +105,36 @@ def test_distribution_is_required_and_cannot_cancel_its_caller():
     # literal prefix prevents PR cancellation from cancelling the parent run.
     assert distribution["concurrency"]["group"].startswith("distribution-")
     assert distribution["concurrency"]["group"] != ci["concurrency"]["group"]
+
+
+@pytest.mark.parametrize("candidate", [False, True])
+def test_bootstrap_guarantees_are_not_imposed_on_older_published_releases(
+    tmp_path,
+    monkeypatch,
+    candidate,
+):
+    check = CHECK["check_installed_tools"]
+    tools = {"python-wheel": tmp_path / "python", "rust": tmp_path / "rust"}
+    commands = []
+
+    def fake_run(command, **kwargs):
+        command = [str(part) for part in command]
+        if command[-1] == "--version":
+            return "makeghrepo 0.35.0"
+        if command[-1] in {"--help", "-h"}:
+            return "--render --license --version"
+        assert command[1].endswith("scripts/bootstrap-check")
+        commands.append(command)
+        report = Path(command[command.index("--output") + 1])
+        report.write_text(json.dumps({str(path.resolve()): [] for path in tools.values()}))
+        return ""
+
+    monkeypatch.setitem(check.__globals__, "CASES", ())
+    monkeypatch.setitem(check.__globals__, "run", fake_run)
+    check(tools, "0.35.0", tmp_path, {"PATH": ""}, python_gate=candidate)
+    assert len(commands) == 1
+    assert ("--python-executable" in commands[0]) is candidate
+    if candidate:
+        assert commands[0][commands[0].index("--python-executable") + 1] == str(
+            tools["python-wheel"]
+        )
