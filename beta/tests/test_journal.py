@@ -206,6 +206,79 @@ class JournalTests(unittest.TestCase):
         self.assertIn("Recovery record:", str(caught.exception))
         self.assertEqual((self.dest / "README.md").read_text(), "sample")
 
+    def test_cleanup_record_failure_reports_only_paths_still_present(self):
+        original_event = Journal.event
+        for status in ("attempted", "confirmed"):
+            with self.subTest(status=status):
+                dest = self.root / status / "preview"
+                plan = build_plan(Request(words=("sample",), render=dest))
+                failed_paths = []
+
+                def event(
+                    journal,
+                    operation,
+                    path,
+                    state_name,
+                    status=status,
+                    failed_paths=failed_paths,
+                    **kwargs,
+                ):
+                    if (
+                        operation == "cleanup"
+                        and path.name.endswith(".lock")
+                        and state_name == status
+                    ):
+                        failed_paths.append(path)
+                        raise OSError("cleanup journal unavailable")
+                    return original_event(journal, operation, path, state_name, **kwargs)
+
+                with (
+                    patch.object(Journal, "event", event),
+                    self.assertRaises(ExecutionError) as caught,
+                ):
+                    execute(plan, self.render)
+                self.assertEqual(caught.exception.outcome, "installed")
+                self.assertEqual(len(failed_paths), 1)
+                self.assertEqual(failed_paths[0].exists(), status == "attempted")
+                self.assertEqual(
+                    caught.exception.retained,
+                    tuple(failed_paths) if status == "attempted" else (),
+                )
+                self.assertIn("cleanup journal unavailable", str(caught.exception))
+                self.assertEqual((dest / "README.md").read_text(), "sample")
+
+    def test_cleanup_record_failure_with_failed_readback_is_unknown(self):
+        original_event = Journal.event
+        original_lstat = Path.lstat
+        failed_paths = []
+
+        def event(journal, operation, path, state_name, **kwargs):
+            if (
+                operation == "cleanup"
+                and path.name.endswith(".lock")
+                and state_name == "confirmed"
+            ):
+                failed_paths.append(path)
+                raise OSError("cleanup journal unavailable")
+            return original_event(journal, operation, path, state_name, **kwargs)
+
+        def lstat(path, *args, **kwargs):
+            if path in failed_paths:
+                raise PermissionError("cleanup readback unavailable")
+            return original_lstat(path, *args, **kwargs)
+
+        with (
+            patch.object(Journal, "event", event),
+            patch.object(Path, "lstat", lstat),
+            self.assertRaises(ExecutionError) as caught,
+        ):
+            execute(self.plan(), self.render)
+        self.assertEqual(caught.exception.outcome, "installed")
+        self.assertEqual(caught.exception.retained, ())
+        self.assertEqual(caught.exception.unknown_paths, tuple(failed_paths))
+        self.assertIn("Paths with unknown existence need inspection", str(caught.exception))
+        self.assertEqual((self.dest / "README.md").read_text(), "sample")
+
     def test_truncated_oversized_and_foreign_records_are_untrusted(self):
         record = execute(self.plan(), self.render)
         original = record.read_bytes()
@@ -239,6 +312,32 @@ class JournalTests(unittest.TestCase):
         link.symlink_to(self.dest.parent, target_is_directory=True)
         with self.assertRaises(ValueError):
             inspect_records(link / self.dest.name)
+
+    def test_missing_outcome_does_not_abort_other_records_or_status_output(self):
+        valid = execute(self.plan(), self.render)
+        malformed = json.loads(valid.read_text())
+        del malformed["outcome"]
+        invalid = valid.with_suffix(".json.pending")
+        invalid.write_text(json.dumps(malformed))
+        before = {path: path.read_bytes() for path in (valid, invalid)}
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            cli.main(["--status", str(self.dest), "--json"])
+        records = {item["record"]: item for item in json.loads(output.getvalue())["records"]}
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[str(invalid)]["observation"], "invalid_or_unreadable_record")
+        self.assertEqual(
+            records[str(valid)]["observation"], "destination_matches_staged_identity"
+        )
+        self.assertEqual(records[str(valid)]["recorded_outcome"], "installed")
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            cli.main(["--status", str(self.dest)])
+        self.assertIn("invalid_or_unreadable_record", output.getvalue())
+        self.assertIn(str(valid), output.getvalue())
+        self.assertEqual(before, {path: path.read_bytes() for path in (valid, invalid)})
 
     def test_status_cli_is_read_only_and_does_not_replay_unknown_data(self):
         execute(self.plan(), self.render)

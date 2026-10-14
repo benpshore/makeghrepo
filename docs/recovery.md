@@ -24,6 +24,10 @@ exception reaches Python; readback of the stage/destination identities prevents 
 false rollback claim or deletion of completed output. Unavailable readback leaves
 the outcome uncertain and the destination retained for inspection. A failed
 cleanup after successful promotion still reports that output was installed.
+Cleanup errors and retained paths are separate observations: a confirmation-record
+failure after deletion still fails the command, but does not claim the removed
+path remains. Existence readback distinguishes absent paths, observed retained
+paths, and paths with unknown existence when readback is unavailable.
 Directory paths are recorded before creation is attempted, including the staging
 path. If an interrupt arrives after creation but before identity confirmation, the
 path is retained and named instead of silently orphaned or assumed safe to delete.
@@ -35,6 +39,8 @@ planned nearest existing ancestor. Every operation records intent before its
 filesystem call and records confirmation afterwards. A failed record write stops
 new project effects; cleanup also requires a persisted intent. Initial/truncated
 records and `.json.pending` updates remain visible to read-only `--status DIR`.
+Schema-1 records require an explicit `outcome` field (`null` while unfinished).
+A missing outcome is diagnosed as malformed without aborting other records.
 The record contains the plan hash, generator version, bundled-template source
 label, paths and observed directory identities. The source label/version is
 informational provenance, not a content signature or authenticity guarantee.

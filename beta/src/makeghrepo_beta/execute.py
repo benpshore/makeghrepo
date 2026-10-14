@@ -21,21 +21,39 @@ from makeghrepo_beta.plan import Plan, directory_state, revalidate
 class ExecutionError(RuntimeError):
     """An execution failure with phase and observed installation outcome."""
 
-    def __init__(self, message: str, *, phase: str, outcome: str, retained: tuple[Path, ...]):
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: str,
+        outcome: str,
+        retained: tuple[Path, ...],
+        unknown_paths: tuple[Path, ...] = (),
+    ):
         super().__init__(message)
         self.phase = phase
         self.outcome = outcome
         self.retained = retained
+        self.unknown_paths = unknown_paths
 
 
 class ExecutionInterrupted(KeyboardInterrupt):
     """Preserve interruption exit semantics while reporting completed effects."""
 
-    def __init__(self, message: str, *, phase: str, outcome: str, retained: tuple[Path, ...]):
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: str,
+        outcome: str,
+        retained: tuple[Path, ...],
+        unknown_paths: tuple[Path, ...] = (),
+    ):
         super().__init__(message)
         self.phase = phase
         self.outcome = outcome
         self.retained = retained
+        self.unknown_paths = unknown_paths
 
 
 def render_packaged(dest: Path, data: dict[str, object]) -> None:
@@ -63,6 +81,8 @@ def execute(
     promotion_attempted = False
     uncertain = False
     cleanup_errors: list[Path] = []
+    cleanup_unknown: list[Path] = []
+    cleanup_diagnostics: list[str] = []
     phase = "persist initial recovery record"
     failure = None
     interrupted = False
@@ -178,36 +198,56 @@ def execute(
             pending.append((lock, lock_state, False))
         if not installed and not uncertain:
             pending.extend((path, state, False) for path, state in reversed(created))
+        def observe_remaining(path):
+            # lexists() turns permission/readback errors into False. Distinguish
+            # an observed absence from a path whose current state is unknown.
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                return
+            except OSError:
+                cleanup_unknown.append(path)
+            else:
+                cleanup_errors.append(path)
+
         try:
             for path, state, recursive in pending:
+                cleanup_step = "inspect directory"
                 try:
-                    if not os.path.lexists(path):
+                    try:
+                        current = directory_state(path)
+                    except FileNotFoundError:
                         continue
-                    if directory_state(path) != state:
+                    if current != state:
                         raise RuntimeError("directory identity changed or was not confirmed")
+                    cleanup_step = "record cleanup intent"
                     journal.event("cleanup", path, "attempted", state=state)
+                    cleanup_step = "remove directory"
                     if recursive:
                         shutil.rmtree(path)
                     else:
                         path.rmdir()
+                    cleanup_step = "record cleanup confirmation"
                     journal.event("cleanup", path, "confirmed", state=state)
-                except (OSError, ValueError, RuntimeError):
-                    cleanup_errors.append(path)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    if failure is None:
+                        failure = exc
+                        phase = "cleanup"
+                    cleanup_diagnostics.append(f"{cleanup_step} failed for {path}: {exc}")
+                    observe_remaining(path)
         except KeyboardInterrupt as exc:
-            # A second interrupt stops destructive cleanup. Read back every
-            # recorded path, including a removal that may have just completed,
-            # so the CLI still reports installed output and actual leftovers.
+            # Stop destructive cleanup, then distinguish present, absent and
+            # unknown paths even when a removal completed before interruption.
             interrupted = True
             failure = failure or exc
             phase = "cleanup"
             cleanup_errors = []
+            cleanup_unknown = []
             for path, _, _ in pending:
                 try:
-                    remains = os.path.lexists(path)
-                except (OSError, KeyboardInterrupt):
-                    remains = True  # Unknown is retained-for-inspection, not absent.
-                if remains:
-                    cleanup_errors.append(path)
+                    observe_remaining(path)
+                except KeyboardInterrupt:
+                    cleanup_unknown.append(path)
     outcome = "installed" if installed else "uncertain" if uncertain else "not installed"
     try:
         journal.finish(outcome)
@@ -216,7 +256,7 @@ def execute(
             phase = "persist recovery outcome"
             failure = exc
         interrupted = interrupted or isinstance(exc, KeyboardInterrupt)
-    if failure is not None or cleanup_errors:
+    if failure is not None or cleanup_errors or cleanup_unknown:
         effect = (
             f"Rendered output installed at {dest}"
             if installed
@@ -228,13 +268,29 @@ def execute(
         message = f"Render {status} during {phase}. {effect}. Recovery record: {journal.path}."
         if cleanup_errors:
             message += f" Retained paths need inspection: {', '.join(map(str, cleanup_errors))}."
+        if cleanup_unknown:
+            message += (
+                " Paths with unknown existence need inspection: "
+                + ", ".join(map(str, cleanup_unknown))
+                + "."
+            )
+        if cleanup_diagnostics:
+            message += " Cleanup errors: " + "; ".join(cleanup_diagnostics) + "."
         if failure is not None:
             message += f" Original failure: {failure or type(failure).__name__}"
         if interrupted:
             raise ExecutionInterrupted(
-                message, phase=phase, outcome=outcome, retained=tuple(cleanup_errors)
+                message,
+                phase=phase,
+                outcome=outcome,
+                retained=tuple(cleanup_errors),
+                unknown_paths=tuple(cleanup_unknown),
             ) from failure
         raise ExecutionError(
-            message, phase=phase, outcome=outcome, retained=tuple(cleanup_errors)
+            message,
+            phase=phase,
+            outcome=outcome,
+            retained=tuple(cleanup_errors),
+            unknown_paths=tuple(cleanup_unknown),
         ) from failure
     return journal.path

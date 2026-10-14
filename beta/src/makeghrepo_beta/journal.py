@@ -132,7 +132,8 @@ def _read(path: Path, destination: Path) -> dict:
             f"{prefix(destination)}{data['invocation']}.json",
             f"{prefix(destination)}{data['invocation']}.json.pending",
         }
-        or data.get("outcome") not in (None, "installed", "not installed", "uncertain")
+        or "outcome" not in data
+        or data["outcome"] not in (None, "installed", "not installed", "uncertain")
     ):
         raise ValueError("unsupported or malformed recovery record")
     for event in data["events"]:
