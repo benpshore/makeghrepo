@@ -66,6 +66,34 @@ jobs:
     permissions:
       contents: read
 
+  beta:
+    name: beta
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Shared planner and failure recovery
+        env:
+          PYTHONPATH: beta/src:src
+        run: uv run python -B -m unittest discover -s beta/tests -v
+      - name: Independent installed beta distribution
+        run: |
+          uv run ruff format --check beta scripts/beta-check
+          uv run ruff check beta scripts/beta-check
+          uv run python scripts/beta-check --evidence out/beta-evidence.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: beta-evidence
+          path: out/beta-evidence.json
+          if-no-files-found: error
+
   plan:
     name: plan
     runs-on: ubuntu-24.04
@@ -238,7 +266,7 @@ jobs:
   ci:
     name: ci
     if: always()
-    needs: [test, plan, templates, actionlint, rust, distribution]
+    needs: [test, plan, templates, actionlint, rust, distribution, beta]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

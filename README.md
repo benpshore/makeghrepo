@@ -4,6 +4,12 @@ One command creates a new, fully configured GitHub repo: public by default, and 
 
 It exists to save keystrokes, and so that AI coding agents can start new repos without broad shell or GitHub admin access.
 
+Experimental work lives in the separate [makeghrepo-beta package](beta/README.md).
+Its first increment adds transactional offline generation and a genuine
+`--dry-run`; installing it as a uv tool does not replace `makeghrepo`. See the
+[numbered platform roadmap](docs/roadmap.md) for the ten-minute working-project
+target, current evidence and remaining scope.
+
 ## Install
 
 ```sh
