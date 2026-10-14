@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from makeghrepo_beta import cli
-from makeghrepo_beta.execute import ExecutionError, execute
+from makeghrepo_beta.execute import ExecutionError, ExecutionInterrupted, execute
 from makeghrepo_beta.plan import Request, build_plan, directory_state
 
 
@@ -254,7 +254,7 @@ class EffectBoundaryTests(unittest.TestCase):
         for target, value, phase in (
             ("pathlib.Path.mkdir", mkdir, "acquire writer lock"),
             (
-                "makeghrepo_beta.execute.tempfile.mkdtemp",
+                "makeghrepo_beta.execute.uuid.uuid4",
                 PermissionError("staging creation denied"),
                 "create staging directory",
             ),
@@ -312,6 +312,111 @@ class EffectBoundaryTests(unittest.TestCase):
         self.assertEqual(list(self.dest.iterdir()), [])
         execute(build_plan(self.request), self.render)
         self.assertEqual((self.dest / "README.md").read_text(), "sample")
+
+    def test_interrupt_after_each_directory_creation_names_unconfirmed_paths(self):
+        original_mkdir = Path.mkdir
+        phases = ("parent", "lock", "stage", "reservation")
+        for kind in phases:
+            with self.subTest(kind=kind):
+                case = self.root / kind
+                case.mkdir()
+                dest = case / "new" / "preview"
+                plan = build_plan(Request(words=("sample",), render=dest))
+                created = []
+
+                def mkdir(path, *args, **kwargs):
+                    original_mkdir(path, *args, **kwargs)
+                    target = (
+                        kind == "parent" and path == dest.parent
+                        or kind == "lock" and path.name.endswith(".lock")
+                        or kind == "stage" and path.name.startswith(".makeghrepo-beta-stage-")
+                        or kind == "reservation" and path == dest
+                    )
+                    if target:
+                        created.append(path)
+                        raise KeyboardInterrupt("immediately after mkdir")
+
+                with (
+                    patch("pathlib.Path.mkdir", mkdir),
+                    self.assertRaises(ExecutionInterrupted) as caught,
+                ):
+                    execute(plan, self.render)
+                self.assertEqual(len(created), 1)
+                self.assertEqual(caught.exception.outcome, "not installed")
+                self.assertIn(created[0], caught.exception.retained)
+                self.assertIn(str(created[0]), str(caught.exception))
+                self.assertTrue(created[0].is_dir())
+                self.assertEqual(list(created[0].iterdir()), [])
+                self.assertFalse((dest / "README.md").exists())
+
+    def test_interrupt_before_directory_creation_does_not_invent_leftovers(self):
+        original_mkdir = Path.mkdir
+
+        def mkdir(path, *args, **kwargs):
+            if path.name.endswith(".lock"):
+                raise KeyboardInterrupt("before mkdir")
+            return original_mkdir(path, *args, **kwargs)
+
+        with (
+            patch("pathlib.Path.mkdir", mkdir),
+            self.assertRaises(ExecutionInterrupted) as caught,
+        ):
+            execute(build_plan(self.request), self.render)
+        self.assertEqual(caught.exception.retained, ())
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_interrupt_during_cleanup_reports_installed_output_and_actual_leftovers(self):
+        original_rmdir = Path.rmdir
+        for removed_first in (False, True):
+            with self.subTest(removed_first=removed_first):
+                case = self.root / str(removed_first)
+                case.mkdir()
+                dest = case / "preview"
+                plan = build_plan(Request(words=("sample",), render=dest))
+                attempted = []
+
+                def rmdir(path):
+                    if path.name.endswith(".lock"):
+                        attempted.append(path)
+                        if removed_first:
+                            original_rmdir(path)
+                        raise KeyboardInterrupt("during lock cleanup")
+                    return original_rmdir(path)
+
+                with (
+                    patch("pathlib.Path.rmdir", rmdir),
+                    self.assertRaises(ExecutionInterrupted) as caught,
+                ):
+                    execute(plan, self.render)
+                self.assertEqual(caught.exception.phase, "cleanup")
+                self.assertEqual(caught.exception.outcome, "installed")
+                self.assertIn(f"Rendered output installed at {dest}", str(caught.exception))
+                self.assertEqual((dest / "README.md").read_text(), "sample")
+                self.assertEqual(caught.exception.retained, () if removed_first else tuple(attempted))
+
+    def test_cli_cleanup_interrupt_does_not_say_before_execution(self):
+        original_rmdir = Path.rmdir
+
+        def rmdir(path):
+            if path.name.endswith(".lock"):
+                raise KeyboardInterrupt("during lock cleanup")
+            return original_rmdir(path)
+
+        def run_plan(plan):
+            execute(plan, self.render)
+
+        stderr = io.StringIO()
+        with (
+            patch("pathlib.Path.rmdir", rmdir),
+            patch("makeghrepo_beta.execute.execute", run_plan),
+            contextlib.redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as caught,
+        ):
+            cli.main(["sample", "--render", str(self.dest)])
+        self.assertEqual(caught.exception.code, 130)
+        self.assertIn(f"Rendered output installed at {self.dest}", stderr.getvalue())
+        self.assertIn("Retained paths need inspection", stderr.getvalue())
+        self.assertNotIn("before execution", stderr.getvalue())
 
 
 if __name__ == "__main__":

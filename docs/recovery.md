@@ -22,6 +22,11 @@ exception reaches Python; readback of the stage/destination identities prevents 
 false rollback claim or deletion of completed output. Unavailable readback leaves
 the outcome uncertain and the destination retained for inspection. A failed
 cleanup after successful promotion still reports that output was installed.
+Directory paths are recorded before creation is attempted, including the staging
+path. If an interrupt arrives after creation but before identity confirmation, the
+path is retained and named instead of silently orphaned or assumed safe to delete.
+A further interrupt during cleanup stops destructive operations and reports the
+remaining paths and any installed output, retaining interruption exit status 130.
 
 Abrupt process death and power failure still need a durable recovery journal; a
 stale lock is not automatically safe to delete. Ordinary revalidation cannot
