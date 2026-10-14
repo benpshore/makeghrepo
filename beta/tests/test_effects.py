@@ -17,6 +17,17 @@ from makeghrepo_beta.plan import Request, build_plan, directory_state
 
 
 class EffectBoundaryTests(unittest.TestCase):
+    def project_entries(self, directory):
+        # Recovery records are deliberate sibling artifacts. Keep the original
+        # assertions on project/cleanup paths, and validate records separately.
+        result = []
+        for path in directory.iterdir():
+            if path.name.startswith(".makeghrepo-beta-record-"):
+                self.assertEqual(json.loads(path.read_text())["schema"], 1)
+            else:
+                result.append(path)
+        return result
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -108,7 +119,7 @@ class EffectBoundaryTests(unittest.TestCase):
             self.assertEqual(caught.exception.outcome, "not installed")
             self.assertEqual(directory_state(self.dest), original)
             self.assertEqual(list(self.dest.iterdir()), [])
-            self.assertEqual(list(self.dest.parent.iterdir()), [self.dest])
+            self.assertEqual(self.project_entries(self.dest.parent), [self.dest])
         execute(plan, self.render)
         self.assertEqual((self.dest / "README.md").read_text(), "sample")
 
@@ -119,7 +130,7 @@ class EffectBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not empty"):
             execute(plan, self.render)
         self.assertEqual((self.dest / "README.md").read_text(), "user edited after success")
-        self.assertEqual(list(self.dest.parent.iterdir()), [self.dest])
+        self.assertEqual(self.project_entries(self.dest.parent), [self.dest])
 
     def test_separate_process_is_refused_while_writer_lock_is_held(self):
         def render(path, data):
@@ -146,13 +157,15 @@ class EffectBoundaryTests(unittest.TestCase):
             self.render(path, data)
 
         execute(build_plan(self.request), render)
-        self.assertEqual(list(self.dest.parent.iterdir()), [self.dest])
+        self.assertEqual(self.project_entries(self.dest.parent), [self.dest])
 
     def test_failure_after_rename_reports_installation_and_preserves_output(self):
         original_replace = os.replace
 
         def interrupted_replace(source, destination):
             original_replace(source, destination)
+            if destination != self.dest:
+                return
             raise OSError("response lost after rename")
 
         with (
@@ -164,13 +177,15 @@ class EffectBoundaryTests(unittest.TestCase):
         self.assertEqual(caught.exception.phase, "promote rendered output")
         self.assertIn(f"Rendered output installed at {self.dest}", str(caught.exception))
         self.assertEqual((self.dest / "README.md").read_text(), "sample")
-        self.assertEqual(list(self.dest.parent.iterdir()), [self.dest])
+        self.assertEqual(self.project_entries(self.dest.parent), [self.dest])
 
     def test_interrupt_after_rename_reports_installation_with_exit_130(self):
         original_replace = os.replace
 
         def interrupted_replace(source, destination):
             original_replace(source, destination)
+            if destination != self.dest:
+                return
             raise KeyboardInterrupt
 
         def run_plan(plan):
@@ -195,6 +210,8 @@ class EffectBoundaryTests(unittest.TestCase):
         def interrupted_replace(source, destination):
             nonlocal moved
             original_replace(source, destination)
+            if destination != self.dest:
+                return
             moved = True
             raise OSError("response lost after rename")
 
@@ -240,7 +257,7 @@ class EffectBoundaryTests(unittest.TestCase):
 
         with self.assertRaises(ExecutionError):
             execute(build_plan(self.request), failure)
-        self.assertEqual(list(self.root.iterdir()), [unrelated])
+        self.assertEqual(self.project_entries(self.root), [unrelated])
         self.assertEqual((unrelated / "keep.txt").read_text(), "keep")
 
     def test_lock_and_stage_creation_failures_clean_owned_parents(self):
@@ -265,7 +282,7 @@ class EffectBoundaryTests(unittest.TestCase):
                     execute(build_plan(self.request), self.render)
                 self.assertEqual(caught.exception.phase, phase)
                 self.assertEqual(caught.exception.outcome, "not installed")
-                self.assertEqual(list(self.root.iterdir()), [])
+                self.assertEqual(self.project_entries(self.root), [])
 
     def test_cleanup_failure_after_install_does_not_claim_rollback(self):
         original_rmdir = Path.rmdir
@@ -294,7 +311,7 @@ class EffectBoundaryTests(unittest.TestCase):
         self.assertEqual(caught.exception.phase, "preserve destination permissions")
         self.assertEqual(directory_state(self.dest), original)
         self.assertEqual(list(self.dest.iterdir()), [])
-        self.assertEqual(list(self.dest.parent.iterdir()), [self.dest])
+        self.assertEqual(self.project_entries(self.dest.parent), [self.dest])
 
     def test_unknown_reservation_identity_is_retained_and_named(self):
         def observation(path):
@@ -363,7 +380,7 @@ class EffectBoundaryTests(unittest.TestCase):
         ):
             execute(build_plan(self.request), self.render)
         self.assertEqual(caught.exception.retained, ())
-        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertEqual(self.project_entries(self.root), [])
 
     def test_interrupt_during_cleanup_reports_installed_output_and_actual_leftovers(self):
         original_rmdir = Path.rmdir

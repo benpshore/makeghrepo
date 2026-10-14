@@ -29,4 +29,7 @@ path = "hatch_build.py"
 
 [tool.ruff]
 extend = "../pyproject.toml"
+# Keep the stdlib planning/recovery tests runnable on a Python 3.13 development host.
+# Installed generation still requires the supported Python >=3.14 runtime.
+target-version = "py313"
 

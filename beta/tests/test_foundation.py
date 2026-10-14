@@ -22,6 +22,17 @@ from makeghrepo_beta.plan import LANGS, Request, build_plan
 
 
 class FoundationTests(unittest.TestCase):
+    def project_entries(self, directory):
+        # Recovery records are deliberate sibling artifacts. Keep the original
+        # assertions on project/cleanup paths, and validate records separately.
+        result = []
+        for path in directory.iterdir():
+            if path.name.startswith(".makeghrepo-beta-record-"):
+                self.assertEqual(json.loads(path.read_text())["schema"], 1)
+            else:
+                result.append(path)
+        return result
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -65,7 +76,7 @@ class FoundationTests(unittest.TestCase):
             {"year": "\uff12\uff10\uff12\uff16"},  # Fullwidth digits are intentionally invalid.
             {"author": "Test\x1b"},
             {"description": "text\x00"},
-            {"render": None},
+            {"render": None, "words": ("python",)},
         )
         for changes in cases:
             with self.subTest(changes=changes), self.assertRaises(ValueError):
@@ -110,7 +121,7 @@ class FoundationTests(unittest.TestCase):
         execute(plan, render)
         self.assertEqual(seen, [plan.template_data()])
         self.assertEqual((self.dest / "README.md").read_text(), "sample")
-        self.assertEqual(list(self.dest.parent.iterdir()), [self.dest])
+        self.assertEqual(self.project_entries(self.dest.parent), [self.dest])
         self.assertFalse((self.dest / ".git").exists())
 
     def test_empty_existing_target_is_replaced_only_after_complete_render(self):
@@ -124,7 +135,7 @@ class FoundationTests(unittest.TestCase):
 
         execute(plan, render)
         self.assertEqual(self.dest.stat().st_mode & 0o777, original_mode)
-        self.assertEqual(list(self.dest.parent.iterdir()), [self.dest])
+        self.assertEqual(self.project_entries(self.dest.parent), [self.dest])
 
     def test_render_failure_rolls_back_only_owned_paths(self):
         sentinel = self.root / "keep.txt"
@@ -136,7 +147,7 @@ class FoundationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "injected template failure"):
             execute(build_plan(self.request()), broken)
-        self.assertEqual(list(self.root.iterdir()), [sentinel])
+        self.assertEqual(self.project_entries(self.root), [sentinel])
         self.assertEqual(sentinel.read_text(), "keep")
         execute(build_plan(self.request()), self.render)
         self.assertTrue((self.dest / "README.md").exists())
@@ -148,24 +159,31 @@ class FoundationTests(unittest.TestCase):
 
         with self.assertRaises(KeyboardInterrupt):
             execute(build_plan(self.request()), interrupt)
-        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertEqual(self.project_entries(self.root), [])
 
     def test_failed_promotion_preserves_existing_empty_target(self):
+        original_replace = os.replace
+
+        def fail_promotion(source, destination):
+            if destination == self.dest:
+                raise OSError("injected")
+            return original_replace(source, destination)
+
         for existing in (False, True):
             with self.subTest(existing=existing):
                 if existing:
                     self.dest.mkdir(parents=True)
                 with (
-                    patch("makeghrepo_beta.execute.os.replace", side_effect=OSError("injected")),
+                    patch("makeghrepo_beta.execute.os.replace", fail_promotion),
                     self.assertRaisesRegex(ExecutionError, "injected"),
                 ):
                     execute(build_plan(self.request()), self.render)
                 self.assertEqual(self.dest.exists(), existing)
                 if existing:
                     self.assertEqual(list(self.dest.iterdir()), [])
-                    self.assertEqual(list(self.dest.parent.iterdir()), [self.dest])
+                    self.assertEqual(self.project_entries(self.dest.parent), [self.dest])
                 else:
-                    self.assertEqual(list(self.root.iterdir()), [])
+                    self.assertEqual(self.project_entries(self.root), [])
 
     def test_destination_changed_since_plan_is_preserved(self):
         plan = build_plan(self.request())
@@ -185,7 +203,7 @@ class FoundationTests(unittest.TestCase):
 
         execute(plan, render)
         self.assertEqual((self.dest / "README.md").read_text(), "sample")
-        self.assertEqual(list(self.dest.parent.iterdir()), [self.dest])
+        self.assertEqual(self.project_entries(self.dest.parent), [self.dest])
 
     def test_uncooperative_writer_during_render_is_preserved(self):
         self.dest.parent.mkdir(parents=True)
@@ -198,7 +216,7 @@ class FoundationTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutionError, "not empty"):
             execute(build_plan(self.request()), render)
         self.assertEqual((self.dest / "other.txt").read_text(), "keep")
-        self.assertEqual(list(self.dest.parent.iterdir()), [self.dest])
+        self.assertEqual(self.project_entries(self.dest.parent), [self.dest])
 
     def test_cleanup_failure_reports_retained_path_and_preserves_destination(self):
         def broken(path, data):

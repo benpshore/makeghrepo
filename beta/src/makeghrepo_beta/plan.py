@@ -25,10 +25,13 @@ class Request:
     private: bool = False
     lib: bool = False
     license: str = "none"
-    owner: str = "someone"
+    owner: str | None = None
     author: str = "Test User"
     description: str = "a test project"
     year: str = "2026"
+    root: Path | None = None
+    status: Path | None = None
+    preflight: bool = False
 
 
 @dataclass(frozen=True)
@@ -122,9 +125,18 @@ def _text(value: str, label: str) -> str:
     return value
 
 
-def build_plan(request: Request) -> Plan:
+def build_plan(request: Request) -> Plan | BootstrapPlan | StatusPlan:
     """Validate all inputs and local destination state before allowing effects."""
+    if request.status is not None:
+        expected = Request(status=request.status)
+        if request != expected:
+            raise ValueError("--status cannot be combined with project inputs or --preflight")
+        return StatusPlan(absolute_path(request.status))
+    if request.render is not None and (request.preflight or request.root is not None):
+        raise ValueError("--preflight and --root apply only to bootstrap plans")
     words = list(request.words)
+    if request.render is None and (not words or _language(words[0]) is not None):
+        raise ValueError("bootstrap plans require an explicit project name before languages")
     raw_name = words.pop(0) if words and _language(words[0]) is None else "quiet-otter"
     _text(raw_name, "name")
     if any(char in raw_name for char in ("/", "\\")):
@@ -144,21 +156,21 @@ def build_plan(request: Request) -> Plan:
         raise ValueError("--lib only applies to python; add python to the language list")
     if request.license not in ("none", "MIT"):
         raise ValueError("--license must be none or MIT")
-    owner = names.validate_owner(request.owner)
+    owner = names.validate_owner(request.owner) if request.owner is not None else None
     author = _text(request.author, "author")
     description = _text(request.description, "description")
     if len(request.year) != 4 or not request.year.isascii() or not request.year.isdigit():
         raise ValueError("--year must be four ASCII digits")
     if request.render is None:
-        raise ValueError(
-            "this beta increment requires --render DIR; GitHub creation and its capability "
-            "preflight are not implemented in beta yet. Stable makeghrepo is unchanged"
+        root = absolute_path(request.root or Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")))
+        for part in (*reversed(root.parents), root):
+            if os.path.lexists(part):
+                directory_state(part)
+        return BootstrapPlan(
+            name, tuple(languages), request.private, request.lib, request.license,
+            owner, author, description, request.year, root,
         )
-    _text(str(request.render), "destination")
-    # absolute() normalizes relative spelling without hiding a symlink like resolve().
-    destination = request.render.expanduser().absolute()
-    if ".." in destination.parts:
-        raise ValueError("destination must not contain '..' path components")
+    destination = absolute_path(request.render)
     previous = destination_state(destination)
     return Plan(
         destination=destination,
@@ -168,11 +180,66 @@ def build_plan(request: Request) -> Plan:
         private=request.private,
         lib=request.lib,
         license=request.license,
-        owner=owner,
+        owner=owner if owner is not None else "someone",
         author=author,
         description=description,
         year=request.year,
     )
+
+
+
+def absolute_path(path: Path) -> Path:
+    _text(str(path), "path")
+    result = path.expanduser().absolute()
+    if ".." in result.parts:
+        raise ValueError("path must not contain '..' components")
+    return result
+
+
+@dataclass(frozen=True)
+class BootstrapPlan:
+    name: str
+    languages: tuple[str, ...]
+    private: bool
+    lib: bool
+    license: str
+    owner: str | None
+    author: str
+    description: str
+    year: str
+    root: Path
+
+    def as_dict(self) -> dict[str, object]:
+        visibility = "private" if self.private else "public"
+        return {
+            "schema": 1,
+            "distribution": "makeghrepo-beta",
+            "operation": "bootstrap-preview",
+            "inputs": {
+                "name": self.name, "languages": list(self.languages), "owner": self.owner,
+                "visibility": visibility, "lib": self.lib, "license": self.license,
+                "author": self.author, "description": self.description, "year": self.year,
+            },
+            "root": str(self.root),
+            "destination": str(self.root / self.owner / visibility / self.name) if self.owner else None,
+            "repository_url": f"https://github.com/{self.owner}/{self.name}" if self.owner else None,
+            "execution_available": False,
+            "observations": [],
+            "limits": [
+                "Authenticated owner, target access and capabilities are not checked by dry-run.",
+                "Live bootstrap and Actions execution are unavailable in this beta increment.",
+                "No owner bypass, remote creation, package execution or publication is planned.",
+                "Python daughter templates currently require 3.14; 3.10+ remains roadmap work.",
+            ],
+        }
+
+    def as_json(self) -> str:
+        return json.dumps(self.as_dict(), indent=2, sort_keys=True)
+
+
+@dataclass(frozen=True)
+class StatusPlan:
+    destination: Path
 
 
 def revalidate(plan: Plan) -> None:

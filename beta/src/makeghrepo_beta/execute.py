@@ -14,6 +14,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from makeghrepo_beta.journal import Journal
 from makeghrepo_beta.plan import Plan, directory_state, revalidate
 
 
@@ -46,10 +47,11 @@ def render_packaged(dest: Path, data: dict[str, object]) -> None:
 
 def execute(
     plan: Plan, render: Callable[[Path, dict[str, object]], None] = render_packaged
-) -> None:
+) -> Path:
     """Install a complete render; retain and report effects if completion is uncertain."""
     revalidate(plan)
     dest = plan.destination
+    journal = Journal(plan)
     created = []
     stage = None
     stage_state = None
@@ -74,6 +76,7 @@ def execute(
             # Record the intended path BEFORE mkdir: the syscall can succeed
             # immediately before KeyboardInterrupt is delivered. Without a
             # confirmed identity it is retained and named, never guessed owned.
+            journal.event("create_parent", parent, "attempted")
             created.append((parent, None))
             try:
                 parent.mkdir()
@@ -82,9 +85,11 @@ def execute(
                 directory_state(parent)
             else:
                 created[-1] = (parent, directory_state(parent))
+                journal.event("create_parent", parent, "confirmed", state=created[-1][1])
         phase = "acquire writer lock"
         key = hashlib.sha256(os.fsencode(dest)).hexdigest()[:20]
         candidate = dest.parent / f".makeghrepo-beta-{key}.lock"
+        journal.event("acquire_lock", candidate, "attempted")
         lock = candidate
         try:
             candidate.mkdir(mode=0o700)
@@ -95,19 +100,24 @@ def execute(
                 "Do not remove this lock until its writer has stopped"
             ) from exc
         lock_state = directory_state(lock)
+        journal.event("acquire_lock", lock, "confirmed", state=lock_state)
         phase = "revalidate destination"
         revalidate(plan)
         phase = "create staging directory"
         # Unlike mkdtemp, the chosen path is known before the creation call.
         stage = dest.parent / f".makeghrepo-beta-stage-{uuid.uuid4().hex}"
+        journal.event("create_stage", stage, "attempted")
         try:
             stage.mkdir(mode=0o700)
         except FileExistsError:
             stage = None  # An extraordinarily unlikely collision is not ours.
             raise
         stage_state = directory_state(stage)
+        journal.event("create_stage", stage, "confirmed", state=stage_state)
         phase = "render templates"
+        journal.event("render", stage, "attempted", state=stage_state)
         render(stage, plan.template_data())
+        journal.event("render", stage, "confirmed", state=stage_state)
         phase = "validate completed render"
         if directory_state(stage) != stage_state:
             raise RuntimeError("staging directory identity changed; refusing to install it")
@@ -117,6 +127,7 @@ def execute(
             # replace below may replace only an empty directory; a new file or
             # nonempty directory from another program makes it fail safely.
             phase = "reserve destination"
+            journal.event("reserve", dest, "attempted")
             reservation_attempted = True
             try:
                 dest.mkdir()
@@ -124,13 +135,18 @@ def execute(
                 reservation_attempted = False
                 raise
             reservation = directory_state(dest)
+            journal.event("reserve", dest, "confirmed", state=reservation)
         else:
             phase = "preserve destination permissions"
+            journal.event("permissions", stage, "attempted", state=stage_state)
             os.chmod(stage, dest.stat().st_mode & 0o777)
+            journal.event("permissions", stage, "confirmed", state=stage_state)
         phase = "promote rendered output"
+        journal.event("promote", dest, "attempted", state=stage_state, source=stage)
         promotion_attempted = True
         os.replace(stage, dest)
         installed = True
+        journal.event("promote", dest, "confirmed", state=stage_state, source=stage)
         phase = "cleanup"
     except (Exception, KeyboardInterrupt) as exc:
         failure = exc
@@ -167,11 +183,13 @@ def execute(
                         continue
                     if directory_state(path) != state:
                         raise RuntimeError("directory identity changed or was not confirmed")
+                    journal.event("cleanup", path, "attempted", state=state)
                     if recursive:
                         shutil.rmtree(path)
                     else:
                         path.rmdir()
-                except OSError, ValueError, RuntimeError:
+                    journal.event("cleanup", path, "confirmed", state=state)
+                except (OSError, ValueError, RuntimeError):
                     cleanup_errors.append(path)
         except KeyboardInterrupt as exc:
             # A second interrupt stops destructive cleanup. Read back every
@@ -184,12 +202,19 @@ def execute(
             for path, _, _ in pending:
                 try:
                     remains = os.path.lexists(path)
-                except OSError, KeyboardInterrupt:
+                except (OSError, KeyboardInterrupt):
                     remains = True  # Unknown is retained-for-inspection, not absent.
                 if remains:
                     cleanup_errors.append(path)
+    outcome = "installed" if installed else "uncertain" if uncertain else "not installed"
+    try:
+        journal.finish(outcome)
+    except (Exception, KeyboardInterrupt) as exc:
+        if failure is None:
+            phase = "persist recovery outcome"
+            failure = exc
+        interrupted = interrupted or isinstance(exc, KeyboardInterrupt)
     if failure is not None or cleanup_errors:
-        outcome = "installed" if installed else "uncertain" if uncertain else "not installed"
         effect = (
             f"Rendered output installed at {dest}"
             if installed
@@ -198,7 +223,7 @@ def execute(
             else f"This invocation did not install rendered output at {dest}"
         )
         status = "interrupted" if interrupted else "failed"
-        message = f"Render {status} during {phase}. {effect}."
+        message = f"Render {status} during {phase}. {effect}. Recovery record: {journal.path}."
         if cleanup_errors:
             message += f" Retained paths need inspection: {', '.join(map(str, cleanup_errors))}."
         if failure is not None:
@@ -210,3 +235,4 @@ def execute(
         raise ExecutionError(
             message, phase=phase, outcome=outcome, retained=tuple(cleanup_errors)
         ) from failure
+    return journal.path
