@@ -56,4 +56,3 @@ class CustomBuildHook(BuildHookInterface):
                 raise RuntimeError(f"missing shared source: {relative}")
             payload[str(source)] = f"{target}/{relative}"
         build_data.setdefault("force_include", {}).update(payload)
-

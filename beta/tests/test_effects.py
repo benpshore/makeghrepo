@@ -327,10 +327,14 @@ class EffectBoundaryTests(unittest.TestCase):
                 def mkdir(path, *args, **kwargs):
                     original_mkdir(path, *args, **kwargs)
                     target = (
-                        kind == "parent" and path == dest.parent
-                        or kind == "lock" and path.name.endswith(".lock")
-                        or kind == "stage" and path.name.startswith(".makeghrepo-beta-stage-")
-                        or kind == "reservation" and path == dest
+                        kind == "parent"
+                        and path == dest.parent
+                        or kind == "lock"
+                        and path.name.endswith(".lock")
+                        or kind == "stage"
+                        and path.name.startswith(".makeghrepo-beta-stage-")
+                        or kind == "reservation"
+                        and path == dest
                     )
                     if target:
                         created.append(path)
@@ -392,7 +396,9 @@ class EffectBoundaryTests(unittest.TestCase):
                 self.assertEqual(caught.exception.outcome, "installed")
                 self.assertIn(f"Rendered output installed at {dest}", str(caught.exception))
                 self.assertEqual((dest / "README.md").read_text(), "sample")
-                self.assertEqual(caught.exception.retained, () if removed_first else tuple(attempted))
+                self.assertEqual(
+                    caught.exception.retained, () if removed_first else tuple(attempted)
+                )
 
     def test_cli_cleanup_interrupt_does_not_say_before_execution(self):
         original_rmdir = Path.rmdir

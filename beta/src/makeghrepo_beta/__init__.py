@@ -14,4 +14,3 @@ def main() -> None:
     from makeghrepo_beta.cli import main as run
 
     run()
-
