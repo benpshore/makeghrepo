@@ -33,11 +33,13 @@ yet satisfy item 11. Root generator runtime requirements are a separate decision
 
 The beta foundation in this branch adds a separate `makeghrepo-beta` distribution
 and entrypoint, shared validation for its supported offline render and dry-run
-paths, an inspectable JSON plan, and staging/locking/exception cleanup. It still
-requires `--render`; it refuses live GitHub creation before effects. This is an
+paths, an inspectable JSON plan, and staging/locking/exception cleanup. The successor checkpoint adds bootstrap dry-run, explicit read-only preflight,
+retained offline effect records and read-only status inspection. Actual generation
+still requires `--render`; live GitHub creation is refused before effects. This is an
 initial implementation of 26/27/34 and bounded local recovery, not completion of
-live bootstrap planning, cloud execution or the whole platform. The build and
-installed coexistence gate must pass before recommending beta installation.
+live bootstrap planning, cloud execution or the whole platform. PR #178's original build/coexistence gate passed. The successor's extended
+installed gate needs its own supported-runtime verification; prior passes do not
+validate later changes.
 
 Relevant open work inspected before this increment:
 

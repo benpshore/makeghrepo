@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 from makeghrepo import names
+
 from makeghrepo_beta.plan import BootstrapPlan, destination_state
 
 
@@ -52,7 +53,7 @@ def inspect(plan: BootstrapPlan, read: Callable[[str], object] | None = None) ->
         try:
             login = names.validate_owner(user["login"])
         except (KeyError, TypeError, ValueError):
-            pass
+            login = None
     if login is None:
         note("identity", "unknown", "Authenticated identity was not verified", "GET user")
     else:
@@ -61,7 +62,12 @@ def inspect(plan: BootstrapPlan, read: Callable[[str], object] | None = None) ->
     if resolved.owner:
         owner = resolved.owner
         if login and owner.casefold() != login.casefold():
-            note("owner_policy", "unknown", "Organization or other-owner policy is not verified", "input")
+            note(
+                "owner_policy",
+                "unknown",
+                "Organization or other-owner policy is not verified",
+                "input",
+            )
         endpoint = f"repos/{owner}/{plan.name}"
         repo = query(endpoint)
         expected = f"{owner}/{plan.name}"
@@ -72,30 +78,59 @@ def inspect(plan: BootstrapPlan, read: Callable[[str], object] | None = None) ->
             and type(repo.get("id")) is int
             and repo["id"] > 0
         ):
-            note("target", "observed", "Repository is visible; creation is not available", f"GET {endpoint}")
+            note(
+                "target",
+                "observed",
+                "Repository is visible; creation is not available",
+                f"GET {endpoint}",
+            )
             permissions = repo.get("permissions")
             if isinstance(permissions, dict) and type(permissions.get("admin")) is bool:
                 note(
-                    "existing_repository_admin", "observed" if permissions["admin"] else "denied",
-                    "Reported permission applies only to this existing repository", f"GET {endpoint}",
+                    "existing_repository_admin",
+                    "observed" if permissions["admin"] else "denied",
+                    "Reported permission applies only to this existing repository",
+                    f"GET {endpoint}",
                 )
         else:
-            note("target", "unknown", "Not observed; absence and name availability are not proven", f"GET {endpoint}")
+            note(
+                "target",
+                "unknown",
+                "Not observed; absence and name availability are not proven",
+                f"GET {endpoint}",
+            )
         destination = resolved.root / owner / ("private" if plan.private else "public") / plan.name
         try:
             destination_state(destination)
         except (OSError, ValueError):
-            note("destination", "denied", "Destination is inaccessible, unsafe or nonempty", "filesystem")
+            note(
+                "destination",
+                "denied",
+                "Destination is inaccessible, unsafe or nonempty",
+                "filesystem",
+            )
         else:
-            note("destination", "observed", "Destination is currently absent or empty", "filesystem")
+            note(
+                "destination",
+                "observed",
+                "Destination is currently absent or empty",
+                "filesystem",
+            )
     for capability in ("repository_creation", "ruleset_support", "actions_runners_and_quota"):
-        note(capability, "unknown", "Read-only metadata does not establish this capability", "not verified")
+        note(
+            capability,
+            "unknown",
+            "Read-only metadata does not establish this capability",
+            "not verified",
+        )
     note("live_execution", "unsupported", "Beta live bootstrap remains unavailable", "beta policy")
     report = resolved.as_dict()
-    report.update(operation="bootstrap-preflight", observed_at=observed_at, observations=observations)
+    report.update(
+        operation="bootstrap-preflight", observed_at=observed_at, observations=observations
+    )
     report["limits"] = [
         "Read-only observations may become stale and never authorize a later mutation.",
-        "No files, repositories, credentials, workflows or settings were created or changed.",
+        "This preflight issued metadata reads only, with no project writes or mutations.",
         "A failed lookup is not proof a repository is absent. No name is reserved.",
         "Live bootstrap requires a reviewed no-bypass publication and execution strategy.",
     ]

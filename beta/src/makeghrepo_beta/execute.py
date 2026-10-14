@@ -63,10 +63,12 @@ def execute(
     promotion_attempted = False
     uncertain = False
     cleanup_errors: list[Path] = []
-    phase = "prepare parents"
+    phase = "persist initial recovery record"
     failure = None
     interrupted = False
     try:
+        journal.write(initial=True)
+        phase = "prepare parents"
         # Remember only directories actually created here; do not remove parents
         # that already existed or that another invocation won the race to create.
         for parent in reversed(dest.parents):

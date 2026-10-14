@@ -11,7 +11,8 @@ def width() -> int:
 def wrap(text: str) -> str:
     return "\n".join(
         textwrap.fill(line, width=width(), break_long_words=False, break_on_hyphens=False)
-        if line and not line.startswith(("/", "https://")) else line
+        if line and not line.startswith(("/", "https://"))
+        else line
         for line in text.splitlines()
     )
 

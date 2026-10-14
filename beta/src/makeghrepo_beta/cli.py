@@ -14,8 +14,11 @@ from makeghrepo_beta.plan import LANGS, BootstrapPlan, Request, StatusPlan, buil
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(
         prog="makeghrepo-beta",
+        usage="%(prog)s [options]\n  [NAME/LANGUAGE ...]",
         allow_abbrev=False,
-        formatter_class=lambda prog: argparse.HelpFormatter(prog, width=width(), max_help_position=12),
+        formatter_class=lambda prog: argparse.HelpFormatter(
+            prog, width=width(), max_help_position=12
+        ),
         description=(
             "Experimental offline rendering and bootstrap inspection. "
             "Live bootstrap is unavailable. Dry-run never contacts GitHub."
@@ -50,8 +53,12 @@ def parser() -> argparse.ArgumentParser:
         "--owner", help="owner metadata; preflight can resolve the authenticated account"
     )
     cli.add_argument("--root", type=Path, help="bootstrap directory root (no relocation)")
-    cli.add_argument("--preflight", action="store_true", help="read-only GitHub probes; no project writes")
-    cli.add_argument("--status", type=Path, metavar="DIR", help="inspect recovery records; never replay or clean")
+    cli.add_argument(
+        "--preflight", action="store_true", help="read-only GitHub probes; no project writes"
+    )
+    cli.add_argument(
+        "--status", type=Path, metavar="DIR", help="inspect recovery records; never replay or clean"
+    )
     cli.add_argument("--author", default="Test User", help="offline author metadata")
     cli.add_argument("--description", default="a test project", help="offline project description")
     cli.add_argument("--year", default="2026", help="offline copyright year")
@@ -87,7 +94,11 @@ def main(argv: list[str] | None = None) -> None:
             from makeghrepo_beta.journal import inspect_records
 
             report = inspect_records(plan.destination)
-            print(json.dumps(report, indent=2, sort_keys=True) if args.json else describe_report(report))
+            print(
+                json.dumps(report, indent=2, sort_keys=True)
+                if args.json
+                else describe_report(report)
+            )
             return
         if isinstance(plan, BootstrapPlan):
             if args.preflight:
@@ -98,7 +109,11 @@ def main(argv: list[str] | None = None) -> None:
                 report = plan.as_dict()
             else:
                 raise ValueError("live bootstrap is unavailable; use --dry-run or --preflight")
-            print(json.dumps(report, indent=2, sort_keys=True) if args.json else describe_report(report))
+            print(
+                json.dumps(report, indent=2, sort_keys=True)
+                if args.json
+                else describe_report(report)
+            )
             return
         if args.dry_run:
             print(plan.as_json() if args.json else wrap(describe(plan)))
@@ -109,7 +124,11 @@ def main(argv: list[str] | None = None) -> None:
     except (OSError, ValueError, RuntimeError) as exc:
         cli.exit(1, f"makeghrepo-beta: {exc}\n")
     except KeyboardInterrupt as exc:
-        detail = str(exc) or "interrupted before execution"
+        detail = str(exc) or (
+            "interrupted during read-only inspection"
+            if args.preflight or args.status
+            else "interrupted before execution"
+        )
         cli.exit(130, f"makeghrepo-beta: {detail}\n")
     print(f"rendered {plan.destination}")
     print(f"Recovery record:\n{record}")

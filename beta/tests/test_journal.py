@@ -3,7 +3,6 @@
 import contextlib
 import io
 import json
-import os
 import stat
 import subprocess
 import sys
@@ -92,21 +91,45 @@ class JournalTests(unittest.TestCase):
         data = json.loads(record.read_text())
         self.assertEqual(data["outcome"], "installed")
         self.assertEqual(len(data["plan_sha256"]), 64)
-        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob("*") if p.is_file()}
+        before = {
+            p: (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in self.root.rglob("*")
+            if p.is_file()
+        }
         with patch("subprocess.Popen", side_effect=AssertionError("process")):
             report = inspect_records(self.dest)
-        after = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob("*") if p.is_file()}
+        after = {
+            p: (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in self.root.rglob("*")
+            if p.is_file()
+        }
         self.assertEqual(before, after)
         self.assertEqual(report["records"][0]["observation"], "destination_matches_staged_identity")
         for event in data["events"]:
             if event["status"] == "confirmed":
                 previous = data["events"][:data["events"].index(event)]
-                self.assertTrue(any(e["path"] == event["path"] and e["operation"] == event["operation"] and e["status"] == "attempted" for e in previous))
+                self.assertTrue(
+                    any(
+                        e["path"] == event["path"]
+                        and e["operation"] == event["operation"]
+                        and e["status"] == "attempted"
+                        for e in previous
+                    )
+                )
 
     def test_process_exit_at_effect_boundaries_retains_inspectable_evidence(self):
         boundaries = (
-            "initial-record", "journal-pending", "parent", "lock", "stage", "render",
-            "reservation", "before-promotion", "after-promotion", "before-cleanup", "after-cleanup",
+            "initial-record",
+            "journal-pending",
+            "parent",
+            "lock",
+            "stage",
+            "render",
+            "reservation",
+            "before-promotion",
+            "after-promotion",
+            "before-cleanup",
+            "after-cleanup",
         )
         for boundary in boundaries:
             with self.subTest(boundary=boundary):
@@ -115,34 +138,58 @@ class JournalTests(unittest.TestCase):
                 dest = root / "new" / "preview"
                 result = subprocess.run(
                     [sys.executable, "-B", "-c", CRASH_CHILD, str(dest), boundary],
-                    capture_output=True, text=True, timeout=15, check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
                 )
                 self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
                 before = {p: p.stat().st_mtime_ns for p in root.rglob("*")}
                 report = inspect_records(dest)
                 self.assertEqual(before, {p: p.stat().st_mtime_ns for p in root.rglob("*")})
                 self.assertTrue(report["records"])
-                self.assertFalse(any(r["observation"] == "invalid_or_unreadable_record" for r in report["records"]))
+                self.assertFalse(
+                    any(
+                        r["observation"] == "invalid_or_unreadable_record"
+                        for r in report["records"]
+                    )
+                )
                 if boundary in {"after-promotion", "before-cleanup", "after-cleanup"}:
                     self.assertEqual((dest / "README.md").read_text(), "complete output")
-                    self.assertTrue(any(r["observation"] == "destination_matches_staged_identity" for r in report["records"]))
+                    self.assertTrue(
+                        any(
+                            r["observation"] == "destination_matches_staged_identity"
+                            for r in report["records"]
+                        )
+                    )
                 else:
                     self.assertFalse((dest / "README.md").exists())
-                recorded = {e["path"] for p in root.glob(prefix(dest) + "*") for e in json.loads(p.read_text())["events"]}
+                recorded = {
+                    e["path"]
+                    for p in root.glob(prefix(dest) + "*")
+                    for e in json.loads(p.read_text())["events"]
+                }
                 for path in root.rglob("*"):
                     if path.is_dir():
                         self.assertIn(str(path), recorded)
 
     def test_journal_failure_before_project_effects_is_reported(self):
-        with patch("os.fsync", side_effect=OSError("disk unavailable")), self.assertRaisesRegex(RuntimeError, "Recovery record write failed"):
+        with (
+            patch("os.fsync", side_effect=OSError("disk unavailable")),
+            self.assertRaisesRegex(RuntimeError, "Recovery record write failed"),
+        ):
             execute(self.plan(), self.render)
         self.assertFalse(self.dest.parent.exists())
         self.assertEqual(len(list(self.root.iterdir())), 1)
 
     def test_failed_atomic_update_preserves_previous_snapshot_and_pending_file(self):
         journal = Journal(self.plan())
+        journal.write(initial=True)
         before = journal.path.read_bytes()
-        with patch("makeghrepo_beta.journal.os.replace", side_effect=OSError("rename failed")), self.assertRaises(RuntimeError):
+        with (
+            patch("makeghrepo_beta.journal.os.replace", side_effect=OSError("rename failed")),
+            self.assertRaises(RuntimeError),
+        ):
             journal.event("create_parent", self.dest.parent, "attempted")
         self.assertEqual(journal.path.read_bytes(), before)
         self.assertTrue(journal.path.with_suffix(".json.pending").exists())
@@ -150,7 +197,10 @@ class JournalTests(unittest.TestCase):
         self.assertFalse(self.dest.parent.exists())
 
     def test_failed_final_record_does_not_hide_installed_output(self):
-        with patch.object(Journal, "finish", side_effect=OSError("record failed")), self.assertRaises(ExecutionError) as caught:
+        with (
+            patch.object(Journal, "finish", side_effect=OSError("record failed")),
+            self.assertRaises(ExecutionError) as caught,
+        ):
             execute(self.plan(), self.render)
         self.assertEqual(caught.exception.outcome, "installed")
         self.assertIn("Recovery record:", str(caught.exception))
@@ -162,12 +212,16 @@ class JournalTests(unittest.TestCase):
         outside = self.root / "outside"
         outside.write_text("keep")
         malformed = json.loads(original)
-        malformed["events"].append({"operation": "cleanup", "path": str(outside), "status": "attempted"})
+        malformed["events"].append(
+            {"operation": "cleanup", "path": str(outside), "status": "attempted"}
+        )
         for raw in (b"{", b"x" * 262_145, b"[]", json.dumps(malformed).encode()):
             with self.subTest(size=len(raw)):
                 record.write_bytes(raw)
                 report = inspect_records(self.dest)
-                self.assertEqual(report["records"][0]["observation"], "invalid_or_unreadable_record")
+                self.assertEqual(
+                    report["records"][0]["observation"], "invalid_or_unreadable_record"
+                )
                 self.assertEqual(outside.read_text(), "keep")
                 self.assertEqual(record.read_bytes(), raw)
         record.write_bytes(original)
@@ -198,6 +252,39 @@ class JournalTests(unittest.TestCase):
         ):
             cli.main(["--status", str(self.dest), "--json"])
         self.assertEqual(json.loads(output.getvalue())["operation"], "recovery-inspection")
+
+    def test_planned_record_location_is_used_and_changes_fail_before_writes(self):
+        root = self.root / "planned"
+        root.mkdir()
+        dest = root / "new" / "preview"
+        plan = build_plan(Request(words=("sample",), render=dest))
+        self.assertEqual(json.loads(plan.as_json())["recovery_directory"], str(root))
+        root.rename(self.root / "previous")
+        root.mkdir()
+        with self.assertRaisesRegex(ValueError, "changed after planning"):
+            execute(plan, self.render)
+        self.assertEqual(list(root.iterdir()), [])
+
+    def test_initial_record_interrupt_names_the_retained_record(self):
+        with (
+            patch("os.fsync", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt) as caught,
+        ):
+            execute(self.plan(), self.render)
+        (record,) = self.root.iterdir()
+        self.assertIn(str(record), str(caught.exception))
+        self.assertFalse(self.dest.parent.exists())
+
+    def test_moved_installed_output_is_reported_as_changed_not_restored(self):
+        execute(self.plan(), self.render)
+        saved = self.dest.with_name("saved")
+        self.dest.rename(saved)
+        self.dest.mkdir()
+        (self.dest / "unrelated.txt").write_text("keep")
+        report = inspect_records(self.dest)
+        self.assertEqual(report["records"][0]["recorded_outcome"], "installed")
+        self.assertEqual(report["records"][0]["observation"], "destination_changed_or_unknown")
+        self.assertEqual((self.dest / "unrelated.txt").read_text(), "keep")
 
 
 if __name__ == "__main__":

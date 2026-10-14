@@ -131,6 +131,29 @@ def main():
             p.name: hashlib.sha256(p.read_bytes()).hexdigest()
             for p in (stable_wheel, beta_wheel, beta_sdist)
         }
+        bootstrap = json.loads(run(beta, "sample", "python", "-p", "-n", "--json", env=env))
+        require(bootstrap["operation"] == "bootstrap-preview", "missing bootstrap preview")
+        require(bootstrap["destination"] is None, "dry-run invented an authenticated owner")
+        require(not bootstrap["execution_available"], "beta unexpectedly enabled live execution")
+        # An explicit read-only preflight uses a disposable fake gh, never real auth.
+        probes = root / "probes"
+        probes.mkdir()
+        fake_gh = probes / "gh"
+        fake_gh.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            "expected = ['api', '--hostname', 'github.com', '--method', 'GET', 'user']\n"
+            "if sys.argv[1:] == expected:\n"
+            "    print(json.dumps({'id': 123, 'login': 'fixture-account'}))\n"
+            "    sys.exit(0)\n"
+            "sys.exit(1)\n"
+        )
+        fake_gh.chmod(0o700)
+        observed = json.loads(
+            run(beta, "sample", "--preflight", "--json", env={**env, "PATH": str(probes)})
+        )
+        require(observed["inputs"]["owner"] == "fixture-account", "preflight lost observed owner")
+        require(not observed["execution_available"], "read-only probes authorized execution")
         cases = (
             (),
             ("python", "--lib", "-p"),
@@ -144,6 +167,12 @@ def main():
             plan = json.loads(run(*command, "--dry-run", "--json", env=env))
             require(not dest.exists(), "dry-run created its destination")
             run(*command, env=env)
+            recovery = json.loads(run(beta, "--status", dest, "--json", env=env))
+            require(len(recovery["records"]) == 1, "missing installed recovery record")
+            require(
+                recovery["records"][0]["observation"] == "destination_matches_staged_identity",
+                "recovery inspection lost installed output",
+            )
             reference = root / "reference" / str(index)
             # Stable's private alias has not changed in this beta-only increment.
             stable_case = ["--private" if part == "-p" else part for part in case]
@@ -168,6 +197,8 @@ def main():
             "sdist rebuild parity",
             "isolated coexistence",
             "installed dry-run and render parity",
+            "read-only bootstrap preview and fake-gh preflight",
+            "installed recovery inspection",
             "beta reinstall/upgrade",
             "beta uninstall",
         ]

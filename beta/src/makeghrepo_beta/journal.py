@@ -17,8 +17,14 @@ from makeghrepo_beta.plan import Plan, absolute_path, directory_state
 MAX_BYTES = 262_144
 MAX_RECORDS = 128
 OPERATIONS = {
-    "create_parent", "acquire_lock", "create_stage", "render", "reserve",
-    "permissions", "promote", "cleanup",
+    "create_parent",
+    "acquire_lock",
+    "create_stage",
+    "render",
+    "reserve",
+    "permissions",
+    "promote",
+    "cleanup",
 }
 
 
@@ -42,10 +48,9 @@ def sync_directory(path: Path) -> None:
 
 class Journal:
     def __init__(self, plan: Plan):
-        parent = plan.destination.parent
-        while not os.path.lexists(parent):
-            parent = parent.parent
-        directory_state(parent)
+        parent = plan.record_directory
+        if directory_state(parent) != plan.record_parent_state:
+            raise ValueError("recovery directory changed after planning")
         invocation = uuid4().hex
         self.path = parent / f"{prefix(plan.destination)}{invocation}.json"
         self.file_state = None
@@ -55,11 +60,11 @@ class Journal:
             "destination": str(plan.destination),
             "plan_sha256": hashlib.sha256(plan.as_json().encode()).hexdigest(),
             "generator": f"makeghrepo-beta {package_version()}",
+            "template_source": "bundled makeghrepo/templates/project",
             "started_at": datetime.now(UTC).isoformat(),
             "outcome": None,
             "events": [],
         }
-        self.write(initial=True)
 
     def write(self, *, initial=False):
         encoded = (json.dumps(self.data, sort_keys=True, indent=2) + "\n").encode()
@@ -82,9 +87,13 @@ class Journal:
             self.file_state = (info.st_dev, info.st_ino)
             sync_directory(self.path.parent)
         except KeyboardInterrupt as exc:
-            raise KeyboardInterrupt(f"Recovery record interrupted; inspect {self.path} and {target}") from exc
+            raise KeyboardInterrupt(
+                f"Recovery record interrupted; inspect {self.path} and {target}"
+            ) from exc
         except (OSError, RuntimeError) as exc:
-            raise RuntimeError(f"Recovery record write failed; inspect {self.path} and {target}") from exc
+            raise RuntimeError(
+                f"Recovery record write failed; inspect {self.path} and {target}"
+            ) from exc
 
     def event(self, operation: str, path: Path, status: str, *, state=None, source=None):
         event = {"operation": operation, "path": str(path), "status": status}
@@ -106,11 +115,17 @@ def _read(path: Path, destination: Path) -> dict:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_BYTES:
             raise ValueError("record is not a bounded regular file")
-        data = json.loads(stream.read(MAX_BYTES + 1))
+        encoded = stream.read(MAX_BYTES + 1)
+        if len(encoded) > MAX_BYTES:
+            raise ValueError("recovery record exceeds the size limit")
+        data = json.loads(encoded)
     if (
-        not isinstance(data, dict) or type(data.get("schema")) is not int or data["schema"] != 1
+        not isinstance(data, dict)
+        or type(data.get("schema")) is not int
+        or data["schema"] != 1
         or data.get("destination") != str(destination)
-        or not isinstance(data.get("events"), list) or len(data["events"]) > 2048
+        or not isinstance(data.get("events"), list)
+        or len(data["events"]) > 2048
         or not isinstance(data.get("invocation"), str)
         or not re.fullmatch(r"[a-f0-9]{32}", data["invocation"])
         or path.name not in {
@@ -122,7 +137,8 @@ def _read(path: Path, destination: Path) -> dict:
         raise ValueError("unsupported or malformed recovery record")
     for event in data["events"]:
         if (
-            not isinstance(event, dict) or event.get("operation") not in OPERATIONS
+            not isinstance(event, dict)
+            or event.get("operation") not in OPERATIONS
             or event.get("status") not in ("attempted", "confirmed")
             or not isinstance(event.get("path"), str)
         ):
@@ -141,7 +157,8 @@ def _read(path: Path, destination: Path) -> dict:
             if str(target) != event[key] or (target not in allowed and not sibling):
                 raise ValueError("effect path outside the destination scope")
         if "identity" in event and (
-            not isinstance(event["identity"], list) or len(event["identity"]) != 2
+            not isinstance(event["identity"], list)
+            or len(event["identity"]) != 2
             or any(type(value) is not int or value < 0 for value in event["identity"])
         ):
             raise ValueError("malformed directory identity")
@@ -161,7 +178,12 @@ def inspect_records(destination: Path) -> dict[str, object]:
         for path in parent.glob(prefix(destination) + "*.json*"):
             if len(records) >= MAX_RECORDS:
                 raise ValueError("too many recovery records; inspection is bounded at 128")
-            entry = {"record": str(path), "recorded_outcome": None, "observation": "unknown"}
+            entry = {
+                "record": str(path),
+                "snapshot": "pending_update" if path.suffix == ".pending" else "record",
+                "recorded_outcome": None,
+                "observation": "unknown",
+            }
             records.append(entry)
             try:
                 data = _read(path, destination)
@@ -187,15 +209,26 @@ def inspect_records(destination: Path) -> dict[str, object]:
             else:
                 entry["observation"] = "no_promotion_recorded"
     for entry in sorted(records, key=lambda item: item["record"]):
-        observations.append(dict(
-            capability="recovery", status=entry["observation"],
-            detail=f"Recorded outcome: {entry['recorded_outcome'] or 'unfinished'}. Record:\n{entry['record']}",
-        ))
+        observations.append(
+            dict(
+                capability="recovery",
+                status=entry["observation"],
+                detail=(
+                    f"Recorded outcome: {entry['recorded_outcome'] or 'unfinished'}. "
+                    f"Record:\n{entry['record']}"
+                ),
+            )
+        )
         for path in entry.get("retained_paths", []):
-            observations.append(dict(capability="retained", status="inspect", detail=f"Path:\n{path}"))
+            observations.append(
+                dict(capability="retained", status="inspect", detail=f"Path:\n{path}")
+            )
     return {
-        "schema": 1, "operation": "recovery-inspection", "destination": str(destination),
-        "records": sorted(records, key=lambda item: item["record"]), "observations": observations,
+        "schema": 1,
+        "operation": "recovery-inspection",
+        "destination": str(destination),
+        "records": sorted(records, key=lambda item: item["record"]),
+        "observations": observations,
         "limits": [
             "Records are untrusted local observations, not authority to delete or replay.",
             "Matching directory identity is not proof of unchanged contents or ownership.",

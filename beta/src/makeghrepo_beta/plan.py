@@ -6,6 +6,7 @@ are Python values, not executable commands or a trusted input-file format.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -62,6 +63,8 @@ def destination_state(path: Path) -> DirectoryState | None:
 
 @dataclass(frozen=True)
 class Plan:
+    record_directory: Path
+    record_parent_state: DirectoryState
     destination: Path
     previous: DirectoryState | None
     name: str
@@ -96,8 +99,15 @@ class Plan:
                 "operation": "offline-render",
                 "destination": str(self.destination),
                 "destination_exists": self.previous is not None,
+                "recovery_directory": str(self.record_directory),
+                "recovery_record_pattern": (
+                    ".makeghrepo-beta-record-"
+                    + hashlib.sha256(os.fsencode(self.destination)).hexdigest()[:20]
+                    + ".<invocation>.json"
+                ),
                 "inputs": self.template_data(),
                 "steps": [
+                    "persist private effect records before mutations; retain for inspection",
                     "revalidate destination and acquire local writer lock",
                     "render packaged templates in an owned staging directory",
                     "revalidate destination and atomically install rendered files",
@@ -107,6 +117,7 @@ class Plan:
                     "No GitHub capability, authentication, or name-availability checks.",
                     "No dependencies installed, project checks run, or Git repository created.",
                     "Destination and filesystem availability can change after planning.",
+                    "Records are retained outside the project; no automatic recovery or cleanup.",
                 ],
             },
             indent=2,
@@ -162,17 +173,32 @@ def build_plan(request: Request) -> Plan | BootstrapPlan | StatusPlan:
     if len(request.year) != 4 or not request.year.isascii() or not request.year.isdigit():
         raise ValueError("--year must be four ASCII digits")
     if request.render is None:
-        root = absolute_path(request.root or Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")))
+        root = absolute_path(
+            request.root or Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub"))
+        )
         for part in (*reversed(root.parents), root):
             if os.path.lexists(part):
                 directory_state(part)
         return BootstrapPlan(
-            name, tuple(languages), request.private, request.lib, request.license,
-            owner, author, description, request.year, root,
+            name,
+            tuple(languages),
+            request.private,
+            request.lib,
+            request.license,
+            owner,
+            author,
+            description,
+            request.year,
+            root,
         )
     destination = absolute_path(request.render)
     previous = destination_state(destination)
+    record_directory = destination.parent
+    while not os.path.lexists(record_directory):
+        record_directory = record_directory.parent
     return Plan(
+        record_directory=record_directory,
+        record_parent_state=directory_state(record_directory),
         destination=destination,
         previous=previous,
         name=name,
@@ -216,13 +242,23 @@ class BootstrapPlan:
             "distribution": "makeghrepo-beta",
             "operation": "bootstrap-preview",
             "inputs": {
-                "name": self.name, "languages": list(self.languages), "owner": self.owner,
-                "visibility": visibility, "lib": self.lib, "license": self.license,
-                "author": self.author, "description": self.description, "year": self.year,
+                "name": self.name,
+                "languages": list(self.languages),
+                "owner": self.owner,
+                "visibility": visibility,
+                "lib": self.lib,
+                "license": self.license,
+                "author": self.author,
+                "description": self.description,
+                "year": self.year,
             },
             "root": str(self.root),
-            "destination": str(self.root / self.owner / visibility / self.name) if self.owner else None,
-            "repository_url": f"https://github.com/{self.owner}/{self.name}" if self.owner else None,
+            "destination": (
+                str(self.root / self.owner / visibility / self.name) if self.owner else None
+            ),
+            "repository_url": (
+                f"https://github.com/{self.owner}/{self.name}" if self.owner else None
+            ),
             "execution_available": False,
             "observations": [],
             "limits": [
@@ -243,6 +279,8 @@ class StatusPlan:
 
 
 def revalidate(plan: Plan) -> None:
+    if directory_state(plan.record_directory) != plan.record_parent_state:
+        raise ValueError(f"{plan.record_directory} changed after planning; run the command again")
     if destination_state(plan.destination) != plan.previous:
         raise ValueError(f"{plan.destination} changed after planning; run the command again")
 
@@ -251,7 +289,10 @@ def describe(plan: Plan) -> str:
     data = json.loads(plan.as_json())
     return "\n".join(
         [
-            f"Plan: offline render to {plan.destination}",
+            "Plan: offline render",
+            str(plan.destination),
+            "Recovery records retained in:",
+            str(plan.record_directory),
             f"Project: {plan.owner}/{plan.name}",
             f"Languages: {', '.join(plan.languages) or 'none'}; license: {plan.license}",
             f"Visibility metadata: {'private' if plan.private else 'public'}",

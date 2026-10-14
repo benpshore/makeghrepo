@@ -1,8 +1,10 @@
 # Planning, effects and recovery
 
 `--dry-run` and execution must resolve the same inputs and create the same plan.
-The first beta implementation covers offline template rendering only. Its plan
-contains normalized metadata, destination, stages and explicit limits. Execution
+Beta execution covers offline template rendering; bootstrap preview and explicit
+read-only preflight now share its static validation machinery. Its plan
+contains normalized metadata, destination, recovery-record directory, stages and
+explicit limits. Execution
 revalidates filesystem state and consumes those exact values. It does not accept
 saved JSON as executable instructions or claim GitHub capabilities were checked.
 
@@ -28,8 +30,20 @@ path is retained and named instead of silently orphaned or assumed safe to delet
 A further interrupt during cleanup stops destructive operations and reports the
 remaining paths and any installed output, retaining interruption exit status 130.
 
-Abrupt process death and power failure still need a durable recovery journal; a
-stale lock is not automatically safe to delete. Ordinary revalidation cannot
+Execution now retains a versioned sidecar record outside the daughter, in the
+planned nearest existing ancestor. Every operation records intent before its
+filesystem call and records confirmation afterwards. A failed record write stops
+new project effects; cleanup also requires a persisted intent. Initial/truncated
+records and `.json.pending` updates remain visible to read-only `--status DIR`.
+The record contains the plan hash, generator version, bundled-template source
+label, paths and observed directory identities. The source label/version is
+informational provenance, not a content signature or authenticity guarantee.
+
+Updates flush file contents, atomically replace the previous snapshot and flush
+the parent directory. Generated files are not themselves flushed, and not all
+filesystems provide the same guarantees. Tests cover abrupt process exits,
+truncation and injected persistence failures, not physical power loss. A stale
+lock is not automatically safe to delete. Ordinary revalidation cannot
 eliminate races with programs that ignore the lock. The installed render is a
 preview: no dependency installation, tests, repository init or remote mutation
 has happened. Python's normal module-loading caches belong to its installation,
@@ -51,7 +65,17 @@ server may create the repository before the client loses the response. These tex
 corrections do not assert that the reported incident has been fully reconstructed
 or change stable bootstrap order/policy.
 
-## Live execution journal (next increment)
+## Bootstrap observations
+
+Plain bootstrap dry-run uses the shared validator without subprocesses or network
+requests. Explicit `--preflight` adds bounded-time read-only gh metadata queries;
+unknown identity, permissions, target availability, runner capacity and quota stay
+unknown. It creates no local repository or recovery record. It does not infer
+create permission from an existing repository's permissions or a failed lookup.
+All bootstrap modes still report live execution unavailable. No owner-bypass
+policy or production create/configure/push adapter is added by this increment.
+
+## Live execution journal (future integration)
 
 Before a mutating operation, persist an intent entry with a unique invocation ID,
 operation, canonical owner/name or object ID, request/plan hash and prior observed
