@@ -12,6 +12,7 @@ from makeghrepo_beta.plan import LANGS, Request, build_plan, describe
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(
         prog="makeghrepo-beta",
+        allow_abbrev=False,
         description=(
             "Experimental offline generation. Requires --render DIR. "
             "GitHub creation remains in stable makeghrepo until beta preflight/recovery is ready."
@@ -54,7 +55,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     cli = parser()
-    args = cli.parse_args(argv)
+    args = cli.parse_intermixed_args(argv)
     if args.json and not args.dry_run:
         cli.error("--json requires --dry-run")
     try:
@@ -79,8 +80,9 @@ def main(argv: list[str] | None = None) -> None:
         execute(plan)
     except (OSError, ValueError, RuntimeError) as exc:
         cli.exit(1, f"makeghrepo-beta: {exc}\n")
-    except KeyboardInterrupt:
-        cli.exit(130, "makeghrepo-beta: interrupted; inspect any reported retained paths\n")
+    except KeyboardInterrupt as exc:
+        detail = str(exc) or "interrupted before execution"
+        cli.exit(130, f"makeghrepo-beta: {detail}\n")
     print(f"rendered {plan.destination}")
 
 

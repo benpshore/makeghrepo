@@ -30,13 +30,19 @@ It is an output format, not an executable saved-plan input. Hidden stable previe
 metadata options are visible here: `--owner`, `--author`, `--description`, `--year`.
 `--private` (`-p`), `--lib` and explicit `--license MIT` work as in offline stable
 generation. Languages and aliases come from the shared registry.
+Options can be interleaved with the positional name/languages. Abbreviated long
+options are refused, so a partial or mistyped option cannot silently select an
+operation.
 
 Execution revalidates the destination, serializes beta writers with an exclusive
 directory lock, renders in a private sibling staging directory and promotes the
-complete render with a same-filesystem rename. A render or promotion failure
-preserves the previous absent/empty destination and removes only staging paths
-and empty parents created by that invocation. Cleanup failures list exact retained
-paths instead of claiming rollback succeeded. Existing nonempty directories,
+complete render with a same-filesystem rename. A failure before promotion
+preserves the previous absent/empty destination and removes only owned staging
+paths and empty parents. If an interrupt/error arrives immediately after rename,
+readback distinguishes installed output from an uncertain outcome; completed
+output is retained. Every execution failure names the phase and destination.
+Cleanup failures list exact retained paths instead of claiming rollback succeeded.
+Existing nonempty directories,
 symlinks, and changes since planning are refused. No existing daughter is deleted.
 
 This is exception recovery, not a durable filesystem transaction: abrupt process
@@ -50,6 +56,13 @@ workflow is enabled. Upgrade a local checkout with `uv tool install --reinstall
 ./beta`; this targets only beta. Building an sdist bundles the shared sources so a
 wheel can be rebuilt without the checkout. CI verifies stable/beta coexistence,
 beta uninstall, source-distribution rebuilding, and installed render parity.
+
+`shared-files.json` explicitly lists the shared payload, so build hooks never sweep
+untracked files or secrets from a development checkout into the beta artifact.
+After staging new shared package files, run `python scripts/regen-beta-sources`
+from the repository root and review the manifest diff. CI checks it against tracked
+files. Missing files, unsafe paths and source symlinks fail the build. The sdist
+carries the same manifest and payload.
 
 See [the complete roadmap](../docs/roadmap.md) and
 [recovery contract](../docs/recovery.md). The ten-minute working-project target is

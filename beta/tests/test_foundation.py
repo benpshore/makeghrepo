@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from makeghrepo_beta import cli
-from makeghrepo_beta.execute import execute
+from makeghrepo_beta.execute import ExecutionError, execute
 from makeghrepo_beta.plan import LANGS, Request, build_plan
 
 
@@ -157,7 +157,7 @@ class FoundationTests(unittest.TestCase):
                     self.dest.mkdir(parents=True)
                 with (
                     patch("makeghrepo_beta.execute.os.replace", side_effect=OSError("injected")),
-                    self.assertRaisesRegex(OSError, "injected"),
+                    self.assertRaisesRegex(ExecutionError, "injected"),
                 ):
                     execute(build_plan(self.request()), self.render)
                 self.assertEqual(self.dest.exists(), existing)
@@ -195,7 +195,7 @@ class FoundationTests(unittest.TestCase):
             self.dest.mkdir()
             (self.dest / "other.txt").write_text("keep")
 
-        with self.assertRaisesRegex(ValueError, "not empty"):
+        with self.assertRaisesRegex(ExecutionError, "not empty"):
             execute(build_plan(self.request()), render)
         self.assertEqual((self.dest / "other.txt").read_text(), "keep")
         self.assertEqual(list(self.dest.parent.iterdir()), [self.dest])
@@ -207,7 +207,7 @@ class FoundationTests(unittest.TestCase):
 
         with (
             patch("makeghrepo_beta.execute.shutil.rmtree", side_effect=OSError("denied")),
-            self.assertRaisesRegex(RuntimeError, "retained paths need inspection") as caught,
+            self.assertRaisesRegex(RuntimeError, "Retained paths need inspection") as caught,
         ):
             execute(build_plan(self.request()), broken)
         self.assertIn(".makeghrepo-beta-stage-", str(caught.exception))
@@ -260,6 +260,12 @@ os.mkdir = forbidden
 os.remove = forbidden
 os.rename = forbidden
 os.replace = forbidden
+def audit(event, args):
+    if event == 'open' and args[2] & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC):
+        raise AssertionError('file write during read-only command')
+    if event in {'os.symlink', 'os.chmod', 'os.rmdir', 'socket.connect'}:
+        raise AssertionError('mutation/network during read-only command: ' + event)
+sys.addaudithook(audit)
 from makeghrepo_beta import main
 main()
 """

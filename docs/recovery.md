@@ -16,6 +16,13 @@ empty parents. A failed cleanup reports retained paths for inspection; it does n
 replace a failure with a success message. Preexisting paths or concurrent user
 files are preserved. Another beta writer is refused while the lock exists.
 
+Execution failures record their phase and an observed outcome: output installed,
+not installed, or uncertain. A rename may complete just before an interrupt or
+exception reaches Python; readback of the stage/destination identities prevents a
+false rollback claim or deletion of completed output. Unavailable readback leaves
+the outcome uncertain and the destination retained for inspection. A failed
+cleanup after successful promotion still reports that output was installed.
+
 Abrupt process death and power failure still need a durable recovery journal; a
 stale lock is not automatically safe to delete. Ordinary revalidation cannot
 eliminate races with programs that ignore the lock. The installed render is a
