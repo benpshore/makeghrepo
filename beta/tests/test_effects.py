@@ -324,17 +324,13 @@ class EffectBoundaryTests(unittest.TestCase):
                 plan = build_plan(Request(words=("sample",), render=dest))
                 created = []
 
-                def mkdir(path, *args, **kwargs):
+                def mkdir(path, *args, kind=kind, dest=dest, created=created, **kwargs):
                     original_mkdir(path, *args, **kwargs)
                     target = (
-                        kind == "parent"
-                        and path == dest.parent
-                        or kind == "lock"
-                        and path.name.endswith(".lock")
-                        or kind == "stage"
-                        and path.name.startswith(".makeghrepo-beta-stage-")
-                        or kind == "reservation"
-                        and path == dest
+                        (kind == "parent" and path == dest.parent)
+                        or (kind == "lock" and path.name.endswith(".lock"))
+                        or (kind == "stage" and path.name.startswith(".makeghrepo-beta-stage-"))
+                        or (kind == "reservation" and path == dest)
                     )
                     if target:
                         created.append(path)
@@ -379,7 +375,7 @@ class EffectBoundaryTests(unittest.TestCase):
                 plan = build_plan(Request(words=("sample",), render=dest))
                 attempted = []
 
-                def rmdir(path):
+                def rmdir(path, attempted=attempted, removed_first=removed_first):
                     if path.name.endswith(".lock"):
                         attempted.append(path)
                         if removed_first:

@@ -62,7 +62,7 @@ class FoundationTests(unittest.TestCase):
             {"owner": "a" * 40},
             {"license": "arbitrary"},
             {"year": "2\n26"},
-            {"year": "２０２６"},
+            {"year": "\uff12\uff10\uff12\uff16"},  # Fullwidth digits are intentionally invalid.
             {"author": "Test\x1b"},
             {"description": "text\x00"},
             {"render": None},
