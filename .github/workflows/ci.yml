@@ -124,6 +124,11 @@ jobs:
     permissions:
       contents: read
 
+  one-open-pr-tests:
+    uses: ./.github/workflows/one-open-pr-tests.yml
+    permissions:
+      contents: read
+
   plan:
     name: plan
     runs-on: ubuntu-24.04
@@ -296,7 +301,7 @@ jobs:
   ci:
     name: ci
     if: always()
-    needs: [test, plan, templates, actionlint, rust, distribution, beta-assets]
+    needs: [test, plan, templates, actionlint, rust, distribution, beta-assets, one-open-pr-tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
