@@ -258,9 +258,7 @@ def test_partial_rust_matrix_can_publish_only_after_release_success():
 def test_auto_release_downloads_use_verified_action_contract():
     # Verified against actions/download-artifact v8.0.1 action.yml at this SHA:
     # same-run access needs no github-token; digest-mismatch defaults to error.
-    download_action = (
-        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
-    )
+    download_action = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
     root = Path(__file__).resolve().parents[1] / ".github/workflows"
     release = yaml.safe_load((root / "auto-release.yml").read_text())["jobs"]
     ci = yaml.safe_load((root / "ci.yml").read_text())["jobs"]
@@ -310,6 +308,4 @@ def test_auto_release_downloads_use_verified_action_contract():
         assert "GH_TOKEN" not in step.get("env", {})
     commands = "\n".join(step.get("run", "") for step in smoke["steps"])
     assert "gh release" not in commands
-    assert not any(
-        step.get("uses", "").startswith("actions/checkout@") for step in smoke["steps"]
-    )
+    assert not any(step.get("uses", "").startswith("actions/checkout@") for step in smoke["steps"])
