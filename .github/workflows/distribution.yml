@@ -1,0 +1,72 @@
+name: Distribution
+
+on:
+  workflow_call:
+    inputs:
+      release:
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Published stable tag to verify; empty tests the candidate checkout"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distribution-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  distribution:
+    name: distribution (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-15, target: aarch64-apple-darwin }
+    env:
+      TARGET: ${{ matrix.target }}
+      RELEASE: ${{ inputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Rust toolchain for candidate builds
+        if: env.RELEASE == ''
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "$TARGET"
+      - name: Clean installations, Git upgrade, and native parity
+        if: env.RELEASE == ''
+        run: |
+          uv run --no-project --python 3.14 scripts/distribution-check \
+            --expected-target "$TARGET" --evidence distribution-evidence.json
+      - name: Verify published release assets
+        if: env.RELEASE != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          uv run --no-project --python 3.14 scripts/distribution-check \
+            --release "$RELEASE" --expected-target "$TARGET" \
+            --evidence distribution-evidence.json
+      - name: Upload distribution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: distribution-${{ matrix.target }}
+          path: distribution-evidence.json
+          if-no-files-found: error
+          retention-days: 14

@@ -4,12 +4,23 @@ One command creates a new, fully configured GitHub repo: public by default, and 
 
 It exists to save keystrokes, and so that AI coding agents can start new repos without broad shell or GitHub admin access.
 
+Experimental work lives in the separate [makeghrepo-beta package](beta/README.md).
+Its first increment adds transactional offline generation and a genuine
+`--dry-run`; installing it as a uv tool does not replace `makeghrepo`. See the
+[numbered platform roadmap](docs/roadmap.md) for the ten-minute working-project
+target, current evidence and remaining scope.
+
 ## Install
 
 ```sh
 uv tool install git+https://github.com/benpshore/makeghrepo
 gh auth refresh -s project,workflow   # once: project boards + pushing workflow files
 ```
+
+Update the existing unpinned Git installation with `uv tool upgrade makeghrepo`,
+then check `makeghrepo --version`. Python and Copier remain supported. See
+[installation and updates](docs/install.md) for pinned installs and the separate
+prebuilt Rust command on Apple Silicon and Linux.
 
 ## Use
 
@@ -20,14 +31,31 @@ makeghrepo quiet-otter python       # one language
 makeghrepo quiet-otter rust docker  # several
 makeghrepo swift                    # first word is a language, so the name is random
 makeghrepo quiet-otter --private
+makeghrepo quiet-otter python --license MIT # explicitly opt in to an MIT license
 makeghrepo quiet-otter python --lib # library layout, no console script (like `uv init --lib`)
+makeghrepo --version
+makeghrepo -h                       # --help also works
+makeghrepo quiet-otter python --render ./preview
 ```
 
 Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `postgres` `sql` `docker` `shell` `go` `ts` `ruby` `sqlite`. Aliases like `c++`, `objc++`, `rest`, `pg`, `golang`, `typescript` and `rb` also work.
 
+`--render DIR` previews the packaged template offline, without authentication,
+GitHub requests, local checks, or creating a git repository or resume marker.
+It preserves Copier in the Python installation; Copier may inspect local Git
+metadata when Git is available. The destination must be absent or empty.
+Python and Rust use the same preview defaults: `quiet-otter` when no name is
+given, owner `someone`, author `Test User`, description `a test project`, and
+year `2026`. For repeatable previews, `--owner`, `--author`, `--description`, and
+`--year` override those values alongside `--render`. `--private` and `--lib`
+work as usual. Preview folders have no resume marker and cannot be published
+by rerunning the bootstrap command against them.
+
 If anything fails, fix it and run the same command again. The repo already exists, so makeghrepo skips creating it and only finishes what's missing: pushing `main` and re-applying settings. Every setting is safe to re-apply.
 
-makeghrepo only resumes folders it created itself. It records that, along with the visibility and languages you chose, in `.git/makeghrepo.json`, which is never committed. It refuses any other git repo at that path, so an unrelated local project can't be published by accident. A re-run keeps the original visibility and languages. `--private` on a repo created public is refused rather than ignored, and makeghrepo never changes an existing repo's visibility.
+makeghrepo only resumes folders it created itself. It records that, along with the visibility, languages and license you chose, in `.git/makeghrepo.json`, which is never committed. It refuses any other git repo at that path, so an unrelated local project can't be published by accident. A re-run keeps the original visibility, languages and license. `--private` on a repo created public is refused rather than ignored, and makeghrepo never changes an existing repo's visibility.
+
+New projects have **no license by default**, whether public or private: no `LICENSE` file or license metadata is added. Choose `--license MIT` to add an MIT license and matching package/API metadata, or `--license none` to state the default explicitly. This leaves private and commercial projects' licensing for their owners to decide. Resuming never rewrites license files, including any terms you added yourself; a conflicting `--license` is refused. Older resume markers without a license field retain the legacy MIT choice. makeghrepo itself remains MIT-licensed.
 
 Projects go in `~/code/GitHub/<name>`. Set `MAKEGHREPO_DIR` to use another folder.
 
@@ -46,14 +74,14 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 ## What it does
 
 1. Renders one copier template (`src/makeghrepo/templates/project/`). The shared base is always included; each language you name adds its own files.
-2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). If a check fails, nothing is published.
+2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). A failed check stops this invocation before its GitHub creation/push steps. The recovery message identifies the target and earlier lookup result; it does not establish whether an earlier attempt published anything. See [effect accounting and recovery](docs/recovery.md).
 3. Runs `git init -b main`, `git add --all`, `git commit -m setup`.
 4. Creates the GitHub repo empty, then configures it:
    - squash-merge only (explicitly enabled; merge commits and rebase merges disabled), auto-merge and branch updates on, delete branches after merge, wiki off
    - Dependabot alerts and security fixes
    - public repos: secret scanning, push protection, private vulnerability reporting
    - **pushes `main`**, after public push protection is on or private Actions are disabled
-   - public repos: a `protect-main` ruleset. PRs are required (0 approvals, because you can't approve your own PR), the branch must be up to date and the `ci` check from GitHub Actions must pass, history stays linear, and force-push and deletion are blocked. Only squash merges are allowed, with no bypass actors. Configuration reruns retain this strict status-check policy.
+   - public personal repos: `protect-main` blocks force-push, deletion, and merge commits for everyone. A separate `require-pr-and-ci` ruleset requires a squash PR (0 approvals) and up-to-date passing `ci` from GitHub Actions, with a bypass for the exact repository owner. The owner's own pushes need neither a PR nor passing CI; agents still use PRs and CI. See [owner pushes and migration](docs/owner-pushes.md) for the credential boundary and existing-repo setup.
    - labels `epic` and `task`, and a Project board linked to the repo
    - notifications set to **Ignore**, and no CODEOWNERS file, so nothing pings you
 
@@ -62,7 +90,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 ## What every repo gets
 
 - `.gitignore` covering every supported language, plus `.DS_Store`, databases and data files, secrets, and editor/cache files. A `repo` CI job fails if any of those get committed anyway.
-- `README.md` and `AGENTS.md` (plus `CLAUDE.md`), each listing that project's check commands; MIT `LICENSE`, `SECURITY.md`, `.editorconfig`.
+- `README.md` and `AGENTS.md` (plus `CLAUDE.md`), each listing that project's check commands; `SECURITY.md`, `.editorconfig`. `LICENSE` is included only with `--license MIT`.
 - Issue templates for bug, task and epic (epics use native sub-issues), and a PR template.
 - `ci.yml`: one job per language, plus a final `ci` job that passes only if all of them passed. That `ci` job is the one required check.
 - `codeql.yml` (public repos): actions, plus python, js, rust, go, ruby, c-cpp and swift as chosen.
@@ -93,16 +121,15 @@ Main-push CI runs independently for each run; only superseded PR runs are cancel
 
 ## Rust build
 
-`rust/` holds a Rust port of the same tool: same template, same registry, same steps, and it must render every `tests/golden` combo byte for byte (CI's `rust` job checks). Every release attaches prebuilt binaries for Linux x86_64, Linux aarch64 (Raspberry Pi) and macOS arm64, each with a `.sha256` file:
+`rust/` provides an alternative implementation using the same registry and
+templates. Every golden snapshot must match Python byte for byte. Releases attach
+optimized binaries for Linux x86_64, Linux ARM64, and Apple Silicon, each with a
+checksum. Follow [the prebuilt installation steps](docs/install.md#prebuilt-rust-alternative)
+to install it as `makeghrepo-rs`, keeping the uv-managed Python command intact.
 
-```sh
-v=$(gh release view --repo benpshore/makeghrepo --json tagName --jq .tagName)
-gh release download "$v" --repo benpshore/makeghrepo -p "makeghrepo-aarch64-unknown-linux-gnu*"
-shasum -a 256 -c makeghrepo-aarch64-unknown-linux-gnu.sha256
-install -m 755 makeghrepo-aarch64-unknown-linux-gnu ~/.local/bin/makeghrepo
-```
-
-The Rust binary adds two offline modes: `makeghrepo NAME LANG... --render DIR` renders the project into `DIR` and stops (no checks, no git, no GitHub), and `--snapshot [--combo NAME]` prints the rendered project in golden-snapshot format. Nothing in this repo compiles Rust on a development machine: CI builds, tests and checks it.
+Both commands support `NAME LANG... --render DIR` for offline previews. Rust also
+supports `--snapshot [--combo NAME]` for golden comparisons. CI builds and tests
+Rust; using the prebuilt distribution requires no local compiler.
 
 ## Develop
 
@@ -120,6 +147,7 @@ makeghrepo's own CI does all the real verification on GitHub runners; nothing ne
 - **`test`:** ruff, the full pytest suite, and the golden snapshots.
 - **`templates`:** renders every combo in `tests/golden_snapshots.py` and runs the generated project's own local checks on real toolchains. ObjC combos run on macOS.
 - **`actionlint`:** lints makeghrepo's workflows and every generated one.
+- **`distribution`:** clean wheel installs, Git tool upgrades, installed Python/Rust parity, and real local Git bootstrap/retry checks on all three supported native architectures. GitHub responses use a controlled fixture; these checks do not change live settings.
 - **`ci`:** rolls all of the above up into the one required check.
 
 ### Golden snapshots
@@ -133,11 +161,21 @@ git diff tests/golden
 
 The multi-language combos include every Dockerfile branch (`python+docker`, `js+docker`, `rust+docker`, `python+rust+docker`) and `all`, which CI checks three times in a row to flush out ordering races between concurrent checks.
 
-Never edit or hand-merge a `.golden` file. On a conflict, rebase and regenerate. CI also renders them on every run and uploads them as the `golden` artifact, so they can be regenerated without a local toolchain:
+Regeneration accepts only a dedicated directory containing expected regular snapshot files. It refuses symlinks, subdirectories, and unrelated or obsolete entries without deleting them; review and move those entries aside before regenerating.
+
+Never edit or hand-merge a `.golden` file. On a conflict, rebase and regenerate. CI renders and uploads the `golden` artifact only for trusted `main` pushes and manual runs, never for pull requests. Download only an artifact from a trusted run, validate its complete contents in a staging directory, and then replace the snapshots:
 
 ```sh
-gh run download <run-id> -n golden -D tests/golden
+staging=$(mktemp -d) &&
+gh run download <trusted-run-id> -n golden -D "$staging" &&
+uv run scripts/regen-golden --check --out "$staging" &&
+rm -rf tests/golden &&
+mv "$staging" tests/golden &&
+git status --short tests/golden &&
+git diff -- tests/golden
 ```
+
+The validation rejects missing, changed, non-regular, and unexpected files. Do not copy an artifact into `tests/` before it passes validation.
 
 To add a language or component, add only files it owns:
 
