@@ -75,6 +75,18 @@ runs; checkpoint push artifacts cannot become trusted goldens. Formatter failure
 emit a nonmutating diff to make correction possible through cloud job logs.
 Remove the temporary checkpoint trigger when preparing the final PR178 diff.
 
+The first checkpoint CI run,
+[38763801655](https://github.com/benpshore/makeghrepo/actions/runs/38763801655),
+ran the producer successfully on CPython 3.14.8 / uv 0.12.23: all 62 beta tests,
+the actual wheel build/install/smoke checks and stable/beta coexistence passed.
+Its root test job failed formatting; its formatter diff was applied from the
+cloud logs. The next run,
+[38764392662](https://github.com/benpshore/makeghrepo/actions/runs/38764392662),
+passed formatting and all 489 stable pytest cases, but identified three beta lint
+diagnostics, corrected in the next checkpoint. Its beta-assets, Rust and actionlint
+jobs passed. These are checkpoint candidates, never trusted main/manual assets.
+The VM download restriction remains, but it no longer blocks Actions validation.
+
 ## Implemented contract
 
 `makeghrepo-beta cloud plan` takes an explicit full makeghrepo source SHA and
@@ -149,19 +161,21 @@ tests are fixtures; they do not prove an actual wheel was built here. Full
 supported-version pytest, Ruff, actionlint, packaging, generated-project/native
 checks and an actual prebuild are still blocked by environment downloads.
 
-Local fixture command (Python 3.12.14; this is not supported-runtime acceptance):
+Fixture command (use the supported Python 3.14 runtime):
 
 ```sh
 PYTHONPATH=beta/src:src python -m unittest discover -s beta/tests -v
 ```
 
-At this checkpoint, all **62 tests** pass, including the two-daughter reuse case
+All **62 tests** pass in Actions, including the two-daughter reuse case
 and a failure at each of the producer's 14 tool stages. The beta shared-source
 manifest check, Python syntax compilation, CI YAML/permission/action-pin inspection
 and patch whitespace checks also pass. Stable source, Rust, golden files, root
 packaging/lock and release workflows have zero diff from the inspected main.
-Ruff is unavailable here, so formatting and lint remain unverified; it must be
-run before calling this integration ready.
+The initial VM-only fixture checks used Python 3.12.14. Cloud formatting now uses
+the package's supported Python 3.14 syntax, so those older VM runtimes cannot run
+the full beta suite. Ruff runs in Actions; final aggregate CI must pass before
+calling the checkpoint ready.
 
 Existing upstream CI was independently re-read through GitHub: PR175's
 [CI 37303024998](https://github.com/benpshore/makeghrepo/actions/runs/37303024998)

@@ -9,10 +9,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from test_cloud_assets import fixture
+
 from makeghrepo_beta import cloud_build as builder
 from makeghrepo_beta import cloud_contract as contract
-
-from test_cloud_assets import fixture
 
 
 class CloudBuildTests(unittest.TestCase):
@@ -107,9 +107,9 @@ class CloudBuildTests(unittest.TestCase):
         with (
             patch("platform.python_version", return_value="3.13.5"),
             patch.object(builder, "run", side_effect=AssertionError("tool execution")),
+            self.assertRaisesRegex(ValueError, "toolchain"),
         ):
-            with self.assertRaisesRegex(ValueError, "toolchain"):
-                builder.build(self.plan, self.root / "wrong", 12, 2)
+            builder.build(self.plan, self.root / "wrong", 12, 2)
 
 
 if __name__ == "__main__":
