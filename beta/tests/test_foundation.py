@@ -257,7 +257,10 @@ class FoundationTests(unittest.TestCase):
     def test_only_recognized_cloud_subcommands_are_dispatched(self):
         for operation in ("plan", "fetch"):
             args = [operation, "--source", "b" * 40, "--owner", "someone", "--name", "sample"]
-            with self.subTest(operation=operation), patch("makeghrepo_beta.cloud_cli.main") as cloud:
+            with (
+                self.subTest(operation=operation),
+                patch("makeghrepo_beta.cloud_cli.main") as cloud,
+            ):
                 cli.main(["cloud", *args])
                 cloud.assert_called_once_with(args)
 

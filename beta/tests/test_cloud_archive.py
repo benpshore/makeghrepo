@@ -48,7 +48,10 @@ class CloudArchiveTests(unittest.TestCase):
                 with self.subTest(compression=compression, size=size):
                     # ZipExtFile also truncates in chunked mode, with a matching
                     # forged prefix CRC. It is not an expanded-size validator.
-                    with zipfile.ZipFile(io.BytesIO(forged)) as archive, archive.open("payload") as member:
+                    with (
+                        zipfile.ZipFile(io.BytesIO(forged)) as archive,
+                        archive.open("payload") as member,
+                    ):
                         chunks = iter(lambda member=member: member.read(257), b"")
                         self.assertEqual(b"".join(chunks), payload[:size])
                     with self.assertRaisesRegex(ValueError, "size"):
