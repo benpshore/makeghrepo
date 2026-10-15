@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import copy
 import base64
+import copy
 import csv
 import hashlib
 import io
@@ -40,7 +40,9 @@ def fixture_wheel(source):
         info + "METADATA": (b"Metadata-Version: 2.3\nName: makeghrepo-seed\n"
                             b"Version: 0.0.0\nRequires-Python: >=3.14\n", 0o644),
         info + "WHEEL": (b"Wheel-Version: 1.0\nTag: py3-none-any\nRoot-Is-Purelib: true\n", 0o644),
-        info + "entry_points.txt": (b"[console_scripts]\nmakeghrepo-seed = makeghrepo_seed:main\n", 0o644),
+        info + "entry_points.txt": (
+            b"[console_scripts]\nmakeghrepo-seed = makeghrepo_seed:main\n", 0o644,
+        ),
     }
     records = io.StringIO()
     writer = csv.writer(records, lineterminator="\n")
@@ -56,7 +58,8 @@ def fixture(plan):
     golden = (ROOT / "tests/golden/python.golden").read_text()
     manifest = golden.split("### FILE pyproject.toml", 1)[1].split("\n", 1)[1]
     manifest = manifest.split("\n### END", 1)[0]
-    manifest = manifest.replace("quiet-otter", contract.PACKAGE).replace("quiet_otter", "makeghrepo_seed")
+    manifest = manifest.replace("quiet-otter", contract.PACKAGE)
+    manifest = manifest.replace("quiet_otter", "makeghrepo_seed")
     seed = ROOT / "beta/src/makeghrepo_beta/assets/python-uv.lock.jinja"
     lock = seed.read_text().replace("[% raw %]", "").replace("[% endraw %]", "")
     lock = lock.replace("[[ project_name | to_json ]]", json.dumps(contract.PACKAGE))
@@ -133,7 +136,9 @@ class CloudAssetsTests(unittest.TestCase):
         self.assertEqual(self.plan.asset_key, other.asset_key)
         self.assertNotEqual(self.plan.plan_id, other.plan_id)
         self.assertEqual(contract.PROFILE["package"], "makeghrepo-seed")
-        self.assertEqual(contract.CloudPlan.parse(contract.canonical(self.plan.document())), self.plan)
+        self.assertEqual(
+            contract.CloudPlan.parse(contract.canonical(self.plan.document())), self.plan
+        )
 
     def test_plan_rejects_extra_fields_commands_wrong_types_and_profile_edits(self):
         variants = []
@@ -149,6 +154,8 @@ class CloudAssetsTests(unittest.TestCase):
                 contract.CloudPlan.parse(contract.canonical(altered))
         with self.assertRaisesRegex(ValueError, "duplicate"):
             contract.decode(b'{"schema":1,"schema":1}')
+        with self.assertRaisesRegex(ValueError, "non-finite"):
+            contract.decode(b'{"schema":NaN}')
 
     def test_invalid_identity_and_unpinned_source_fail(self):
         for sha, owner, name in [("main", "someone", "good"), ("a"*40, "bad/name", "good"),
@@ -160,17 +167,23 @@ class CloudAssetsTests(unittest.TestCase):
         with patch("subprocess.Popen", side_effect=AssertionError("subprocess")), \
              patch("platform.system", side_effect=AssertionError("host probe")), \
              patch("sys.stdout", new_callable=io.StringIO) as output:
-            main(["plan", "--source", self.plan.source_sha, "--owner", "someone", "--name", "sample"])
+            main([
+                "plan", "--source", self.plan.source_sha, "--owner", "someone", "--name", "sample"
+            ])
         self.assertEqual(json.loads(output.getvalue())["asset"]["profile"], contract.PROFILE)
         self.assertFalse(self.dest.exists())
 
     def test_verified_install_and_retry_are_identical_without_tool_execution(self):
         with patch("subprocess.Popen", side_effect=AssertionError("unexpected tool execution")):
-            self.assertEqual(client.consume(self.plan, 12, self.dest, self.api), "verified and installed")
+            self.assertEqual(
+                client.consume(self.plan, 12, self.dest, self.api), "verified and installed"
+            )
             inode = self.dest.stat().st_ino
             self.assertEqual(client.consume(self.plan, 12, self.dest, self.api), "already verified")
         self.assertEqual(inode, self.dest.stat().st_ino)
-        self.assertEqual(json.loads((self.dest / "identity.json").read_text()), self.plan.identity())
+        self.assertEqual(
+            json.loads((self.dest / "identity.json").read_text()), self.plan.identity()
+        )
         self.assertEqual((self.dest / contract.WHEEL).read_bytes(), self.payload[contract.WHEEL][0])
         self.assertEqual(len(self.api.calls), 10)
 
@@ -180,6 +193,18 @@ class CloudAssetsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed"):
             client.consume(self.plan, 12, self.dest, self.api)
         self.assertEqual((self.dest / "source/README.md").read_text(), "user work")
+
+    def test_two_daughter_identities_share_exact_built_bytes(self):
+        other = contract.CloudPlan(self.plan.source_sha, "elsewhere", "lunar-panda")
+        second = self.dest.parent / "second"
+        with patch("subprocess.Popen", side_effect=AssertionError("local provisioning")):
+            client.consume(self.plan, 12, self.dest, self.api)
+            client.consume(other, 12, second, self.api)
+        for name in self.payload:
+            self.assertEqual((self.dest / name).read_bytes(), (second / name).read_bytes())
+        self.assertNotEqual(
+            (self.dest / "identity.json").read_bytes(), (second / "identity.json").read_bytes()
+        )
 
     def test_rejects_pr_fork_partial_failure_and_wrong_sha_before_download(self):
         variants = [("event", "pull_request"), ("status", "in_progress"),
@@ -228,7 +253,8 @@ class CloudAssetsTests(unittest.TestCase):
         self.assertFalse(self.dest.exists())
 
     def test_safe_archive_rejects_traversal_links_duplicates_and_excess(self):
-        for name in ["../evil", "/evil", "source/../evil", "source\\evil", "source/.git/config"]:
+        for name in ["../evil", "/evil", "source/../evil", "source\\evil", "source/.git/config",
+                     "source/.GIT/config", "."]:
             with self.subTest(name=name), self.assertRaises(ValueError):
                 contract.read_archive(zip_bytes({name: (b"bad", 0o644)}))
         stream = io.BytesIO()
@@ -242,6 +268,8 @@ class CloudAssetsTests(unittest.TestCase):
             contract.read_archive(zip_bytes({"source/a": (b"", 0o644), "source/A": (b"", 0o644)}))
         with patch.object(contract, "MAX_BYTES", 1), self.assertRaises(ValueError):
             contract.read_archive(self.archive)
+        with self.assertRaisesRegex(ValueError, "invalid ZIP"):
+            contract.read_archive(b"not a zip")
 
     def test_result_cannot_change_graph_or_skip_checks(self):
         for field, value in [("checks", {}), ("run_attempt", 1), ("schema", True)]:
@@ -269,6 +297,34 @@ class CloudAssetsTests(unittest.TestCase):
             client.consume(self.plan, 12, self.dest, self.api)
         self.assertTrue((lock / "previous-writer").exists())
         self.assertFalse(self.dest.exists())
+
+    def test_fetch_dry_run_validates_run_destination_and_reports_unverified_remote(self):
+        arguments = ["fetch", "--source", self.plan.source_sha, "--owner", self.plan.owner,
+                     "--name", self.plan.name, "--run", "12", "--destination", str(self.dest)]
+        with patch("subprocess.Popen", side_effect=AssertionError("network")), \
+             patch("sys.stdout", new_callable=io.StringIO) as output:
+            main([*arguments, "--dry-run"])
+        self.assertEqual(json.loads(output.getvalue())["run_id"], 12)
+        self.assertIn("unverified", json.loads(output.getvalue())["remote_state"])
+        self.assertFalse(self.dest.exists())
+        for bad_run in [0, -1, True]:
+            with self.subTest(run=bad_run), self.assertRaises(ValueError):
+                contract.prepare_fetch(self.plan, bad_run, self.dest)
+        self.dest.symlink_to(Path(self.temp.name))
+        with self.assertRaises(ValueError):
+            contract.prepare_fetch(self.plan, 12, self.dest)
+
+    def test_wheel_identity_source_and_record_tampering_are_rejected(self):
+        wheel = contract.read_archive(self.payload[contract.WHEEL][0])
+        metadata = "makeghrepo_seed-0.0.0.dist-info/"
+        changes = [("makeghrepo_seed/__init__.py", b"different code"),
+                   (metadata + "METADATA", b"Name: renamed\nVersion: 0.0.0\n"),
+                   (metadata + "WHEEL", b"Root-Is-Purelib: false\nTag: native\n"),
+                   (metadata + "RECORD", b"malformed\n")]
+        for name, data in changes:
+            changed = {**wheel, name: (data, 0o644)}
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                contract.validate_wheel(zip_bytes(changed), b"fixture source\n")
 
 
 if __name__ == "__main__":

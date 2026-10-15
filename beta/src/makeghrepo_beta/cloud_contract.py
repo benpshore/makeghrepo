@@ -6,23 +6,22 @@ substitution sites. No commands, URLs, permission grants or host probes are inpu
 
 from __future__ import annotations
 
-import hashlib
 import base64
 import configparser
 import csv
+import hashlib
 import io
 import json
 import os
 import re
 import stat
 import zipfile
-from dataclasses import dataclass
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.parser import BytesParser
 from importlib.resources import files
-from pathlib import PurePosixPath
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from makeghrepo import names
 from makeghrepo_beta import seedlock
@@ -55,7 +54,8 @@ def require(condition: bool, message: str) -> None:
 
 
 def canonical(value: object) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return (text + "\n").encode()
 
 
 def sha256(value: bytes) -> str:
@@ -70,9 +70,13 @@ def _pairs(items: list[tuple[str, object]]) -> dict:
     return result
 
 
+def _nonfinite(_value: str) -> None:
+    raise ValueError("non-finite JSON numbers are not permitted")
+
+
 def decode(data: bytes) -> dict:
     require(len(data) <= MAX_JSON, "JSON exceeds size limit")
-    value = json.loads(data, object_pairs_hook=_pairs)
+    value = json.loads(data, object_pairs_hook=_pairs, parse_constant=_nonfinite)
     require(type(value) is dict, "expected a JSON object")
     return value
 
@@ -166,8 +170,10 @@ def prepare_fetch(plan: CloudPlan, run_id: int, destination: Path) -> dict:
             directory_state(part)
     if destination.exists() and any(destination.iterdir()):
         receipt = destination / ".makeghrepo-cloud.json"
-        require(receipt.is_file() and not receipt.is_symlink() and receipt.stat().st_size <= MAX_JSON,
-                "destination is not a recorded cloud result; existing work is retained")
+        require(
+            receipt.is_file() and not receipt.is_symlink() and receipt.stat().st_size <= MAX_JSON,
+            "destination is not a recorded cloud result; existing work is retained",
+        )
         recorded = decode(receipt.read_bytes())
         require(recorded.get("plan_id") == plan.plan_id and
                 canonical(recorded.get("plan")) == canonical(plan.document()) and
@@ -218,7 +224,9 @@ def validate_artifact(plan: CloudPlan, run: dict, listing: dict) -> dict:
     expiry = artifact.get("expires_at")
     require(isinstance(expiry, str), "missing artifact expiry")
     expires_at = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-    require(expires_at.tzinfo is not None and expires_at > datetime.now(UTC), "artifact has expired")
+    require(
+        expires_at.tzinfo is not None and expires_at > datetime.now(UTC), "artifact has expired"
+    )
     size = integer(artifact.get("size_in_bytes"), "artifact size")
     require(size <= MAX_BYTES, "artifact exceeds size limit")
     digest = artifact.get("digest")
@@ -241,7 +249,7 @@ def safe_path(name: str) -> None:
     path = PurePosixPath(name)
     require(
         bool(path.parts) and not path.is_absolute() and str(path) == name
-        and not any(part in {"..", ".git"} for part in path.parts)
+        and not any(part.casefold() in {"..", ".git"} for part in path.parts)
         and "\\" not in name and ":" not in name
         and all(32 <= ord(char) < 127 for char in name),
         f"unsafe artifact path: {name!r}",
@@ -249,6 +257,13 @@ def safe_path(name: str) -> None:
 
 
 def read_archive(data: bytes) -> dict[str, tuple[bytes, int]]:
+    try:
+        return _read_archive(data)
+    except (zipfile.BadZipFile, NotImplementedError) as exc:
+        raise ValueError("invalid ZIP artifact") from exc
+
+
+def _read_archive(data: bytes) -> dict[str, tuple[bytes, int]]:
     require(len(data) <= MAX_BYTES, "archive exceeds size limit")
     result = {}
     folded = set()
@@ -282,14 +297,24 @@ def inventory(payload: dict[str, tuple[bytes, int]]) -> dict:
 
 def validate_wheel(data: bytes, source: bytes) -> None:
     """Check identity, source and RECORD as data; never import downloaded code."""
+    try:
+        _validate_wheel(data, source)
+    except (configparser.Error, csv.Error) as exc:
+        raise ValueError("invalid wheel metadata") from exc
+
+
+def _validate_wheel(data: bytes, source: bytes) -> None:
     wheel = read_archive(data)
     metadata = "makeghrepo_seed-0.0.0.dist-info/"
     needed = {f"{metadata}{name}" for name in ("METADATA", "WHEEL", "entry_points.txt", "RECORD")}
     require(needed <= wheel.keys(), "wheel is missing metadata")
     require(all(name.startswith(("makeghrepo_seed/", metadata)) for name in wheel),
             "unexpected wheel package identity")
+    require({name for name in wheel if name.startswith("makeghrepo_seed/")} ==
+            {"makeghrepo_seed/__init__.py"}, "unexpected wheel code")
     message = BytesParser().parsebytes(wheel[metadata + "METADATA"][0])
-    for field, expected in {"Name": PACKAGE, "Version": "0.0.0", "Requires-Python": ">=3.14"}.items():
+    identity = {"Name": PACKAGE, "Version": "0.0.0", "Requires-Python": ">=3.14"}
+    for field, expected in identity.items():
         require(message.get_all(field) == [expected], f"wheel {field} mismatch")
     require(message.get_all("Requires-Dist") is None, "unexpected runtime dependencies")
     tags = BytesParser().parsebytes(wheel[metadata + "WHEEL"][0])
@@ -328,7 +353,9 @@ def validate_bundle(plan: CloudPlan, data: bytes, run_id: int, attempt: int) -> 
         "schema": 1, "asset": plan.asset(), "asset_key": plan.asset_key,
         "run_id": run_id, "run_attempt": attempt,
         "checks": {check: "passed" for check in CHECKS},
-        "files": inventory({name: entry for name, entry in payload.items() if name != "result.json"}),
+        "files": inventory(
+            {name: entry for name, entry in payload.items() if name != "result.json"}
+        ),
     }
     require(canonical(result) == canonical(expected), "result contract or file integrity mismatch")
     required = {
@@ -336,8 +363,14 @@ def validate_bundle(plan: CloudPlan, data: bytes, run_id: int, attempt: int) -> 
         "source/tests/test_smoke.py", "source/README.md", "build/requirements.lock", WHEEL,
     }
     require(required <= payload.keys(), "incomplete prebuilt starter")
-    require(all(name in {"result.json", "build/requirements.lock", WHEEL} or name.startswith("source/")
-                for name in payload), "unexpected payload")
+    require(
+        all(
+            name in {"result.json", "build/requirements.lock", WHEEL}
+            or name.startswith("source/")
+            for name in payload
+        ),
+        "unexpected payload",
+    )
     seedlock.validate_contents(
         {name: payload[f"source/{name}"][0] for name in seedlock.PYTHON_INPUTS},
         ["python"], PACKAGE, lib=False,

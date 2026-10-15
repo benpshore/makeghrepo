@@ -16,7 +16,9 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--name", required=True, help="daughter repository name (configuration)")
     parser.add_argument("--run", type=int, help="existing completed trusted CI run ID")
     parser.add_argument("--destination", type=Path, help="local directory for verified result")
-    parser.add_argument("--dry-run", action="store_true", help="validate and print only; no gh calls")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="validate and print only; no gh calls"
+    )
     args = parser.parse_args(argv)
     if args.operation == "fetch" and (args.run is None or args.destination is None):
         parser.error("fetch requires --run and --destination")

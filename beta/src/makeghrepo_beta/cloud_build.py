@@ -67,7 +67,10 @@ def environment(root: Path) -> dict[str, str]:
 def run(command: list[str], cwd: Path, env: dict[str, str]) -> str:
     result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=600)
     if result.returncode:
-        raise RuntimeError(f"cloud build failed: {command[0:3]}\n{result.stdout[-4000:]}{result.stderr[-4000:]}")
+        raise RuntimeError(
+            f"cloud build failed: {command[0:3]}\n"
+            f"{result.stdout[-4000:]}{result.stderr[-4000:]}"
+        )
     return result.stdout.strip()
 
 
@@ -96,7 +99,8 @@ def build(plan: CloudPlan, destination: Path, run_id: int, attempt: int) -> None
     with tempfile.TemporaryDirectory(prefix="makeghrepo-prebuild-") as temporary:
         root = Path(temporary)
         env = environment(root)
-        require(run(["uv", "--version"], root, env).split()[1] == PROFILE["uv"], "wrong uv toolchain")
+        observed_uv = run(["uv", "--version"], root, env).split()[1]
+        require(observed_uv == PROFILE["uv"], "wrong uv toolchain")
         source = root / "source"
         scaffold.render(source, {
             "project_name": PACKAGE, "package_name": "makeghrepo_seed",
@@ -118,7 +122,11 @@ def build(plan: CloudPlan, destination: Path, run_id: int, attempt: int) -> None
         run(["uv", "sync", "--locked", "--no-install-project", "--python", python], source, env)
         run(["uv", "run", "--no-sync", "ruff", "format", "--check"], source, env)
         run(["uv", "run", "--no-sync", "ruff", "check"], source, env)
-        run(["uv", "run", "--no-sync", "pytest"], source, {**env, "PYTHONPATH": str(source / "src")})
+        run(
+            ["uv", "run", "--no-sync", "pytest"],
+            source,
+            {**env, "PYTHONPATH": str(source / "src")},
+        )
         run([python, "-m", "compileall", "-q", str(source / "src")], root, env)
 
         # Resolve build-tool dependencies once in makeghrepo CI, save the full
@@ -126,8 +134,15 @@ def build(plan: CloudPlan, destination: Path, run_id: int, attempt: int) -> None
         requirements = root / "build.in"
         requirements.write_text("\n".join(BUILD_REQUIREMENTS) + "\n")
         locked = root / "build-requirements.lock"
-        run(["uv", "pip", "compile", "--python", python, "--generate-hashes", "--no-header",
-             "--no-annotate", "--only-binary", ":all:", "--output-file", str(locked), str(requirements)], root, env)
+        run(
+            [
+                "uv", "pip", "compile", "--python", python, "--generate-hashes", "--no-header",
+                "--no-annotate", "--only-binary", ":all:", "--output-file", str(locked),
+                str(requirements),
+            ],
+            root,
+            env,
+        )
         builder = root / "builder"
         run(["uv", "venv", "--no-project", "--python", python, str(builder)], root, env)
         builder_python = str(builder / "bin/python")
@@ -137,7 +152,9 @@ def build(plan: CloudPlan, destination: Path, run_id: int, attempt: int) -> None
         run(["uv", "build", str(source), "--wheel", "--python", builder_python,
              "--no-build-isolation", "--offline", "--out-dir", str(dist)], root, env)
         wheel = root / WHEEL
-        require(wheel.is_file() and list(dist.glob("*.whl")) == [wheel], "unexpected wheel identity")
+        require(
+            wheel.is_file() and list(dist.glob("*.whl")) == [wheel], "unexpected wheel identity"
+        )
         installed = root / "installed"
         run(["uv", "venv", "--no-project", "--python", python, str(installed)], root, env)
         run(["uv", "pip", "install", "--python", str(installed / "bin/python"),

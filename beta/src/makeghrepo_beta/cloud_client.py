@@ -14,7 +14,6 @@ from makeghrepo_beta.cloud_contract import (
     CloudPlan,
     canonical,
     decode,
-    integer,
     inventory,
     prepare_fetch,
     require,
@@ -51,7 +50,9 @@ class GhAPI:
                         raise ValueError("GitHub response exceeds size limit")
                 status = process.wait()
                 require(not expired.is_set(), "GitHub read timed out; retry the same run")
-                require(status == 0, f"GitHub read failed for {endpoint}; check gh access and retry")
+                require(
+                    status == 0, f"GitHub read failed for {endpoint}; check gh access and retry"
+                )
                 return bytes(data)
             finally:
                 timer.cancel()
