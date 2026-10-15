@@ -1,0 +1,56 @@
+name: PR136 checkpoint validation
+
+on:
+  push:
+    branches: [checkpoint/pr136-render-20261015]
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Git identity for tests
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.invalid"
+      - name: Install
+        run: uv sync --locked
+      - name: Format and lint
+        run: |
+          uv run ruff format tests/test_workflows.py
+          uv run ruff check
+      - name: Regenerate from Copier and validate workflows
+        run: |
+          uv run scripts/regen-golden
+          uv run pytest -q tests/test_workflows.py tests/test_golden.py
+      - name: Export checksum-verified generated files
+        run: |
+          uv run python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import subprocess
+          import zlib
+          from pathlib import Path
+
+          paths = subprocess.check_output(["git", "diff", "--name-only"]).decode().splitlines()
+          for name in paths:
+              assert name.startswith("tests/golden/") or name == "tests/test_workflows.py"
+              data = Path(name).read_bytes()
+              print("PR136_FILE " + json.dumps({
+                  "path": name,
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
+                  "payload": base64.b64encode(zlib.compress(data, 9)).decode(),
+              }))
+          PY

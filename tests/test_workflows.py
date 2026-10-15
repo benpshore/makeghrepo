@@ -36,6 +36,21 @@ def test_ci_preserves_running_and_pending_main_runs(workflows):
     assert all("concurrency" not in job for job in ci["jobs"].values())
 
 
+def test_release_build_is_isolated_from_write_token(workflows):
+    release = yaml.safe_load((workflows / "release.yml").read_text())
+    # Repository-controlled builds run with explicit read-only permissions.
+    build = release["jobs"]["build"]
+    assert build["permissions"] == {"contents": "read"}
+
+    # The write token exists only on a fresh runner after the build completes.
+    publish = release["jobs"]["publish"]
+    assert publish["needs"] == "build"
+    assert publish["permissions"] == {"contents": "write"}
+    token_steps = [step for step in publish["steps"] if "GH_TOKEN" in step.get("env", {})]
+    assert len(token_steps) == 1
+    assert token_steps[0]["name"] == "Publish GitHub release"
+
+
 def test_auto_release_queues_instead_of_replacing_pending_runs(workflows):
     path = workflows / "auto-release.yml"
     if not path.exists():
@@ -56,13 +71,15 @@ def test_auto_release_keeps_exact_sha_checkout_and_ci_gate(workflows):
     if not path.exists():
         return
     release = yaml.safe_load(path.read_text())
-    steps = release["jobs"]["validate"]["steps"]
+    jobs = release["jobs"]
+    job = jobs.get("validate") or jobs.get("build") or jobs["release"]
+    steps = job["steps"]
     wait_index, wait = next(
         (i, step)
         for i, step in enumerate(steps)
         if step.get("name") == "Wait for this commit's ci check"
     )
-    env = release["jobs"]["validate"].get("env", {}) | wait.get("env", {})
+    env = job.get("env", {}) | wait.get("env", {})
     assert env["SHA"] == "${{ github.sha }}"
     assert "commits/$SHA/check-runs?check_name=ci" in wait["run"]
     assert '.app.slug == "github-actions"' in wait["run"]
@@ -74,12 +91,75 @@ def test_auto_release_keeps_exact_sha_checkout_and_ci_gate(workflows):
             assert step["with"]["fetch-depth"] == 0
 
 
+def test_auto_release_isolates_write_credentials_from_project_code(workflows):
+    path = workflows / "auto-release.yml"
+    if not path.exists():
+        return
+    release = yaml.safe_load(path.read_text())
+    if "build" not in release["jobs"]:
+        return  # This regression test covers the generated workflow.
+    build = release["jobs"]["build"]
+    publish = release["jobs"]["release"]
+
+    assert build["permissions"] == {"contents": "read", "checks": "read"}
+    assert "GH_TOKEN" not in build.get("env", {})
+    checkout = next(
+        step for step in build["steps"] if step.get("uses", "").startswith("actions/checkout@")
+    )
+    assert checkout["with"]["persist-credentials"] is False
+    assert publish["permissions"] == {"contents": "write", "actions": "read"}
+    download = next(
+        step for step in publish["steps"] if step.get("name") == "Download release artifacts"
+    )
+    assert download["env"]["ARTIFACT_ID"] == "${{ needs.build.outputs.artifact-id }}"
+    assert "actions/artifacts/$ARTIFACT_ID/zip" in download["run"]
+    assert not any(
+        command in step.get("run", "")
+        for step in publish["steps"]
+        for command in ("uv sync", "uv run pytest", "uv build")
+    )
+
+
+def test_tag_release_isolates_build_code_from_write_token(workflows):
+    release = yaml.safe_load((workflows / "release.yml").read_text())
+    if "build" not in release["jobs"]:
+        return  # This assertion covers generated-project release workflows.
+    build = release["jobs"]["build"]
+    publish = release["jobs"]["publish"]
+
+    assert build["permissions"] == {"contents": "read"}
+    assert publish["permissions"] == {"contents": "write"}
+    assert publish["needs"] == "build"
+
+    token_steps = [step for step in publish["steps"] if "GH_TOKEN" in step.get("env", {})]
+    assert len(token_steps) == 1
+    assert token_steps[0]["name"] == "Publish GitHub release"
+    assert token_steps[0]["env"]["GH_TOKEN"] == "${{ github.token }}"  # noqa: S105
+    assert token_steps[0]["env"]["GH_REPO"] == "${{ github.repository }}"
+    assert not any(
+        step.get("uses", "").startswith("actions/checkout@") for step in publish["steps"]
+    )
+    assert all("GH_TOKEN" not in step.get("env", {}) for step in build["steps"])
+
+
+@pytest.mark.parametrize(
+    "name",
+    [name for name, combo in gs.COMBOS.items() if {"js", "ts", "css"} & set(combo["languages"])],
+)
+def test_npm_release_disables_lifecycle_scripts(tmp_path, name):
+    root = gs.render_combo(name, tmp_path / "quiet-otter")
+    release = yaml.safe_load((root / ".github/workflows/release.yml").read_text())
+    commands = "\n".join(step.get("run", "") for step in release["jobs"]["build"]["steps"])
+    assert "npm ci --ignore-scripts" in commands
+    assert "npm pack --ignore-scripts --pack-destination dist" in commands
+
+
 def test_auto_release_isolates_project_code_from_write_token(workflows):
     path = workflows / "auto-release.yml"
     if not path.exists():
         return
     jobs = yaml.safe_load(path.read_text())["jobs"]
-    validation = jobs.get("validate")
+    validation = jobs.get("validate") or jobs.get("build")
     assert validation is not None
     assert validation["permissions"]["contents"] == "read"
     assert any("uv run pytest" in step.get("run", "") for step in validation["steps"])
@@ -103,7 +183,8 @@ def test_ci_poll_auth_is_scoped_to_read_only_step(workflows):
     path = workflows / "auto-release.yml"
     if not path.exists():
         return
-    job = yaml.safe_load(path.read_text())["jobs"]["validate"]
+    jobs = yaml.safe_load(path.read_text())["jobs"]
+    job = jobs.get("validate") or jobs["build"]
     assert job["permissions"] == {"contents": "read", "checks": "read"}
     assert "GH_TOKEN" not in job.get("env", {})
     wait = next(s for s in job["steps"] if s.get("name") == "Wait for this commit's ci check")
@@ -119,13 +200,18 @@ def test_release_uses_built_version_even_if_latest_tag_changes(workflows, tmp_pa
     if not path.exists():
         return
     jobs = yaml.safe_load(path.read_text())["jobs"]
-    validate = jobs["validate"]
-    build = next(s for s in validate["steps"] if s.get("id") == "build")
+    validation_name = "validate" if "validate" in jobs else "build"
+    validate = jobs[validation_name]
+    build = next(s for s in validate["steps"] if s.get("id") in {"build", "tag"})
     assert 'echo "version=$version" >> "$GITHUB_OUTPUT"' in build["run"]
-    assert validate["outputs"]["version"] == "${{ steps.build.outputs.version }}"
+    assert validate["outputs"]["version"] == (
+        "${{ steps." + build["id"] + ".outputs.version }}"
+    )
     release = jobs["release"]
     tag = next(s for s in release["steps"] if s.get("id") == "tag")
-    assert tag["env"]["VERSION"] == "${{ needs.validate.outputs.version }}"
+    assert tag["env"]["VERSION"] == (
+        "${{ needs." + validation_name + ".outputs.version }}"
+    )
     assert "latest=" not in tag["run"]
     # Simulate a newer manual tag appearing after validation. The real writer
     # script must tag the built version, and refuse a duplicate on a rerun.
@@ -166,3 +252,8 @@ def test_partial_rust_matrix_can_publish_only_after_release_success():
     assert download["pattern"] == "binary-*"
     assert download["merge-multiple"] is True
     assert "continue-on-error" not in publish
+    assert not any(
+        step.get("uses", "").startswith("actions/checkout@") for step in publish["steps"]
+    )
+    attach = next(s for s in publish["steps"] if s.get("name") == "Attach binaries")
+    assert attach["env"]["GH_REPO"] == "${{ github.repository }}"

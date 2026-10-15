@@ -40,7 +40,7 @@ name: Auto-release
 # The write-enabled jobs only create refs or publish previously built artifacts;
 # they never execute dependency, test, build, or generated binary code.
 #
-# The release job first waits for this commit's `ci` check-run to succeed, so a
+# The validation job first waits for this commit's `ci` check-run to succeed, so a
 # red merge (found live: v0.16.0 was tagged on a commit whose CI failed) is
 # never released; re-run this workflow by hand after the fix lands if needed.
 #
@@ -261,5 +261,6 @@ jobs:
       - name: Attach binaries
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.release.outputs.version }}
         run: gh release upload "v$VERSION" binaries/* --clobber
