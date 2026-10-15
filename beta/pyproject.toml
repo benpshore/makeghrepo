@@ -29,4 +29,3 @@ path = "hatch_build.py"
 
 [tool.ruff]
 extend = "../pyproject.toml"
-

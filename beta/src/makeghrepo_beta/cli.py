@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from makeghrepo_beta import package_version
@@ -15,7 +16,8 @@ def parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
         description=(
             "Experimental offline generation. Requires --render DIR. "
-            "GitHub creation remains in stable makeghrepo until beta preflight/recovery is ready."
+            "Use 'cloud plan' or 'cloud fetch' for prebuilt assets. "
+            "GitHub creation remains unavailable in beta."
         ),
         epilog=f"Languages (any number, or none): {', '.join(LANGS)}.",
     )
@@ -54,6 +56,12 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["cloud"]:
+        from makeghrepo_beta.cloud_cli import main as cloud_main
+
+        cloud_main(argv[1:])
+        return
     cli = parser()
     args = cli.parse_intermixed_args(argv)
     if args.json and not args.dry_run:
