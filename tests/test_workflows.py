@@ -71,7 +71,8 @@ def test_auto_release_keeps_exact_sha_checkout_and_ci_gate(workflows):
     if not path.exists():
         return
     release = yaml.safe_load(path.read_text())
-    job = release["jobs"].get("build", release["jobs"]["release"])
+    jobs = release["jobs"]
+    job = jobs.get("validate") or jobs.get("build") or jobs["release"]
     steps = job["steps"]
     wait_index, wait = next(
         (i, step)
@@ -100,7 +101,7 @@ def test_auto_release_isolates_write_credentials_from_project_code(workflows):
     build = release["jobs"]["build"]
     publish = release["jobs"]["release"]
 
-    assert build["permissions"] == {"contents": "read"}
+    assert build["permissions"] == {"contents": "read", "checks": "read"}
     assert "GH_TOKEN" not in build.get("env", {})
     checkout = next(
         step for step in build["steps"] if step.get("uses", "").startswith("actions/checkout@")
@@ -151,3 +152,160 @@ def test_npm_release_disables_lifecycle_scripts(tmp_path, name):
     commands = "\n".join(step.get("run", "") for step in release["jobs"]["build"]["steps"])
     assert "npm ci --ignore-scripts" in commands
     assert "npm pack --ignore-scripts --pack-destination dist" in commands
+
+
+def test_auto_release_isolates_project_code_from_write_token(workflows):
+    path = workflows / "auto-release.yml"
+    if not path.exists():
+        return
+    jobs = yaml.safe_load(path.read_text())["jobs"]
+    validation = jobs.get("validate") or jobs.get("build")
+    assert validation is not None
+    assert validation["permissions"]["contents"] == "read"
+    assert any("uv run pytest" in step.get("run", "") for step in validation["steps"])
+    assert any("uv build" in step.get("run", "") for step in validation["steps"])
+    for step in validation["steps"]:
+        if step.get("uses", "").startswith("actions/checkout@"):
+            assert step["with"]["persist-credentials"] is False
+
+    privileged = [
+        job for job in jobs.values() if job.get("permissions", {}).get("contents") == "write"
+    ]
+    assert privileged
+    for job in privileged:
+        commands = "\n".join(step.get("run", "") for step in job["steps"])
+        assert "uv sync" not in commands
+        assert "pytest" not in commands
+        assert "uv build" not in commands
+
+
+def test_ci_poll_auth_is_scoped_to_read_only_step(workflows):
+    path = workflows / "auto-release.yml"
+    if not path.exists():
+        return
+    jobs = yaml.safe_load(path.read_text())["jobs"]
+    job = jobs.get("validate") or jobs["build"]
+    assert job["permissions"] == {"contents": "read", "checks": "read"}
+    assert "GH_TOKEN" not in job.get("env", {})
+    wait = next(s for s in job["steps"] if s.get("name") == "Wait for this commit's ci check")
+    assert wait["env"]["GH_TOKEN"] == "${{ github.token }}"  # noqa: S105
+    assert all("GH_TOKEN" not in s.get("env", {}) for s in job["steps"] if s is not wait)
+
+
+def test_release_uses_built_version_even_if_latest_tag_changes(workflows, tmp_path):
+    import os
+    import subprocess
+
+    path = workflows / "auto-release.yml"
+    if not path.exists():
+        return
+    jobs = yaml.safe_load(path.read_text())["jobs"]
+    validation_name = "validate" if "validate" in jobs else "build"
+    validate = jobs[validation_name]
+    build = next(s for s in validate["steps"] if s.get("id") in {"build", "tag"})
+    assert 'echo "version=$version" >> "$GITHUB_OUTPUT"' in build["run"]
+    assert validate["outputs"]["version"] == ("${{ steps." + build["id"] + ".outputs.version }}")
+    release = jobs["release"]
+    tag = next(s for s in release["steps"] if s.get("id") == "tag")
+    assert tag["env"]["VERSION"] == ("${{ needs." + validation_name + ".outputs.version }}")
+    assert "latest=" not in tag["run"]
+    # Simulate a newer manual tag appearing after validation. The real writer
+    # script must tag the built version, and refuse a duplicate on a rerun.
+    repo = tmp_path / "tag-race"
+    repo.mkdir()
+    for args in (["init"], ["commit", "--allow-empty", "-m", "initial"], ["tag", "v99.0.0"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    env = os.environ | {"VERSION": "1.2.0", "GITHUB_OUTPUT": str(tmp_path / "output")}
+    result = subprocess.run(["bash", "-c", tag["run"]], cwd=repo, env=env, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "output").read_text() == "version=1.2.0\n"
+    assert (
+        subprocess.run(["git", "rev-parse", "v1.2.0"], cwd=repo, capture_output=True).returncode
+        == 0
+    )
+    assert (
+        subprocess.run(
+            ["bash", "-c", tag["run"]], cwd=repo, env=env, capture_output=True
+        ).returncode
+        != 0
+    )
+    for step in release["steps"]:
+        if step.get("name") in {"Push tag", "Publish"}:
+            assert step["env"]["VERSION"] == "${{ steps.tag.outputs.version }}"
+
+
+def test_partial_rust_matrix_can_publish_only_after_release_success():
+    jobs = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / ".github/workflows/auto-release.yml").read_text()
+    )["jobs"]
+    assert jobs["binaries"]["strategy"]["fail-fast"] is False
+    publish = jobs["publish-binaries"]
+    assert publish["needs"] == ["release", "binaries"]
+    # A status function suppresses GitHub's implicit success() matrix gate;
+    # the explicit release gate still rejects failed/skipped releases.
+    assert publish["if"] == "${{ !cancelled() && needs.release.result == 'success' }}"
+    download = publish["steps"][0]["with"]
+    assert download["pattern"] == "binary-*"
+    assert download["merge-multiple"] is True
+    assert "continue-on-error" not in publish
+    assert not any(
+        step.get("uses", "").startswith("actions/checkout@") for step in publish["steps"]
+    )
+    attach = next(s for s in publish["steps"] if s.get("name") == "Attach binaries")
+    assert attach["env"]["GH_REPO"] == "${{ github.repository }}"
+
+
+def test_auto_release_downloads_use_verified_action_contract():
+    # Verified against actions/download-artifact v8.0.1 action.yml at this SHA:
+    # same-run access needs no github-token; digest-mismatch defaults to error.
+    download_action = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+    root = Path(__file__).resolve().parents[1] / ".github/workflows"
+    release = yaml.safe_load((root / "auto-release.yml").read_text())["jobs"]
+    ci = yaml.safe_load((root / "ci.yml").read_text())["jobs"]
+    expected = [
+        {"name": "python-dist", "path": "dist/", "digest-mismatch": "error"},
+        {
+            "pattern": "binary-*",
+            "path": "binaries/",
+            "merge-multiple": True,
+            "digest-mismatch": "error",
+        },
+    ]
+    downloads = []
+    for job_name in ["release", "publish-binaries"]:
+        job = release[job_name]
+        assert "GH_TOKEN" not in job.get("env", {})
+        steps = [
+            step
+            for step in job["steps"]
+            if step.get("uses", "").startswith("actions/download-artifact@")
+        ]
+        assert len(steps) == 1
+        downloads.extend(steps)
+    for step, inputs in zip(downloads, expected, strict=True):
+        assert step["uses"] == download_action
+        # Exact input sets also forbid cross-run/repository and token overrides.
+        assert step["with"] == inputs
+        assert "GH_TOKEN" not in step.get("env", {})
+
+    # CI must execute the same immutable action and both input contracts, with
+    # read-only permissions and no release command or project checkout.
+    smoke = ci["artifact-download-contract"]
+    assert smoke["permissions"] == {"contents": "read"}
+    assert "artifact-download-contract" in ci["ci"]["needs"]
+    assert "continue-on-error" not in smoke
+    assert "GH_TOKEN" not in smoke.get("env", {})
+    smoke_downloads = [
+        step
+        for step in smoke["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    ]
+    assert len(smoke_downloads) == 2
+    for step, inputs in zip(smoke_downloads, expected, strict=True):
+        assert step["uses"] == download_action
+        assert step["with"] == inputs
+        assert "continue-on-error" not in step
+        assert "GH_TOKEN" not in step.get("env", {})
+    commands = "\n".join(step.get("run", "") for step in smoke["steps"])
+    assert "gh release" not in commands
+    assert not any(step.get("uses", "").startswith("actions/checkout@") for step in smoke["steps"])

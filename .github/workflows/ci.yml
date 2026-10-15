@@ -67,6 +67,57 @@ jobs:
           uv tool install dist/*.whl
           makeghrepo --help
 
+  # Exercise the exact release-only download action and input contracts with
+  # inert fixtures. This catches unavailable pins without invoking a release.
+  artifact-download-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Create inert artifact fixtures
+        run: |
+          mkdir -p fixtures/python fixtures/linux fixtures/macos
+          printf 'wheel-fixture\n' > fixtures/python/example.whl
+          printf 'linux-fixture\n' > fixtures/linux/makeghrepo-linux
+          printf 'macos-fixture\n' > fixtures/macos/makeghrepo-macos
+          (cd fixtures/linux && sha256sum makeghrepo-linux > makeghrepo-linux.sha256)
+          (cd fixtures/macos && sha256sum makeghrepo-macos > makeghrepo-macos.sha256)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-dist
+          path: fixtures/python/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binary-linux
+          path: fixtures/linux/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binary-macos
+          path: fixtures/macos/
+          if-no-files-found: error
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-dist
+          path: dist/
+          digest-mismatch: error
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: binary-*
+          path: binaries/
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Verify exact artifact bytes and merged layout
+        run: |
+          cmp fixtures/python/example.whl dist/example.whl
+          cmp fixtures/linux/makeghrepo-linux binaries/makeghrepo-linux
+          cmp fixtures/macos/makeghrepo-macos binaries/makeghrepo-macos
+          (cd binaries && sha256sum -c makeghrepo-linux.sha256 makeghrepo-macos.sha256)
+          test "$(find dist -type f | wc -l)" -eq 1
+          test "$(find binaries -type f | wc -l)" -eq 4
+
   beta-assets:
     name: beta-assets
     runs-on: ubuntu-24.04
@@ -299,7 +350,7 @@ jobs:
   ci:
     name: ci
     if: always()
-    needs: [test, plan, templates, actionlint, rust, distribution, beta-assets, one-open-pr-tests]
+    needs: [test, plan, templates, actionlint, rust, distribution, beta-assets, artifact-download-contract, one-open-pr-tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
