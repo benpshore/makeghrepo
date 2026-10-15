@@ -1,8 +1,6 @@
 """Rendered output must match tests/golden/*.golden exactly (see golden_snapshots.py)."""
 
 import base64
-import hashlib
-import zlib
 
 import golden_snapshots as gs
 import pytest
@@ -22,10 +20,6 @@ def test_rendered_output_matches_golden(tmp_path, name):
     actual = gs.serialize(gs.render_combo(name, tmp_path / "quiet-otter"))
     expected = gs.read_golden(name)
     if actual != expected:
-        # Temporary transport of real Copier output from the selected cloud CI.
-        payload = base64.b64encode(zlib.compress(actual.encode())).decode()
-        digest = hashlib.sha256(actual.encode()).hexdigest()
-        print(f"GOLDEN_TRANSFER {name} {digest} {payload}")
         pytest.fail(gs.diff_report(name, expected, actual))
 
 
