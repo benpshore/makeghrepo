@@ -1,6 +1,11 @@
 # [[ project_name ]]
 
-- `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
+- Agents must work on a branch and open a PR (`gh pr create --fill`); never push directly to `main` or use the owner's bypass, even when authenticated as the owner.
+[% if not private %]
+- The `ci` check must pass for agent-authored work. Only the human owner's own work may use the direct-push exception.
+[% else %]
+- GitHub Actions is disabled for this private repo; run the checks below locally before opening a PR.
+[% endif %]
 - Never commit secrets, `.env` files, databases or `.DS_Store` (see `.gitignore`; CI rejects them).
 [% if py %]
 - Python: use **uv** only (`uv add`, `uv run`). Never pip.

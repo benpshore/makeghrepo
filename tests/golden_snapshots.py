@@ -66,6 +66,12 @@ def _combos() -> dict[str, dict[str, object]]:
     combos["python-private"] = {"languages": ["python"], "private": True}
     combos["all-private"] = {"languages": list(scaffold.LANGUAGES), "private": True}
     combos["python-lib"] = {"languages": ["python"], "py_lib": True}
+    combos["all-mit"] = {"languages": list(scaffold.LANGUAGES), "project_license": "MIT"}
+    combos["all-private-mit"] = {
+        "languages": list(scaffold.LANGUAGES),
+        "private": True,
+        "project_license": "MIT",
+    }
     return combos
 
 
@@ -130,8 +136,8 @@ def diff_report(name: str, expected: str, actual: str, limit: int = 80) -> str:
     )
 
 
-# The private variants run exactly the same checks as their public twins.
-_MATRIX_SKIP = {"base-private", "python-private", "all-private"}
+# Visibility and license variants run the same checks as their default twins.
+_MATRIX_SKIP = {"base-private", "python-private", "all-private", "all-mit", "all-private-mit"}
 LINUX_RUNNER = "ubuntu-24.04"
 MAC_RUNNER = "macos-latest"
 
