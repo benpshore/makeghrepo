@@ -154,10 +154,10 @@ pub fn validate_origin(path: &Path, full_name: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn remote_has_main(path: &Path) -> bool {
-    git(path, &["ls-remote", "--heads", "origin", "main"])
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false)
+/// Only a successful empty response permits the bootstrap push. A failed lookup
+/// must stop a configuration retry instead of publishing later local commits.
+pub fn remote_has_main(path: &Path) -> Result<bool, String> {
+    git(path, &["ls-remote", "--heads", "origin", "main"]).map(|s| !s.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -275,6 +275,44 @@ mod origin_tests {
                 .success()
         );
         assert!(validate_origin(&dir, "me/sample").is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remote_main_distinguishes_empty_published_and_unreachable() {
+        let dir = repo_with_origin("placeholder");
+        let remote = dir.join("remote.git");
+        git(&dir, &["init", "--bare", remote.to_str().unwrap()]).unwrap();
+        git(
+            &dir,
+            &["remote", "set-url", "origin", remote.to_str().unwrap()],
+        )
+        .unwrap();
+        assert_eq!(remote_has_main(&dir), Ok(false));
+        git(
+            &dir,
+            &[
+                "-c",
+                "user.name=Test User",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "setup",
+            ],
+        )
+        .unwrap();
+        push_main(&dir).unwrap();
+        assert_eq!(remote_has_main(&dir), Ok(true));
+        git(&dir, &["remote", "set-url", "origin", "missing.git"]).unwrap();
+        assert!(remote_has_main(&dir).is_err());
+        git(&dir, &["remote", "remove", "origin"]).unwrap();
+        assert!(remote_has_main(&dir).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
