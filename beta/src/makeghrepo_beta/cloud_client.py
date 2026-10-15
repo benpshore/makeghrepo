@@ -35,6 +35,7 @@ class GhAPI:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         ) as process:
+
             def stop() -> None:
                 expired.set()
                 process.kill()
@@ -65,10 +66,7 @@ def _verify_installed(destination: Path, payload: dict) -> None:
         directory_state(ancestor)
     found = {}
     expected_dirs = {
-        str(parent)
-        for name in payload
-        for parent in Path(name).parents
-        if str(parent) != "."
+        str(parent) for name in payload for parent in Path(name).parents if str(parent) != "."
     }
     for path in destination.rglob("*"):
         relative = str(path.relative_to(destination))
@@ -79,8 +77,10 @@ def _verify_installed(destination: Path, payload: dict) -> None:
         require(path.is_file() and relative in payload, f"unexpected installed file: {path}")
         expected, mode = payload[relative]
         require(path.stat().st_size == len(expected), f"installed size changed: {path}")
-        require(path.read_bytes() == expected and path.stat().st_mode & 0o777 == mode,
-                f"installed file changed: {path}; retained for inspection")
+        require(
+            path.read_bytes() == expected and path.stat().st_mode & 0o777 == mode,
+            f"installed file changed: {path}; retained for inspection",
+        )
         found[relative] = True
     require(set(found) == set(payload), "installed result is incomplete; retained for inspection")
 
@@ -92,9 +92,13 @@ def install(plan: CloudPlan, payload: dict, artifact: dict, run: dict, destinati
     output = dict(payload)
     output["identity.json"] = (canonical(plan.identity()), 0o644)
     receipt = {
-        "schema": 1, "plan": plan.document(), "plan_id": plan.plan_id,
-        "artifact_id": artifact["id"], "archive_digest": artifact["digest"],
-        "run_id": run["id"], "run_attempt": run["run_attempt"],
+        "schema": 1,
+        "plan": plan.document(),
+        "plan_id": plan.plan_id,
+        "artifact_id": artifact["id"],
+        "archive_digest": artifact["digest"],
+        "run_id": run["id"],
+        "run_attempt": run["run_attempt"],
         "files": inventory(output),
     }
     output[".makeghrepo-cloud.json"] = (canonical(receipt), 0o644)

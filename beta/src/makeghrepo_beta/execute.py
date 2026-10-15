@@ -171,7 +171,7 @@ def execute(
                         shutil.rmtree(path)
                     else:
                         path.rmdir()
-                except (OSError, ValueError, RuntimeError):
+                except OSError, ValueError, RuntimeError:
                     cleanup_errors.append(path)
         except KeyboardInterrupt as exc:
             # A second interrupt stops destructive cleanup. Read back every
@@ -184,7 +184,7 @@ def execute(
             for path, _, _ in pending:
                 try:
                     remains = os.path.lexists(path)
-                except (OSError, KeyboardInterrupt):
+                except OSError, KeyboardInterrupt:
                     remains = True  # Unknown is retained-for-inspection, not absent.
                 if remains:
                     cleanup_errors.append(path)

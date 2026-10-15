@@ -163,8 +163,10 @@ def prepare_fetch(plan: CloudPlan, run_id: int, destination: Path) -> dict:
     integer(run_id, "run id")
     destination = destination.expanduser().absolute()
     require(".." not in destination.parts, "destination must not contain '..'")
-    require(all(ord(char) >= 32 and ord(char) != 127 for char in str(destination)),
-            "destination contains a control character")
+    require(
+        all(ord(char) >= 32 and ord(char) != 127 for char in str(destination)),
+        "destination contains a control character",
+    )
     for part in (*reversed(destination.parents), destination):
         if os.path.lexists(part):
             directory_state(part)
@@ -175,12 +177,17 @@ def prepare_fetch(plan: CloudPlan, run_id: int, destination: Path) -> dict:
             "destination is not a recorded cloud result; existing work is retained",
         )
         recorded = decode(receipt.read_bytes())
-        require(recorded.get("plan_id") == plan.plan_id and
-                canonical(recorded.get("plan")) == canonical(plan.document()) and
-                type(recorded.get("run_id")) is int and recorded["run_id"] == run_id,
-                "destination belongs to a different plan/run; existing work is retained")
+        require(
+            recorded.get("plan_id") == plan.plan_id
+            and canonical(recorded.get("plan")) == canonical(plan.document())
+            and type(recorded.get("run_id")) is int
+            and recorded["run_id"] == run_id,
+            "destination belongs to a different plan/run; existing work is retained",
+        )
     return {
-        "plan": plan.document(), "run_id": run_id, "destination": str(destination),
+        "plan": plan.document(),
+        "run_id": run_id,
+        "destination": str(destination),
         "remote_state": "unverified until authenticated readback",
     }
 
@@ -211,8 +218,7 @@ def validate_artifact(plan: CloudPlan, run: dict, listing: dict) -> dict:
     artifacts = listing.get("artifacts")
     require(type(artifacts) is list, "missing artifact list")
     require(
-        type(listing.get("total_count")) is int
-        and listing["total_count"] == len(artifacts) <= 100,
+        type(listing.get("total_count")) is int and listing["total_count"] == len(artifacts) <= 100,
         "incomplete artifact listing; cannot establish uniqueness",
     )
     require(all(type(item) is dict for item in artifacts), "invalid artifact entry")
@@ -240,17 +246,22 @@ def validate_artifact(plan: CloudPlan, run: dict, listing: dict) -> dict:
         "repository_id": run["repository"]["id"],
         "head_repository_id": run["repository"]["id"],
     }.items():
-        require(type(origin.get(key)) is type(expected) and origin[key] == expected,
-                f"artifact provenance mismatch: {key}")
+        require(
+            type(origin.get(key)) is type(expected) and origin[key] == expected,
+            f"artifact provenance mismatch: {key}",
+        )
     return artifact
 
 
 def safe_path(name: str) -> None:
     path = PurePosixPath(name)
     require(
-        bool(path.parts) and not path.is_absolute() and str(path) == name
+        bool(path.parts)
+        and not path.is_absolute()
+        and str(path) == name
         and not any(part.casefold() in {"..", ".git"} for part in path.parts)
-        and "\\" not in name and ":" not in name
+        and "\\" not in name
+        and ":" not in name
         and all(32 <= ord(char) < 127 for char in name),
         f"unsafe artifact path: {name!r}",
     )
@@ -276,12 +287,16 @@ def _read_archive(data: bytes) -> dict[str, tuple[bytes, int]]:
             require(item.filename.casefold() not in folded, "duplicate archive path")
             folded.add(item.filename.casefold())
             mode = item.external_attr >> 16
-            require(not item.is_dir() and stat.S_IFMT(mode) in {0, stat.S_IFREG},
-                    "artifact contains a link, directory or special file")
+            require(
+                not item.is_dir() and stat.S_IFMT(mode) in {0, stat.S_IFREG},
+                "artifact contains a link, directory or special file",
+            )
             require(not item.flag_bits & 1, "encrypted artifact refused")
             require(mode & 0o7777 in {0, 0o600, 0o644, 0o755}, "unsafe artifact permissions")
-            require(item.compress_type in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED},
-                    "unsupported archive compression")
+            require(
+                item.compress_type in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED},
+                "unsupported archive compression",
+            )
             content = archive.read(item)
             require(len(content) == item.file_size, "archive size mismatch")
             result[item.filename] = (content, 0o755 if mode & 0o111 else 0o644)
@@ -308,25 +323,36 @@ def _validate_wheel(data: bytes, source: bytes) -> None:
     metadata = "makeghrepo_seed-0.0.0.dist-info/"
     needed = {f"{metadata}{name}" for name in ("METADATA", "WHEEL", "entry_points.txt", "RECORD")}
     require(needed <= wheel.keys(), "wheel is missing metadata")
-    require(all(name.startswith(("makeghrepo_seed/", metadata)) for name in wheel),
-            "unexpected wheel package identity")
-    require({name for name in wheel if name.startswith("makeghrepo_seed/")} ==
-            {"makeghrepo_seed/__init__.py"}, "unexpected wheel code")
+    require(
+        all(name.startswith(("makeghrepo_seed/", metadata)) for name in wheel),
+        "unexpected wheel package identity",
+    )
+    require(
+        {name for name in wheel if name.startswith("makeghrepo_seed/")}
+        == {"makeghrepo_seed/__init__.py"},
+        "unexpected wheel code",
+    )
     message = BytesParser().parsebytes(wheel[metadata + "METADATA"][0])
     identity = {"Name": PACKAGE, "Version": "0.0.0", "Requires-Python": ">=3.14"}
     for field, expected in identity.items():
         require(message.get_all(field) == [expected], f"wheel {field} mismatch")
     require(message.get_all("Requires-Dist") is None, "unexpected runtime dependencies")
     tags = BytesParser().parsebytes(wheel[metadata + "WHEEL"][0])
-    require(tags.get_all("Tag") == ["py3-none-any"] and tags.get_all("Root-Is-Purelib") == ["true"],
-            "incompatible wheel tag")
+    require(
+        tags.get_all("Tag") == ["py3-none-any"] and tags.get_all("Root-Is-Purelib") == ["true"],
+        "incompatible wheel tag",
+    )
     entrypoints = configparser.ConfigParser(interpolation=None)
     entrypoints.read_string(wheel[metadata + "entry_points.txt"][0].decode())
-    require(entrypoints.sections() == ["console_scripts"] and
-            dict(entrypoints["console_scripts"]) == {PACKAGE: "makeghrepo_seed:main"},
-            "wheel entry point mismatch")
-    require(wheel.get("makeghrepo_seed/__init__.py", (None,))[0] == source,
-            "wheel code differs from validated source")
+    require(
+        entrypoints.sections() == ["console_scripts"]
+        and dict(entrypoints["console_scripts"]) == {PACKAGE: "makeghrepo_seed:main"},
+        "wheel entry point mismatch",
+    )
+    require(
+        wheel.get("makeghrepo_seed/__init__.py", (None,))[0] == source,
+        "wheel code differs from validated source",
+    )
     recorded = set()
     for row in csv.reader(io.StringIO(wheel[metadata + "RECORD"][0].decode())):
         require(len(row) == 3, "invalid wheel RECORD")
@@ -338,8 +364,10 @@ def _validate_wheel(data: bytes, source: bytes) -> None:
         else:
             content = wheel[name][0]
             expected_hash = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=")
-            require(digest == "sha256=" + expected_hash.decode() and size == str(len(content)),
-                    "wheel RECORD integrity mismatch")
+            require(
+                digest == "sha256=" + expected_hash.decode() and size == str(len(content)),
+                "wheel RECORD integrity mismatch",
+            )
     require(recorded == set(wheel), "incomplete wheel RECORD")
 
 
@@ -347,11 +375,17 @@ def validate_bundle(plan: CloudPlan, data: bytes, run_id: int, attempt: int) -> 
     payload = read_archive(data)
     require("result.json" in payload, "missing result contract")
     result = decode(payload["result.json"][0])
-    exact(result, {"schema", "asset", "asset_key", "run_id", "run_attempt", "checks", "files"},
-          "result")
+    exact(
+        result,
+        {"schema", "asset", "asset_key", "run_id", "run_attempt", "checks", "files"},
+        "result",
+    )
     expected = {
-        "schema": 1, "asset": plan.asset(), "asset_key": plan.asset_key,
-        "run_id": run_id, "run_attempt": attempt,
+        "schema": 1,
+        "asset": plan.asset(),
+        "asset_key": plan.asset_key,
+        "run_id": run_id,
+        "run_attempt": attempt,
         "checks": {check: "passed" for check in CHECKS},
         "files": inventory(
             {name: entry for name, entry in payload.items() if name != "result.json"}
@@ -359,21 +393,27 @@ def validate_bundle(plan: CloudPlan, data: bytes, run_id: int, attempt: int) -> 
     }
     require(canonical(result) == canonical(expected), "result contract or file integrity mismatch")
     required = {
-        "source/pyproject.toml", "source/uv.lock", "source/src/makeghrepo_seed/__init__.py",
-        "source/tests/test_smoke.py", "source/README.md", "build/requirements.lock", WHEEL,
+        "source/pyproject.toml",
+        "source/uv.lock",
+        "source/src/makeghrepo_seed/__init__.py",
+        "source/tests/test_smoke.py",
+        "source/README.md",
+        "build/requirements.lock",
+        WHEEL,
     }
     require(required <= payload.keys(), "incomplete prebuilt starter")
     require(
         all(
-            name in {"result.json", "build/requirements.lock", WHEEL}
-            or name.startswith("source/")
+            name in {"result.json", "build/requirements.lock", WHEEL} or name.startswith("source/")
             for name in payload
         ),
         "unexpected payload",
     )
     seedlock.validate_contents(
         {name: payload[f"source/{name}"][0] for name in seedlock.PYTHON_INPUTS},
-        ["python"], PACKAGE, lib=False,
+        ["python"],
+        PACKAGE,
+        lib=False,
     )
     require(bool(payload["build/requirements.lock"][0]), "missing resolved build dependencies")
     validate_wheel(payload[WHEEL][0], payload["source/src/makeghrepo_seed/__init__.py"][0])

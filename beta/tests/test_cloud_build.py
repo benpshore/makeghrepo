@@ -104,8 +104,10 @@ class CloudBuildTests(unittest.TestCase):
         self.assertEqual(contract.PROFILE, baseline)
 
     def test_wrong_toolchain_fails_before_render_or_subprocess(self):
-        with patch("platform.python_version", return_value="3.13.5"), \
-             patch.object(builder, "run", side_effect=AssertionError("tool execution")):
+        with (
+            patch("platform.python_version", return_value="3.13.5"),
+            patch.object(builder, "run", side_effect=AssertionError("tool execution")),
+        ):
             with self.assertRaisesRegex(ValueError, "toolchain"):
                 builder.build(self.plan, self.root / "wrong", 12, 2)
 

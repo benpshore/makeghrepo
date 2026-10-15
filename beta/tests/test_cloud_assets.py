@@ -37,11 +37,15 @@ def fixture_wheel(source):
     info = "makeghrepo_seed-0.0.0.dist-info/"
     files = {
         "makeghrepo_seed/__init__.py": (source, 0o644),
-        info + "METADATA": (b"Metadata-Version: 2.3\nName: makeghrepo-seed\n"
-                            b"Version: 0.0.0\nRequires-Python: >=3.14\n", 0o644),
+        info + "METADATA": (
+            b"Metadata-Version: 2.3\nName: makeghrepo-seed\n"
+            b"Version: 0.0.0\nRequires-Python: >=3.14\n",
+            0o644,
+        ),
         info + "WHEEL": (b"Wheel-Version: 1.0\nTag: py3-none-any\nRoot-Is-Purelib: true\n", 0o644),
         info + "entry_points.txt": (
-            b"[console_scripts]\nmakeghrepo-seed = makeghrepo_seed:main\n", 0o644,
+            b"[console_scripts]\nmakeghrepo-seed = makeghrepo_seed:main\n",
+            0o644,
         ),
     }
     records = io.StringIO()
@@ -73,26 +77,41 @@ def fixture(plan):
         "build/requirements.lock": (b"fixture hash-locked build tools, never executed\n", 0o644),
     }
     result = {
-        "schema": 1, "asset": plan.asset(), "asset_key": plan.asset_key,
-        "run_id": 12, "run_attempt": 2,
+        "schema": 1,
+        "asset": plan.asset(),
+        "asset_key": plan.asset_key,
+        "run_id": 12,
+        "run_attempt": 2,
         "checks": {check: "passed" for check in contract.CHECKS},
         "files": contract.inventory(payload),
     }
     payload["result.json"] = (contract.canonical(result), 0o644)
     archive = zip_bytes({"bundle.zip": (zip_bytes(payload), 0o644)})
     run = {
-        "id": 12, "run_attempt": 2, "head_sha": plan.source_sha,
-        "path": contract.WORKFLOW, "status": "completed", "conclusion": "success",
-        "event": "push", "head_branch": "main",
+        "id": 12,
+        "run_attempt": 2,
+        "head_sha": plan.source_sha,
+        "path": contract.WORKFLOW,
+        "status": "completed",
+        "conclusion": "success",
+        "event": "push",
+        "head_branch": "main",
         "repository": {"id": 34, "full_name": contract.REPOSITORY},
         "head_repository": {"id": 34, "full_name": contract.REPOSITORY},
     }
     artifact = {
-        "id": 56, "name": contract.artifact_name(plan, 2), "expired": False,
-        "expires_at": "2099-01-01T00:00:00Z", "size_in_bytes": len(archive),
+        "id": 56,
+        "name": contract.artifact_name(plan, 2),
+        "expired": False,
+        "expires_at": "2099-01-01T00:00:00Z",
+        "size_in_bytes": len(archive),
         "digest": "sha256:" + contract.sha256(archive),
-        "workflow_run": {"id": 12, "head_sha": plan.source_sha,
-                         "repository_id": 34, "head_repository_id": 34},
+        "workflow_run": {
+            "id": 12,
+            "head_sha": plan.source_sha,
+            "repository_id": 34,
+            "head_repository_id": 34,
+        },
     }
     return payload, archive, run, artifact
 
@@ -103,9 +122,12 @@ class API:
         self.run_url = f"{prefix}/runs/12"
         self.responses = {
             self.run_url: contract.canonical(run),
-            self.run_url + "/artifacts?per_page=100": contract.canonical({
-                "total_count": 1, "artifacts": [artifact],
-            }),
+            self.run_url + "/artifacts?per_page=100": contract.canonical(
+                {
+                    "total_count": 1,
+                    "artifacts": [artifact],
+                }
+            ),
             f"{prefix}/artifacts/56/zip": archive,
             f"{prefix}/artifacts/56": contract.canonical(artifact),
         }
@@ -158,18 +180,24 @@ class CloudAssetsTests(unittest.TestCase):
             contract.decode(b'{"schema":NaN}')
 
     def test_invalid_identity_and_unpinned_source_fail(self):
-        for sha, owner, name in [("main", "someone", "good"), ("a"*40, "bad/name", "good"),
-                                 ("a"*40, "someone", "../bad"), ("a"*40, "someone", "Bad_Name")]:
+        for sha, owner, name in [
+            ("main", "someone", "good"),
+            ("a" * 40, "bad/name", "good"),
+            ("a" * 40, "someone", "../bad"),
+            ("a" * 40, "someone", "Bad_Name"),
+        ]:
             with self.subTest(name=name), self.assertRaises(ValueError):
                 contract.CloudPlan(sha, owner, name)
 
     def test_plan_does_not_probe_host_or_start_subprocesses(self):
-        with patch("subprocess.Popen", side_effect=AssertionError("subprocess")), \
-             patch("platform.system", side_effect=AssertionError("host probe")), \
-             patch("sys.stdout", new_callable=io.StringIO) as output:
-            main([
-                "plan", "--source", self.plan.source_sha, "--owner", "someone", "--name", "sample"
-            ])
+        with (
+            patch("subprocess.Popen", side_effect=AssertionError("subprocess")),
+            patch("platform.system", side_effect=AssertionError("host probe")),
+            patch("sys.stdout", new_callable=io.StringIO) as output,
+        ):
+            main(
+                ["plan", "--source", self.plan.source_sha, "--owner", "someone", "--name", "sample"]
+            )
         self.assertEqual(json.loads(output.getvalue())["asset"]["profile"], contract.PROFILE)
         self.assertFalse(self.dest.exists())
 
@@ -207,10 +235,16 @@ class CloudAssetsTests(unittest.TestCase):
         )
 
     def test_rejects_pr_fork_partial_failure_and_wrong_sha_before_download(self):
-        variants = [("event", "pull_request"), ("status", "in_progress"),
-                    ("conclusion", "failure"), ("head_sha", "c"*40), ("path", "other.yml"),
-                    ("run_attempt", True), ("head_branch", "feature"),
-                    ("head_repository", {"id": 99, "full_name": "other/repo"})]
+        variants = [
+            ("event", "pull_request"),
+            ("status", "in_progress"),
+            ("conclusion", "failure"),
+            ("head_sha", "c" * 40),
+            ("path", "other.yml"),
+            ("run_attempt", True),
+            ("head_branch", "feature"),
+            ("head_repository", {"id": 99, "full_name": "other/repo"}),
+        ]
         for key, value in variants:
             run = {**self.run, key: value}
             api = API(run, self.artifact, self.archive)
@@ -221,15 +255,22 @@ class CloudAssetsTests(unittest.TestCase):
 
     def test_missing_expired_duplicate_or_wrong_attempt_artifact_fails(self):
         listing = {"total_count": 1, "artifacts": [self.artifact]}
-        for key, value in [("expired", True), ("expires_at", "2000-01-01T00:00:00Z"),
-                           ("digest", None), ("name", contract.artifact_name(self.plan, 1)),
-                           ("workflow_run", {"id": 999}), ("size_in_bytes", True)]:
+        for key, value in [
+            ("expired", True),
+            ("expires_at", "2000-01-01T00:00:00Z"),
+            ("digest", None),
+            ("name", contract.artifact_name(self.plan, 1)),
+            ("workflow_run", {"id": 999}),
+            ("size_in_bytes", True),
+        ]:
             bad = copy.deepcopy(listing)
             bad["artifacts"][0][key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
                 contract.validate_artifact(self.plan, self.run, bad)
-        for bad in [{"total_count": 2, "artifacts": [self.artifact]},
-                    {"total_count": 2, "artifacts": [self.artifact, self.artifact]}]:
+        for bad in [
+            {"total_count": 2, "artifacts": [self.artifact]},
+            {"total_count": 2, "artifacts": [self.artifact, self.artifact]},
+        ]:
             with self.assertRaises(ValueError):
                 contract.validate_artifact(self.plan, self.run, bad)
 
@@ -237,9 +278,9 @@ class CloudAssetsTests(unittest.TestCase):
         api = API(self.run, self.artifact, self.archive[:-1] + b"x")
         with self.assertRaisesRegex(ValueError, "digest"):
             client.consume(self.plan, 12, self.dest, api)
-        self.api.after_download = lambda: self.api.responses.update({
-            self.api.run_url: contract.canonical({**self.run, "run_attempt": 3})
-        })
+        self.api.after_download = lambda: self.api.responses.update(
+            {self.api.run_url: contract.canonical({**self.run, "run_attempt": 3})}
+        )
         with self.assertRaisesRegex(ValueError, "attempt changed"):
             client.consume(self.plan, 12, self.dest, self.api)
         self.assertFalse(self.dest.exists())
@@ -247,14 +288,22 @@ class CloudAssetsTests(unittest.TestCase):
     def test_readback_network_failure_retains_no_false_success(self):
         def fail():
             self.api.responses.pop(self.api.run_url)
+
         self.api.after_download = fail
         with self.assertRaises(KeyError):
             client.consume(self.plan, 12, self.dest, self.api)
         self.assertFalse(self.dest.exists())
 
     def test_safe_archive_rejects_traversal_links_duplicates_and_excess(self):
-        for name in ["../evil", "/evil", "source/../evil", "source\\evil", "source/.git/config",
-                     "source/.GIT/config", "."]:
+        for name in [
+            "../evil",
+            "/evil",
+            "source/../evil",
+            "source\\evil",
+            "source/.git/config",
+            "source/.GIT/config",
+            ".",
+        ]:
             with self.subTest(name=name), self.assertRaises(ValueError):
                 contract.read_archive(zip_bytes({name: (b"bad", 0o644)}))
         stream = io.BytesIO()
@@ -299,10 +348,23 @@ class CloudAssetsTests(unittest.TestCase):
         self.assertFalse(self.dest.exists())
 
     def test_fetch_dry_run_validates_run_destination_and_reports_unverified_remote(self):
-        arguments = ["fetch", "--source", self.plan.source_sha, "--owner", self.plan.owner,
-                     "--name", self.plan.name, "--run", "12", "--destination", str(self.dest)]
-        with patch("subprocess.Popen", side_effect=AssertionError("network")), \
-             patch("sys.stdout", new_callable=io.StringIO) as output:
+        arguments = [
+            "fetch",
+            "--source",
+            self.plan.source_sha,
+            "--owner",
+            self.plan.owner,
+            "--name",
+            self.plan.name,
+            "--run",
+            "12",
+            "--destination",
+            str(self.dest),
+        ]
+        with (
+            patch("subprocess.Popen", side_effect=AssertionError("network")),
+            patch("sys.stdout", new_callable=io.StringIO) as output,
+        ):
             main([*arguments, "--dry-run"])
         self.assertEqual(json.loads(output.getvalue())["run_id"], 12)
         self.assertIn("unverified", json.loads(output.getvalue())["remote_state"])
@@ -317,10 +379,12 @@ class CloudAssetsTests(unittest.TestCase):
     def test_wheel_identity_source_and_record_tampering_are_rejected(self):
         wheel = contract.read_archive(self.payload[contract.WHEEL][0])
         metadata = "makeghrepo_seed-0.0.0.dist-info/"
-        changes = [("makeghrepo_seed/__init__.py", b"different code"),
-                   (metadata + "METADATA", b"Name: renamed\nVersion: 0.0.0\n"),
-                   (metadata + "WHEEL", b"Root-Is-Purelib: false\nTag: native\n"),
-                   (metadata + "RECORD", b"malformed\n")]
+        changes = [
+            ("makeghrepo_seed/__init__.py", b"different code"),
+            (metadata + "METADATA", b"Name: renamed\nVersion: 0.0.0\n"),
+            (metadata + "WHEEL", b"Root-Is-Purelib: false\nTag: native\n"),
+            (metadata + "RECORD", b"malformed\n"),
+        ]
         for name, data in changes:
             changed = {**wheel, name: (data, 0o644)}
             with self.subTest(name=name), self.assertRaises(ValueError):

@@ -68,17 +68,20 @@ def run(command: list[str], cwd: Path, env: dict[str, str]) -> str:
     result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=600)
     if result.returncode:
         raise RuntimeError(
-            f"cloud build failed: {command[0:3]}\n"
-            f"{result.stdout[-4000:]}{result.stderr[-4000:]}"
+            f"cloud build failed: {command[0:3]}\n{result.stdout[-4000:]}{result.stderr[-4000:]}"
         )
     return result.stdout.strip()
 
 
 def write_bundle(path: Path, payload: dict, plan: CloudPlan, run_id: int, attempt: int) -> None:
     result = {
-        "schema": 1, "asset": plan.asset(), "asset_key": plan.asset_key,
-        "run_id": run_id, "run_attempt": attempt,
-        "checks": {check: "passed" for check in CHECKS}, "files": inventory(payload),
+        "schema": 1,
+        "asset": plan.asset(),
+        "asset_key": plan.asset_key,
+        "run_id": run_id,
+        "run_attempt": attempt,
+        "checks": {check: "passed" for check in CHECKS},
+        "files": inventory(payload),
     }
     contents = {**payload, "result.json": (canonical(result), 0o644)}
     with zipfile.ZipFile(path, "x", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -102,12 +105,21 @@ def build(plan: CloudPlan, destination: Path, run_id: int, attempt: int) -> None
         observed_uv = run(["uv", "--version"], root, env).split()[1]
         require(observed_uv == PROFILE["uv"], "wrong uv toolchain")
         source = root / "source"
-        scaffold.render(source, {
-            "project_name": PACKAGE, "package_name": "makeghrepo_seed",
-            "github_owner": "makeghrepo-assets", "author_name": "makeghrepo",
-            "description": "Prebuilt Python starter", "year": "2026",
-            "private": False, "py_lib": False, "project_license": "none", "languages": ["python"],
-        })
+        scaffold.render(
+            source,
+            {
+                "project_name": PACKAGE,
+                "package_name": "makeghrepo_seed",
+                "github_owner": "makeghrepo-assets",
+                "author_name": "makeghrepo",
+                "description": "Prebuilt Python starter",
+                "year": "2026",
+                "private": False,
+                "py_lib": False,
+                "project_license": "none",
+                "languages": ["python"],
+            },
+        )
         (source / "uv.lock").write_bytes(packaged_lock())
         seedlock.validate_bootstrap(source, ["python"], PACKAGE, lib=False)
         # Capture the rendered allowlist BEFORE tools create environments/caches.
@@ -136,8 +148,18 @@ def build(plan: CloudPlan, destination: Path, run_id: int, attempt: int) -> None
         locked = root / "build-requirements.lock"
         run(
             [
-                "uv", "pip", "compile", "--python", python, "--generate-hashes", "--no-header",
-                "--no-annotate", "--only-binary", ":all:", "--output-file", str(locked),
+                "uv",
+                "pip",
+                "compile",
+                "--python",
+                python,
+                "--generate-hashes",
+                "--no-header",
+                "--no-annotate",
+                "--only-binary",
+                ":all:",
+                "--output-file",
+                str(locked),
                 str(requirements),
             ],
             root,
@@ -146,19 +168,58 @@ def build(plan: CloudPlan, destination: Path, run_id: int, attempt: int) -> None
         builder = root / "builder"
         run(["uv", "venv", "--no-project", "--python", python, str(builder)], root, env)
         builder_python = str(builder / "bin/python")
-        run(["uv", "pip", "sync", "--python", builder_python, "--require-hashes",
-             "--only-binary", ":all:", str(locked)], root, env)
+        run(
+            [
+                "uv",
+                "pip",
+                "sync",
+                "--python",
+                builder_python,
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                str(locked),
+            ],
+            root,
+            env,
+        )
         dist = root / "dist"
-        run(["uv", "build", str(source), "--wheel", "--python", builder_python,
-             "--no-build-isolation", "--offline", "--out-dir", str(dist)], root, env)
+        run(
+            [
+                "uv",
+                "build",
+                str(source),
+                "--wheel",
+                "--python",
+                builder_python,
+                "--no-build-isolation",
+                "--offline",
+                "--out-dir",
+                str(dist),
+            ],
+            root,
+            env,
+        )
         wheel = root / WHEEL
         require(
             wheel.is_file() and list(dist.glob("*.whl")) == [wheel], "unexpected wheel identity"
         )
         installed = root / "installed"
         run(["uv", "venv", "--no-project", "--python", python, str(installed)], root, env)
-        run(["uv", "pip", "install", "--python", str(installed / "bin/python"),
-             "--offline", "--no-deps", str(wheel)], root, env)
+        run(
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                str(installed / "bin/python"),
+                "--offline",
+                "--no-deps",
+                str(wheel),
+            ],
+            root,
+            env,
+        )
         hello = run([str(installed / "bin/makeghrepo-seed")], root, env)
         require(hello == "Hello from makeghrepo-seed!", "installed wheel smoke test failed")
         for name, (content, _mode) in payload.items():
@@ -175,8 +236,10 @@ def main() -> None:
     args = parser.parse_args()
     require(os.environ.get("GITHUB_ACTIONS") == "true", "prebuilding is restricted to Actions CI")
     require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY, "unexpected builder repository")
-    require(os.environ.get("GITHUB_WORKFLOW_REF", "").startswith(f"{REPOSITORY}/{WORKFLOW}@"),
-            "unexpected builder workflow")
+    require(
+        os.environ.get("GITHUB_WORKFLOW_REF", "").startswith(f"{REPOSITORY}/{WORKFLOW}@"),
+        "unexpected builder workflow",
+    )
     plan = CloudPlan(os.environ["GITHUB_SHA"], "makeghrepo-assets", PACKAGE)
     run_id = integer(int(os.environ["GITHUB_RUN_ID"]), "run id")
     attempt = integer(int(os.environ["GITHUB_RUN_ATTEMPT"]), "run attempt")
