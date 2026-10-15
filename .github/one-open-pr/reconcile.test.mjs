@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   MIGRATION_CUTOFF, REPOSITORY, chooseRetained, githubAPI, listOpen,
@@ -312,4 +314,25 @@ test("workflow trust, concurrency, bot recovery and disabled rollout are explici
 test("entrypoint refuses local or unrelated repository execution", async () => {
   await assert.rejects(main({}), /only in this repository/);
   await assert.rejects(main({ GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "other/repo" }), /only in this repository/);
+});
+
+test("entrypoint rejects non-default manual refs before token or API use", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "one-pr-event-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, "event.json");
+  await writeFile(path, JSON.stringify({ repository: { full_name: REPOSITORY, default_branch: "main" } }));
+  await assert.rejects(main({ GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: REPOSITORY,
+    GITHUB_EVENT_PATH: path, GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/untrusted" }), /trusted default-branch ref/);
+});
+
+test("entrypoint rejects alternate PR bases and ordinary PR events before API use", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "one-pr-event-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, "event.json");
+  await writeFile(path, JSON.stringify({ repository: { full_name: REPOSITORY, default_branch: "main" },
+    pull_request: { base: { ref: "untrusted", repo: { full_name: REPOSITORY } } } }));
+  const env = { GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: REPOSITORY, GITHUB_EVENT_PATH: path,
+    GITHUB_EVENT_NAME: "pull_request_target", GITHUB_REF: "refs/heads/main" };
+  await assert.rejects(main(env), /Unexpected PR base/);
+  await assert.rejects(main({ ...env, GITHUB_EVENT_NAME: "pull_request" }), /Unsupported guard event/);
 });
