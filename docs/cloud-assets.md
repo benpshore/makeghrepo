@@ -47,6 +47,34 @@ tests, builds and native checks require the existing authorized Actions CI.
 This is a development checkpoint, not a claim that cloud prebuilding or the
 complete redesign has passed its integration gates.
 
+## Remote checkpoint and CI access
+
+The renewed instruction authorizes pushing this checkpoint, without opening a
+new PR. The VM proxy still rejects GitHub/PyPI CONNECT requests before TLS, even
+with a network-enabled escalation; changing dependency versions does not repair
+that policy. The connected GitHub API can write repository Git data. The four
+local checkpoints were replayed through that API with each tree SHA verified
+identical, preserving their original IDs in the commit messages and local bundle:
+
+| Local checkpoint | Remote replay |
+| --- | --- |
+| `f0100d1ed96ec9a327e97bbcd4d0d44fc49c27fd` | `bc253e48d94c8b4ff8972bba32501ce55026fdbb` |
+| `9d97615acc4304f244b78dcaa67a954962e428be` | `4fcf7aaa3cde9230d93c0556bdb052bed4f2d58f` |
+| `b1f4c662306f2d2a522d11e16479544db6f5398f` | `97d86f892112e566cd17b5297beb783fa222aa6e` |
+| `a55c366c59a47bbc63d1f4cff965ab3234308f95` | `5a811dcdd95237a57306959ec9f905e46d8a8ed7` |
+
+All 20 original remote branch heads were independently re-read and remain at
+their recorded SHAs. No existing PR was changed or closed. A local inventory and
+API mapping accompany the bundle; the original branches continue to preserve
+their unique work until the planned reconciliation explicitly handles it.
+
+The existing CI push trigger now includes only this named checkpoint branch in
+addition to main. Release workflow triggers remain unchanged and main-only/tag
+scoped. Golden artifact production remains restricted to main pushes and manual
+runs; checkpoint push artifacts cannot become trusted goldens. Formatter failures
+emit a nonmutating diff to make correction possible through cloud job logs.
+Remove the temporary checkpoint trigger when preparing the final PR178 diff.
+
 ## Implemented contract
 
 `makeghrepo-beta cloud plan` takes an explicit full makeghrepo source SHA and
