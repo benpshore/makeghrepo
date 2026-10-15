@@ -204,14 +204,10 @@ def test_release_uses_built_version_even_if_latest_tag_changes(workflows, tmp_pa
     validate = jobs[validation_name]
     build = next(s for s in validate["steps"] if s.get("id") in {"build", "tag"})
     assert 'echo "version=$version" >> "$GITHUB_OUTPUT"' in build["run"]
-    assert validate["outputs"]["version"] == (
-        "${{ steps." + build["id"] + ".outputs.version }}"
-    )
+    assert validate["outputs"]["version"] == ("${{ steps." + build["id"] + ".outputs.version }}")
     release = jobs["release"]
     tag = next(s for s in release["steps"] if s.get("id") == "tag")
-    assert tag["env"]["VERSION"] == (
-        "${{ needs." + validation_name + ".outputs.version }}"
-    )
+    assert tag["env"]["VERSION"] == ("${{ needs." + validation_name + ".outputs.version }}")
     assert "latest=" not in tag["run"]
     # Simulate a newer manual tag appearing after validation. The real writer
     # script must tag the built version, and refuse a duplicate on a rerun.
