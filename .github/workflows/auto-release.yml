@@ -1,48 +1,9 @@
 name: Auto-release
 
-# Every merge to main is a release: tag it and publish a GitHub release with
-# built artifacts. No one has to remember to do this by hand, which is what
-# let makeghrepo drift at v0.1.0 forever while `main` moved on underneath it
-# (#15) — `uv tool upgrade` had no new version to notice.
-#
-# main is protected by the "protect-main" ruleset (#20): PRs required, `ci`
-# required to pass. A prior version of this workflow tried to satisfy that by
-# opening its own release PR and dispatching ci.yml onto it by hand. That
-# turned out not to work: **verified live (2026-09-27) that a PR opened with
-# GITHUB_TOKEN never gets a real CI run at all** — GitHub's anti-recursion
-# rule means the check-suite for that PR's `pull_request` event is created
-# but never actually scheduled (confirmed: the run had zero jobs). A
-# workflow_dispatch run on the same branch *did* complete successfully and
-# attach its check-run to the right commit, but the ruleset's merge-gate still
-# never recognized it (mergeStateStatus stayed BLOCKED, statusCheckRollup
-# stayed empty, for the full test window). Reopening the same PR under a real
-# user identity fixed it instantly — conclusive evidence the gap is real, not
-# a propagation delay.
-#
-# The actual fix is to not need a PR at all: `version` is dynamic
-# (`uv-dynamic-versioning`, derived from git tags — see pyproject.toml), not a
-# committed field, so a release doesn't touch any tracked file. It's just a
-# tag on a commit that already merged through a real PR and already passed
-# `ci` — which is a *stronger* guarantee than the old committed-version-bump
-# design ever had. Tags aren't covered by protect-main (`target: "branch"`),
-# so pushing one needs no PR, no bypass, and no PAT.
-#
-# Considered and declined: a PAT so the release PR would open under a real
-# identity and get real CI (this is the standard fix for the platform gap
-# above). Declined by the repo owner — didn't want to hold a personal access
-# token as a repo secret for this.
-#
-# This checks out the exact commit that triggered the run (`github.sha`), not
-# the mutable `main` ref, so a second push landing on main mid-run can't cause
-# this run to tag the wrong commit.
-#
-# The release job first waits for this commit's `ci` check-run to succeed, so a
-# red merge (found live: v0.16.0 was tagged on a commit whose CI failed) is
-# never released; re-run this workflow by hand after the fix lands if needed.
-#
-# release.yml stays as the manual fallback for the one thing this can't
-# recover from itself: the tag gets pushed but `gh release create` then fails
-# (network blip, etc.). Run it by hand against the existing tag in that case.
+# A main push selects one stable minor version for its exact source. The queue
+# serializes allocation through publication. No branch bump/PR/PAT is needed:
+# dynamic Python versions and the Rust compile-time version use the same tag.
+# Re-dispatch retries an existing source tag, including an unpublished draft.
 on:
   push:
     branches: [main]
@@ -51,55 +12,25 @@ on:
 concurrency:
   group: auto-release
   cancel-in-progress: false
-  # Keep up to 100 pending releases instead of replacing the previous pending
-  # run. FIFO is by queue entry, not commit order; overflow runs are canceled.
   queue: max
 
-jobs:
-  guard:
-    name: guard
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      skip: ${{ steps.check.outputs.skip }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - id: check
-        # Already tagged (a manual re-dispatch with nothing new merged since,
-        # or a re-run after this run's own tag push already succeeded) — a
-        # release for this exact commit already exists, nothing to do.
-        run: |
-          set -euo pipefail
-          if [ -n "$(git tag --points-at HEAD 'v*')" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+permissions:
+  contents: read
 
-  release:
-    name: release
-    needs: guard
-    if: needs.guard.outputs.skip != 'true'
+jobs:
+  plan:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
+      checks: read
     outputs:
-      version: ${{ steps.tag.outputs.version }}
-    env:
-      GH_TOKEN: ${{ github.token }}
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
     steps:
-      # A merge to main runs ci.yml and this workflow at the same time. Never
-      # tag a commit whose required `ci` check hasn't passed: a release is a
-      # promise that CI was green on exactly this commit.
       - name: Wait for this commit's ci check
         env:
+          GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -107,7 +38,7 @@ jobs:
             state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?check_name=ci&per_page=100" \
               --jq '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last | .conclusion // "pending"')
             case "$state" in
-              success) echo "ci passed on $SHA"; exit 0 ;;
+              success) exit 0 ;;
               pending) sleep 20 ;;
               *) echo "::error::ci concluded '$state' on $SHA; not releasing it"; exit 1 ;;
             esac
@@ -118,78 +49,16 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-          persist-credentials: true
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          enable-cache: true
-      - name: Install
-        run: uv sync --locked
-      - name: Test
-        run: uv run pytest
-      - name: Audit dependencies
-        run: uv audit --locked --preview-features audit-command
-      - name: Tag and build
-        id: tag
-        run: |
-          set -euo pipefail
-          latest="$(git tag --list 'v*' --sort=-v:refname | head -1)"
-          IFS=. read -r major minor _patch <<<"${latest#v}"
-          version="${major:-0}.$((${minor:-0} + 1)).0"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Tagged locally before building: uv-dynamic-versioning reads the
-          # tag reachable from HEAD, so this makes the built wheel exactly
-          # "vX.Y.Z", not a "+devN" snapshot version.
-          git tag -a "v$version" -m "v$version"
-          uv build
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Push tag and publish
-        env:
-          VERSION: ${{ steps.tag.outputs.version }}
-        run: |
-          set -euo pipefail
-          git push origin "refs/tags/v$VERSION"
-          gh release create "v$VERSION" dist/* --verify-tag --generate-notes
+          persist-credentials: false
+      - id: version
+        name: Select the source's stable version
+        run: python3 scripts/release-version >> "$GITHUB_OUTPUT"
 
-  # The Rust port's prebuilt binaries, attached to the release just published:
-  # Linux x86_64, Linux aarch64 (the Pi) and macOS arm64, each with a sha256 file.
-  # Compiled here so no development host ever has to.
-  binaries:
-    name: binaries (${{ matrix.target }})
-    needs: release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
-          - { os: macos-latest, target: aarch64-apple-darwin }
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+  release:
+    needs: plan
+    uses: ./.github/workflows/release-build.yml
     permissions:
       contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      TARGET: ${{ matrix.target }}
-      VERSION: ${{ needs.release.outputs.version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add "$TARGET"
-      - name: Build
-        working-directory: rust
-        run: MAKEGHREPO_VERSION="$VERSION" cargo build --release --locked --target "$TARGET"
-      - name: Checksum and attach to the release
-        run: |
-          set -euo pipefail
-          bin="makeghrepo-$TARGET"
-          cp "rust/target/$TARGET/release/makeghrepo" "$bin"
-          shasum -a 256 "$bin" | tee "$bin.sha256"
-          "./$bin" --version
-          gh release upload "v$VERSION" "$bin" "$bin.sha256" --clobber
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      sha: ${{ needs.plan.outputs.sha }}

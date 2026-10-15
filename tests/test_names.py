@@ -29,7 +29,7 @@ def test_normalize_name(raw, expected):
     assert names.normalize_name(raw) == expected
 
 
-@pytest.mark.parametrize("bad", ["", "-x", "x-", "UPPER", "a_b", "a" * 101, "../etc"])
+@pytest.mark.parametrize("bad", ["", "-x", "x-", "UPPER", "a_b", "a" * 101, "../etc", "a\n"])
 def test_validate_name_rejects(bad):
     with pytest.raises(ValueError):
         names.validate_name(bad)
