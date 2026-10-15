@@ -93,9 +93,7 @@ def test_auto_release_isolates_write_credentials_from_project_code(workflows):
     assert checkout["with"]["persist-credentials"] is False
     assert publish["permissions"] == {"contents": "write", "actions": "read"}
     download = next(
-        step
-        for step in publish["steps"]
-        if step.get("name") == "Download release artifacts"
+        step for step in publish["steps"] if step.get("name") == "Download release artifacts"
     )
     assert download["env"]["ARTIFACT_ID"] == "${{ needs.build.outputs.artifact-id }}"
     assert "actions/artifacts/$ARTIFACT_ID/zip" in download["run"]
