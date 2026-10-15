@@ -35,18 +35,24 @@ jobs:
       - name: Install
         run: uv sync --locked
       - name: Format
-        run: uv run ruff format --check
+        run: uv run ruff format --diff
       - name: Lint
+        if: ${{ !cancelled() }}
         run: uv run ruff check --output-format=github
       - name: Test
+        if: ${{ !cancelled() }}
         run: uv run pytest
       # Snapshots are rendered here, not on a dev machine. Only trusted runs
       # publish them for intended output changes (see README "Golden snapshots").
       - name: Render golden snapshots
-        if: ${{ github.event_name != 'pull_request' && !cancelled() }}
+        if: >-
+          ${{ !cancelled() && (github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
         run: uv run scripts/regen-golden --out out/golden
       - name: Upload golden snapshots
-        if: ${{ github.event_name != 'pull_request' && !cancelled() }}
+        if: >-
+          ${{ !cancelled() && (github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: golden
@@ -61,8 +67,63 @@ jobs:
           uv tool install dist/*.whl
           makeghrepo --help
 
+  beta-assets:
+    name: beta-assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.23"
+          python-version: "3.14.8"
+          enable-cache: false
+      - run: uv sync --locked --python 3.14.8
+      - name: Beta shared source manifest
+        run: uv run python scripts/regen-beta-sources --check
+      - name: Beta and maintenance script formatting
+        run: uv run ruff format --check beta scripts/beta-check scripts/regen-beta-sources
+      - name: Beta and maintenance script lint
+        run: uv run ruff check beta scripts/beta-check scripts/regen-beta-sources
+      - name: Beta fixture and recovery tests
+        env:
+          PYTHONPATH: beta/src:src
+        run: uv run pytest beta/tests
+      - name: Build and validate canonical Python asset
+        id: prebuild
+        env:
+          PYTHONPATH: beta/src:src
+        run: uv run python -m makeghrepo_beta.cloud_build --out "$RUNNER_TEMP/beta-prebuilt"
+      - name: Upload prebuilt candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.prebuild.outputs.artifact_name }}
+          path: ${{ runner.temp }}/beta-prebuilt/bundle.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Independent stable and beta distributions
+        run: uv run python scripts/beta-check --evidence "$RUNNER_TEMP/beta-evidence.json"
+      - name: Upload beta acceptance evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: beta-evidence
+          path: ${{ runner.temp }}/beta-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
   distribution:
     uses: ./.github/workflows/distribution.yml
+    permissions:
+      contents: read
+
+  one-open-pr-tests:
+    uses: ./.github/workflows/one-open-pr-tests.yml
     permissions:
       contents: read
 
@@ -238,7 +299,7 @@ jobs:
   ci:
     name: ci
     if: always()
-    needs: [test, plan, templates, actionlint, rust, distribution]
+    needs: [test, plan, templates, actionlint, rust, distribution, beta-assets, one-open-pr-tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

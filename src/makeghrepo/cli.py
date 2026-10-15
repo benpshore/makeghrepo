@@ -228,9 +228,13 @@ def main(
             gitops.commit_all(dest, "setup")
         except (RuntimeError, git.GitCommandError) as exc:
             raise fail(
-                f"{exc}\nNothing was published. Fix it, then re-run the same command."
+                f"{exc}\nThis invocation stopped before its GitHub creation/push steps.\n"
+                f"Earlier lookup {'found a repository' if on_github else 'found no repository'} "
+                f"at https://github.com/{repo}; this is not a publication history check.\n"
+                f"Local project retained at {dest}. Fix it, then re-run the same command."
             ) from exc
 
+    creation_attempted = False
     try:
         if on_github:
             actual_private = github.is_private(repo)
@@ -243,9 +247,22 @@ def main(
             private = actual_private
         else:
             private = want_private
+            creation_attempted = True
             github.create_repo(repo, dest, name, private)
     except github.GhError as exc:
-        raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
+        effect = (
+            "Remote creation was attempted; remote creation may have completed."
+            if creation_attempted
+            else (
+                "Remote visibility lookup failed; "
+                "creation/push was not attempted by this invocation."
+            )
+        )
+        raise fail(
+            f"{exc}\n{effect}\n"
+            f"Inspect https://github.com/{repo} before any cleanup.\n"
+            f"Local project is intact at {dest}; re-run to retry."
+        ) from exc
 
     # Bootstrap only: a configuration rerun must never publish subsequent local work.
     try:
@@ -253,7 +270,8 @@ def main(
     except git.GitCommandError as exc:
         raise fail(
             f"{exc}\nCould not check remote main; refusing to push. "
-            "Local project is intact; re-run to retry."
+            f"Inspect https://github.com/{repo}.\n"
+            f"Local project is intact at {dest}; re-run to retry."
         ) from exc
     push = None if pushed else lambda: gitops.push_main(dest)
     failed = github.configure_all(repo, private=private, push=push, log=typer.echo)
