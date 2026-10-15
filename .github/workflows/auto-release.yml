@@ -186,10 +186,11 @@ jobs:
           set -euo pipefail
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
             push origin "refs/tags/v$VERSION"
-      - uses: actions/download-artifact@608c4c26717a59437d7bca00f4a3d1f0f06a1ff3 # v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: python-dist
           path: dist/
+          digest-mismatch: error
       - name: Publish
         env:
           VERSION: ${{ steps.tag.outputs.version }}
@@ -253,11 +254,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@608c4c26717a59437d7bca00f4a3d1f0f06a1ff3 # v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: binary-*
           path: binaries/
           merge-multiple: true
+          digest-mismatch: error
       - name: Attach binaries
         env:
           GH_TOKEN: ${{ github.token }}

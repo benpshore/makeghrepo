@@ -253,3 +253,63 @@ def test_partial_rust_matrix_can_publish_only_after_release_success():
     )
     attach = next(s for s in publish["steps"] if s.get("name") == "Attach binaries")
     assert attach["env"]["GH_REPO"] == "${{ github.repository }}"
+
+
+def test_auto_release_downloads_use_verified_action_contract():
+    # Verified against actions/download-artifact v8.0.1 action.yml at this SHA:
+    # same-run access needs no github-token; digest-mismatch defaults to error.
+    download_action = (
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+    )
+    root = Path(__file__).resolve().parents[1] / ".github/workflows"
+    release = yaml.safe_load((root / "auto-release.yml").read_text())["jobs"]
+    ci = yaml.safe_load((root / "ci.yml").read_text())["jobs"]
+    expected = [
+        {"name": "python-dist", "path": "dist/", "digest-mismatch": "error"},
+        {
+            "pattern": "binary-*",
+            "path": "binaries/",
+            "merge-multiple": True,
+            "digest-mismatch": "error",
+        },
+    ]
+    downloads = []
+    for job_name in ["release", "publish-binaries"]:
+        job = release[job_name]
+        assert "GH_TOKEN" not in job.get("env", {})
+        steps = [
+            step
+            for step in job["steps"]
+            if step.get("uses", "").startswith("actions/download-artifact@")
+        ]
+        assert len(steps) == 1
+        downloads.extend(steps)
+    for step, inputs in zip(downloads, expected, strict=True):
+        assert step["uses"] == download_action
+        # Exact input sets also forbid cross-run/repository and token overrides.
+        assert step["with"] == inputs
+        assert "GH_TOKEN" not in step.get("env", {})
+
+    # CI must execute the same immutable action and both input contracts, with
+    # read-only permissions and no release command or project checkout.
+    smoke = ci["artifact-download-contract"]
+    assert smoke["permissions"] == {"contents": "read"}
+    assert "artifact-download-contract" in ci["ci"]["needs"]
+    assert "continue-on-error" not in smoke
+    assert "GH_TOKEN" not in smoke.get("env", {})
+    smoke_downloads = [
+        step
+        for step in smoke["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    ]
+    assert len(smoke_downloads) == 2
+    for step, inputs in zip(smoke_downloads, expected, strict=True):
+        assert step["uses"] == download_action
+        assert step["with"] == inputs
+        assert "continue-on-error" not in step
+        assert "GH_TOKEN" not in step.get("env", {})
+    commands = "\n".join(step.get("run", "") for step in smoke["steps"])
+    assert "gh release" not in commands
+    assert not any(
+        step.get("uses", "").startswith("actions/checkout@") for step in smoke["steps"]
+    )
