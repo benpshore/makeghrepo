@@ -98,10 +98,24 @@ export function chooseRetained(pulls, policy) {
 export function taskNumber(body) {
   // This repository already uses a task-labelled issue and a standalone Closes # line.
   // Ignore examples/comments instead of treating arbitrary mentions as task bindings.
-  const text = (body ?? "").replace(/<!--[\s\S]*?-->/g, "").replace(/^\s*(```|~~~)[\s\S]*?^\s*\1[^\n]*$/gm, "");
-  const lines = text.split(/\r?\n/).filter((line) => /^\s*(?:closes|fixes|resolves)\b/i.test(line));
+  const text = (body ?? "").replace(/<!--[\s\S]*?-->/g, "");
+  const lines = [];
+  let fence = null;
+  for (const line of text.split(/\r?\n/)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && /^[ \t]*$/.test(marker[2])) fence = null;
+      continue; // An unclosed fence also cannot supply a binding.
+    }
+    if (marker) {
+      fence = marker[1];
+      continue;
+    }
+    // Four spaces or any leading tab can be Markdown code, never a binding.
+    if (/^ {0,3}(?:closes|fixes|resolves)\b/i.test(line)) lines.push(line);
+  }
   require(lines.length === 1, "PR needs exactly one standalone Closes #<task> binding");
-  const match = /^Closes #([1-9][0-9]*)\s*$/i.exec(lines[0].trim());
+  const match = /^ {0,3}Closes #([1-9][0-9]*)[ \t]*$/i.exec(lines[0]);
   require(match && Number.isSafeInteger(Number(match[1])), "Use one same-repository Closes #<task> line");
   return Number(match[1]);
 }
@@ -120,24 +134,50 @@ async function getPull(api, number, sleep) {
   return pr;
 }
 
-async function closeExtra(api, candidate, retained, policy, sleep, onAttempt) {
+async function checkLiveHead(api, execution, sleep) {
+  const repository = await retryRead(() => api.getRepository(), sleep);
+  require(repository.full_name === REPOSITORY && repository.default_branch === execution.defaultBranch, "Live default branch differs from execution provenance");
+  const ref = await retryRead(() => api.getDefaultHead(execution.defaultBranch), sleep);
+  require(ref.ref === `refs/heads/${execution.defaultBranch}` && ref.object?.type === "commit", "Unexpected live default-branch ref");
+  require(ref.object.sha === execution.headSHA, "Stale guard execution; dispatch the current default-branch head after review");
+}
+
+async function authorizeClose(api, policy, execution, sleep) {
+  require(typeof execution?.defaultBranch === "string" && execution.defaultBranch.length > 0 &&
+    /^[a-f0-9]{40}$/.test(execution?.headSHA ?? ""), "Missing or invalid execution provenance");
+  // Queued/rerun workflows keep their original code and env switches. A later
+  // default-branch commit (including a pause) invalidates that older authority.
+  await checkLiveHead(api, execution, sleep);
+  const livePolicy = validatePolicy(await retryRead(() => api.getPolicy(execution.headSHA), sleep));
+  require(livePolicy.mode === "enforce" && Object.keys(policy).every((key) => livePolicy[key] === policy[key]), "Live guard policy no longer authorizes this execution");
+  // Read the live head again after the pinned policy; never accept a moving ref.
+  await checkLiveHead(api, execution, sleep);
+}
+
+async function closeExtra({ api, candidate, retained, policy, execution, sleep, onAttempt, onReadback }) {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const current = await getPull(api, candidate.number, sleep);
-    if (current.state === "closed") return "already-closed";
+    onReadback(current, attempt + 1, "preflight");
     require(current.head.sha === candidate.head.sha, `PR #${candidate.number} changed; retain new work and retry later`);
+    if (current.state === "closed") return "already-closed";
     require(current.number > MIGRATION_CUTOFF && current.number !== retained.number, "Refusing protected PR closure");
     const keeper = await getPull(api, retained.number, sleep);
     require(keeper.state === "open", "Retained PR closed during reconciliation; stop and recompute later");
     await validateTask(api, keeper, policy, sleep);
+    // This is the last API read before each PATCH, including retries. No stale
+    // event policy may authorize a close after the live default branch changes.
+    await authorizeClose(api, policy, execution, sleep);
+    onAttempt(attempt + 1);
     let failure;
     try {
-      onAttempt(attempt + 1);
       await api.closePull(current.number);
     } catch (error) {
       failure = error;
     }
     // A timeout/5xx can follow a successful server-side close. Read before retrying.
     const observed = await getPull(api, current.number, sleep);
+    onReadback(observed, attempt + 1, "post-close");
+    require(observed.head.sha === candidate.head.sha, `PR #${candidate.number} head changed during closure; inspect actual readback before any further effects`);
     if (observed.state === "closed") return failure ? "confirmed-after-uncertain-response" : "closed";
     if (failure && !retryable(failure)) throw failure;
     require(attempt + 1 < MAX_ATTEMPTS, `Closure of #${current.number} remains unconfirmed; retry later`);
@@ -145,7 +185,7 @@ async function closeExtra(api, candidate, retained, policy, sleep, onAttempt) {
   }
 }
 
-export async function reconcile({ api, policy, apply = false, sleep = pause, report = () => {} }) {
+export async function reconcile({ api, policy, execution, apply = false, sleep = pause, report = () => {} }) {
   validatePolicy(policy);
   const pulls = await stableSnapshot(api, sleep);
   const retained = chooseRetained(pulls, policy);
@@ -171,14 +211,22 @@ export async function reconcile({ api, policy, apply = false, sleep = pause, rep
   if (!result.applied) return result;
   for (const number of result.candidates) {
     const candidate = pulls.find((pr) => pr.number === number);
-    result.effects.push({ number, head_sha: candidate.head.sha, state: "planned" });
+    result.effects.push({ number, head_sha: candidate.head.sha, state: "planned", readbacks: [] });
     report(result);
     const effect = result.effects.at(-1);
     try {
-      effect.state = await closeExtra(api, candidate, retained, policy, sleep, (attempt) => {
-        effect.state = "attempted";
-        effect.attempt = attempt;
-        report(result); // Durable Actions log before each effect; never log tokens/PR text.
+      effect.state = await closeExtra({ api, candidate, retained, policy, execution, sleep,
+        onAttempt: (attempt) => {
+          effect.state = "attempted";
+          effect.attempt = attempt;
+          effect.authorized_head_sha = execution.headSHA;
+          report(result); // Durable Actions log before each effect; never log tokens/PR text.
+        },
+        onReadback: (observed, attempt, phase) => {
+          effect.readbacks.push({ attempt, phase, state: observed.state, head_sha: observed.head.sha });
+          if (observed.head.sha !== candidate.head.sha) effect.state = "head-mismatch";
+          report(result); // Preserve the actual state/head before any mismatch throws.
+        },
       });
       report(result);
       const keeper = await getPull(api, retained.number, sleep);
@@ -198,7 +246,7 @@ export async function reconcile({ api, policy, apply = false, sleep = pause, rep
 export function githubAPI(token, transport = fetch) {
   require(typeof token === "string" && token.length > 0, "Missing Actions token");
   async function request(path, method = "GET", body) {
-    const response = await transport(`https://api.github.com/repos/${REPOSITORY}/${path}`, {
+    const response = await transport(`https://api.github.com/repos/${REPOSITORY}${path ? `/${path}` : ""}`, {
       method,
       redirect: "error",
       signal: AbortSignal.timeout(30000),
@@ -218,6 +266,20 @@ export function githubAPI(token, transport = fetch) {
     return number;
   };
   return {
+    getRepository: async () => (await request("")).data,
+    getDefaultHead: async (branch) => {
+      require(typeof branch === "string" && branch.length > 0, "Invalid default branch");
+      return (await request(`git/ref/heads/${encodeURIComponent(branch)}`)).data;
+    },
+    getPolicy: async (sha) => {
+      require(/^[a-f0-9]{40}$/.test(sha), "Policy read requires an exact commit");
+      const file = (await request(`contents/.github/one-open-pr/policy.json?ref=${sha}`)).data;
+      require(file.type === "file" && file.encoding === "base64" && Number.isSafeInteger(file.size) &&
+        file.size >= 0 && file.size <= 16384 && typeof file.content === "string" && file.content.length <= 32768, "Invalid live policy file");
+      const contents = Buffer.from(file.content, "base64");
+      require(contents.length === file.size, "Live policy size mismatch");
+      return JSON.parse(contents.toString("utf8")); // Data only; never download/execute live code.
+    },
     listPage: async (page) => {
       const response = await request(`pulls?state=open&sort=created&direction=asc&per_page=100&page=${positive(page)}`);
       return { items: response.data, hasNext: response.next };
@@ -238,7 +300,9 @@ export async function main(env = process.env) {
     require(event.pull_request?.base?.ref === branch && event.pull_request?.base?.repo?.full_name === REPOSITORY, "Unexpected PR base");
   }
   const policy = JSON.parse(await readFile(new URL("./policy.json", import.meta.url), "utf8"));
-  const result = await reconcile({ api: githubAPI(env.GH_TOKEN), policy, apply: env.ONE_OPEN_PR_APPLY === "1", report: (entry) => console.log(JSON.stringify(entry)) });
+  const result = await reconcile({ api: githubAPI(env.GH_TOKEN), policy,
+    execution: { defaultBranch: branch, headSHA: env.GITHUB_SHA },
+    apply: env.ONE_OPEN_PR_APPLY === "1", report: (entry) => console.log(JSON.stringify(entry)) });
   console.log(JSON.stringify(result));
 }
 

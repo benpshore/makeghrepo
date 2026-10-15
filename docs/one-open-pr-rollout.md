@@ -15,13 +15,24 @@ default, change settings/credentials/protections, or close existing PRs. No
 separate guard implementation or PR is needed.
 
 The repository already has `task` issues and a `Closes #` line in its PR template.
-PR178 currently has no bound task issue. No issue number is invented or an
-unrelated issue silently claimed: `task_issue` remains null. Audit reports this
-missing binding. Enforcement requires the parent to identify the actual task,
-set its number in policy and put exactly one standalone `Closes #N` line in
+PR178 currently has no bound task issue: `task_issue` remains null. An inspection
+of all 178 existing issue/PR records on 2026-10-15 identified existing open
+[issue #154, the explicit no-side-effects dry-run contract](https://github.com/benpshore/makeghrepo/issues/154),
+as the proposed binding for PR178's original offline-planning task. It currently
+has only the `agent-created` label, so it is not yet eligible for enforcement.
+The parent must review the beta-only acceptance boundary and add the existing
+`task` label before approving this binding. Related architecture/isolation work
+in #149/#163 and the parent epic #169 is not claimed complete; the synthetic
+test ticket #123 is unrelated TypeScript work and is not the proposed binding.
+No issue, label, closing reference or policy binding was changed by this proposal.
+
+Audit reports the missing binding. Enforcement requires the parent to approve
+the actual task, set its number in policy and put one standalone `Closes #N` line in
 PR178's description. The issue must be open, in this repository, labelled `task`,
 and must not itself be a PR. Comments, code examples, multiple tickets, other
 repositories and different closing keywords do not satisfy this strict binding.
+Four-space/tab-indented code and fenced examples (including unclosed fences)
+cannot supply a binding; a real binding line allows at most three leading spaces.
 This checks metadata deterministically; the parent still reviews actual scope,
 acceptance criteria and evidence. It does not create another tracking system or
 claim to authenticate the parent through a GitHub username guess.
@@ -57,6 +68,18 @@ not interpolate PR content into shell commands or install dependencies. The
 separate test workflow runs candidate code with `contents: read` and no write
 token, and is required by the existing `ci` aggregate.
 
+Immediately before **every** close request, including retries, the event-time
+code resolves the live default branch and requires its head to match the executing
+`GITHUB_SHA`. It reads policy as data at that exact commit, verifies that the live
+policy still matches and permits enforcement, then checks the live default branch
+and head again. A later commit, including a pause in either policy or the workflow
+switch, invalidates queued/rerun executions from an older head. Missing provenance,
+changed defaults/policy, failed reads and exhausted retries stop closure requests;
+the script never falls back to its event-time policy or executes fetched code.
+To pause after future activation, commit `audit` or `ONE_OPEN_PR_APPLY=0` through
+reviewed default-branch changes. Dispatch the current head for recovery after
+review; rerunning an old execution cannot regain authority while that head differs.
+
 One repository-wide Actions concurrency group uses `cancel-in-progress: false`
 and `queue: max`; opening or editing another PR cannot cancel active reconciliation.
 GitHub's queue is finite. Each run scans the entire open inventory, with complete
@@ -64,19 +87,27 @@ pagination, and requires two matching snapshots before writes. Failed pages,
 duplicates, unstable inventories and exhausted retries cause failure, never a
 partial-list decision. Author and draft filters are deliberately absent.
 
-Each close records the exact PR number and observed head SHA in Actions logs,
-rechecks the candidate and retained PR, and validates the retained task again.
+Each close records the PR number, planned head and authorizing default-branch SHA
+in Actions logs, rechecks the candidate and retained PR, and validates the task again.
 New candidate commits or a closed/missing retained PR stop the run. Transient
 GET failures use bounded retries; close failures are read back before a retry to
 handle a server-side success followed by a lost response. Permanent permission
 errors fail. No 404/authentication failure is treated as proof of absence.
+Every successful readback records its actual PR state and head SHA before checking
+them against the planned head. A commit racing with PATCH produces a `head-mismatch`
+record and stops retries and later closures, even if that PR was closed or the
+response was lost. Unavailable readback leaves an attempted, uncertain effect.
 Confirmed closures and uncertain/attempted effects remain in the log for recovery.
 Retry a failed run through default-branch workflow dispatch after inspection;
 already-closed PRs are harmless, and branches/commits remain available.
 
-GitHub provides no atomic transaction covering two PR states. The retained PR can
-close between the final read and an extra PR's close request. Post-effect readback
-stops later closures and reports the recorded recovery targets. The parent must
+The [PR update API](https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request)
+does not expose a head-SHA precondition for closure or an atomic transaction over
+PR states and the default-branch policy. The retained PR, candidate head or policy
+can change after the last read and before PATCH. Live checks bound this window;
+they cannot recall an in-flight request. Post-effect PR readback detects observed
+head/retention races, and the next live authorization rejects a later pause.
+These checks stop later effects and report recovery targets. The parent must
 inspect/reopen the appropriate preserved PR if necessary; the script never
 blindly reopens a PR that a person intentionally closed.
 
@@ -94,7 +125,9 @@ Run `node --test .github/one-open-pr/reconcile.test.mjs`. Tests use synthetic AP
 not real PR closures. They cover complete pagination, bot drafts and suppressed
 events, stable selection, serialized repeated deliveries, cutoff protection,
 transient/permanent failures, lost responses, changed heads, retained-PR races,
-task binding, recovery records, and workflow trust/concurrency constraints.
+stale queued/rerun code after a pause, policy/ref changes between checks/closures,
+post-close head races, indented/fenced task examples, recovery records, and workflow
+trust/concurrency constraints.
 Unit tests verify the scheduling contract and simulated serial runs; actual
 GitHub queue delivery is a platform guarantee, not a local concurrency proof.
 

@@ -9,6 +9,7 @@ import {
 } from "./reconcile.mjs";
 
 const noSleep = async () => {};
+const execution = { defaultBranch: "main", headSHA: "d".repeat(40) };
 const policy = (overrides = {}) => ({
   schema: 1, repository: REPOSITORY, mode: "enforce", migration_cutoff: 178,
   retained_pr: 178, task_issue: 123, ...overrides,
@@ -28,6 +29,9 @@ class FakeAPI {
     this.calls = [];
     this.closed = [];
     this.issue = { number: 123, state: "open", labels: [{ name: "task" }] };
+    this.repository = { full_name: REPOSITORY, default_branch: "main" };
+    this.defaultHead = execution.headSHA;
+    this.livePolicy = policy();
     this.beforeRead = () => {};
     this.onClose = (pr) => { pr.state = "closed"; };
   }
@@ -47,6 +51,18 @@ class FakeAPI {
     this.calls.push(["issue", number]);
     return structuredClone(this.issue);
   }
+  async getRepository() {
+    this.calls.push(["repository"]);
+    return structuredClone(this.repository);
+  }
+  async getDefaultHead(branch) {
+    this.calls.push(["default-head", branch]);
+    return { ref: `refs/heads/${branch}`, object: { type: "commit", sha: this.defaultHead } };
+  }
+  async getPolicy(sha) {
+    this.calls.push(["policy", sha]);
+    return structuredClone(this.livePolicy);
+  }
   async closePull(number) {
     this.calls.push(["close", number]);
     this.closed.push(number);
@@ -54,7 +70,7 @@ class FakeAPI {
   }
 }
 
-const run = (api, overrides = {}) => reconcile({ api, policy: policy(), apply: true, sleep: noSleep, ...overrides });
+const run = (api, overrides = {}) => reconcile({ api, policy: policy(), execution, apply: true, sleep: noSleep, ...overrides });
 
 test("reviewed policy starts disabled with an immutable cutoff and retained PR178", async () => {
   const checkedIn = JSON.parse(await readFile(new URL("./policy.json", import.meta.url)));
@@ -83,6 +99,84 @@ test("audit mode and explicit apply switch each prevent every write", async () =
     const api = new FakeAPI([pull(178), pull(200)]);
     assert.equal((await run(api, overrides)).applied, false);
     assert.deepEqual(api.closed, []);
+  }
+});
+
+test("each closure rechecks the live default head and pinned policy immediately before PATCH", async () => {
+  const api = new FakeAPI([pull(178), pull(200), pull(201)]);
+  await run(api);
+  for (const [index, call] of api.calls.entries()) {
+    if (call[0] === "close") assert.deepEqual(api.calls.slice(index - 5, index), [
+      ["repository"], ["default-head", "main"], ["policy", execution.headSHA],
+      ["repository"], ["default-head", "main"],
+    ]);
+  }
+});
+
+test("queued and rerun executions from before a default-branch pause cannot close PRs", async () => {
+  const api = new FakeAPI([pull(178), pull(200)]);
+  api.defaultHead = "e".repeat(40);
+  api.livePolicy.mode = "audit";
+  for (let delivery = 0; delivery < 2; delivery++) await assert.rejects(run(api), /Stale guard execution/);
+  assert.deepEqual(api.closed, []);
+});
+
+test("live policy changes, default branch changes and missing execution provenance fail closed", async () => {
+  for (const change of [
+    (api) => { api.livePolicy.mode = "audit"; },
+    (api) => { api.livePolicy.task_issue = 124; },
+    (api) => { api.repository.default_branch = "new-default"; },
+    (api) => { api.repository.full_name = "other/repo"; },
+    (api) => { api.getDefaultHead = async () => ({ ref: "refs/tags/main", object: { type: "commit", sha: execution.headSHA } }); },
+  ]) {
+    const api = new FakeAPI([pull(178), pull(200)]);
+    change(api);
+    await assert.rejects(run(api));
+    assert.deepEqual(api.closed, []);
+  }
+  for (const context of [undefined, {}, { ...execution, headSHA: "main" }]) {
+    const api = new FakeAPI([pull(178), pull(200)]);
+    await assert.rejects(run(api, { execution: context }), /execution provenance/);
+    assert.deepEqual(api.closed, []);
+  }
+});
+
+test("a default head changing while its policy is read prevents the close", async () => {
+  const api = new FakeAPI([pull(178), pull(200)]);
+  const getPolicy = api.getPolicy.bind(api);
+  api.getPolicy = async (sha) => {
+    const saved = await getPolicy(sha);
+    api.defaultHead = "e".repeat(40);
+    return saved;
+  };
+  await assert.rejects(run(api), /Stale guard execution/);
+  assert.deepEqual(api.closed, []);
+});
+
+test("a pause between closures or before a retry stops all later PATCH requests", async () => {
+  for (const uncertain of [false, true]) {
+    const api = new FakeAPI([pull(178), pull(200), pull(201)]);
+    api.onClose = (pr) => {
+      api.defaultHead = "e".repeat(40);
+      api.livePolicy.mode = "audit";
+      if (uncertain) throw httpError(502);
+      pr.state = "closed";
+    };
+    await assert.rejects(run(api), /Stale guard execution/);
+    assert.deepEqual(api.closed, [200]);
+  }
+});
+
+test("unreadable live authorization never falls back to the event-time policy", async () => {
+  for (const method of ["getRepository", "getDefaultHead", "getPolicy"]) {
+    for (const status of [403, 404, 503]) {
+      const api = new FakeAPI([pull(178), pull(200)]);
+      let calls = 0;
+      api[method] = async () => { calls++; throw httpError(status); };
+      await assert.rejects(run(api), new RegExp(String(status)));
+      assert.equal(calls, status === 503 ? 3 : 1);
+      assert.deepEqual(api.closed, []);
+    }
   }
 });
 
@@ -168,6 +262,43 @@ test("a lost close response is read back before any retry", async () => {
   const result = await run(api);
   assert.deepEqual(api.closed, [200]);
   assert.equal(result.effects[0].state, "confirmed-after-uncertain-response");
+  assert.deepEqual(result.effects[0].readbacks.at(-1), {
+    attempt: 1, phase: "post-close", state: "closed", head_sha: "a".repeat(40),
+  });
+});
+
+test("post-close head races are recorded and stop subsequent effects even after a lost response", async () => {
+  for (const outcome of ["closed", "closed-lost-response", "open-transient-error"]) {
+    const api = new FakeAPI([pull(178), pull(200), pull(201)]);
+    api.onClose = (pr) => {
+      pr.head.sha = "b".repeat(40); // New work arrived after the preflight read.
+      if (outcome.startsWith("closed")) pr.state = "closed";
+      if (outcome === "closed-lost-response") throw new TypeError("connection lost");
+      if (outcome === "open-transient-error") throw httpError(502);
+    };
+    const records = [];
+    await assert.rejects(run(api, { report: (r) => records.push(structuredClone(r)) }), /head changed during closure/);
+    assert.deepEqual(api.closed, [200]);
+    const effect = records.at(-1).effects[0];
+    assert.equal(records.at(-1).effects.length, 1);
+    assert.equal(effect.state, "head-mismatch");
+    assert.equal(effect.head_sha, "a".repeat(40));
+    assert.deepEqual(effect.readbacks.at(-1), { attempt: 1, phase: "post-close",
+      state: outcome.startsWith("closed") ? "closed" : "open", head_sha: "b".repeat(40) });
+  }
+});
+
+test("unavailable post-close readback preserves uncertainty and stops further effects", async () => {
+  const api = new FakeAPI([pull(178), pull(200), pull(201)]);
+  api.beforeRead = (number) => { if (number === 200 && api.closed.length) throw httpError(403); };
+  const records = [];
+  await assert.rejects(run(api, { report: (r) => records.push(structuredClone(r)) }), /403/);
+  assert.deepEqual(api.closed, [200]);
+  const effect = records.at(-1).effects[0];
+  assert.equal(effect.state, "attempted");
+  assert.equal(effect.readbacks.length, 1);
+  assert.equal(effect.readbacks[0].phase, "preflight");
+  assert.equal(effect.authorized_head_sha, execution.headSHA);
 });
 
 test("retrying an unapplied transient close revalidates retained PR and task", async () => {
@@ -253,6 +384,21 @@ test("task bindings use the existing Closes # convention, without guessing ticke
   }
 });
 
+test("indented Markdown code examples cannot supply task bindings", () => {
+  for (const indent of ["    ", "     ", "\t", " \t", "   \t", "\t "]) {
+    assert.throws(() => taskNumber(`${indent}Closes #123`));
+    assert.equal(taskNumber(`${indent}Closes #99\r\n\r\nCloses #123`), 123);
+  }
+  assert.equal(taskNumber("   Closes #123\r\n"), 123);
+});
+
+test("unclosed and nested Markdown fences cannot provide a binding", () => {
+  for (const body of ["```md\nCloses #123", "~~~\nCloses #123", "````md\n```\nCloses #123\n````"]) {
+    assert.throws(() => taskNumber(body));
+  }
+  assert.equal(taskNumber("  ~~~~md\nCloses #99\n  ~~~~\nCloses #123"), 123);
+});
+
 test("missing, conflicting, closed and non-task ticket bindings prevent mutations", async () => {
   for (const change of [
     (api) => { api.pulls[0].body = "No bound ticket"; },
@@ -286,6 +432,41 @@ test("HTTP adapter has only fixed repository reads and a close-only PATCH", asyn
   assert.equal(calls.at(-1).options.method, "PATCH");
   assert.deepEqual(JSON.parse(calls.at(-1).options.body), { state: "closed" });
   await assert.rejects(api.getPull("../settings"));
+});
+
+test("HTTP live authorization reads an exact default ref and commit-pinned policy as data", async () => {
+  const calls = [];
+  const content = Buffer.from(JSON.stringify(policy()));
+  const api = githubAPI("SYNTHETIC_TEST_TOKEN", async (url, options) => {
+    calls.push({ url, options });
+    const data = url.includes("/contents/") ? {
+      type: "file", encoding: "base64", size: content.length, content: content.toString("base64"),
+      download_url: "https://untrusted.invalid/never-follow-this",
+    } : {};
+    return new Response(JSON.stringify(data));
+  });
+  await api.getRepository();
+  await api.getDefaultHead("release/main");
+  assert.deepEqual(await api.getPolicy(execution.headSHA), policy());
+  assert.deepEqual(calls.map(({ url }) => url), [
+    `https://api.github.com/repos/${REPOSITORY}`,
+    `https://api.github.com/repos/${REPOSITORY}/git/ref/heads/release%2Fmain`,
+    `https://api.github.com/repos/${REPOSITORY}/contents/.github/one-open-pr/policy.json?ref=${execution.headSHA}`,
+  ]);
+  assert.ok(calls.every(({ options }) => options.method === "GET" && options.redirect === "error"));
+  await assert.rejects(api.getPolicy("main"), /exact commit/);
+  await assert.rejects(api.getDefaultHead(""), /Invalid default branch/);
+  assert.equal(calls.length, 3);
+});
+
+test("malformed and oversized live policy files fail closed", async () => {
+  const content = Buffer.from(JSON.stringify(policy()));
+  const valid = { type: "file", encoding: "base64", size: content.length, content: content.toString("base64") };
+  for (const change of [{ type: "symlink" }, { encoding: "none" }, { size: 16385 },
+    { content: "x".repeat(32769) }, { size: content.length - 1 }, { size: 1, content: "ew==" }]) {
+    const api = githubAPI("SYNTHETIC_TEST_TOKEN", async () => new Response(JSON.stringify({ ...valid, ...change })));
+    await assert.rejects(api.getPolicy(execution.headSHA));
+  }
 });
 
 test("workflow trust, concurrency, bot recovery and disabled rollout are explicit", async () => {
