@@ -98,7 +98,8 @@ export function chooseRetained(pulls, policy) {
 export function taskNumber(body) {
   // This repository already uses a task-labelled issue and a standalone Closes # line.
   // Ignore examples/comments instead of treating arbitrary mentions as task bindings.
-  const text = (body ?? "").replace(/<!--[\s\S]*?-->/g, "");
+  // An unterminated HTML comment also hides the rest of the body in GFM.
+  const text = (body ?? "").replace(/<!--[\s\S]*?(?:-->|$)/g, "");
   const lines = [];
   let fence = null;
   for (const line of text.split(/\r?\n/)) {

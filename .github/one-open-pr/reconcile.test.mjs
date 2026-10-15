@@ -399,6 +399,22 @@ test("unclosed and nested Markdown fences cannot provide a binding", () => {
   assert.equal(taskNumber("  ~~~~md\nCloses #99\n  ~~~~\nCloses #123"), 123);
 });
 
+test("unterminated HTML comments hide task examples through end of body", () => {
+  for (const body of ["<!--\nCloses #123", "<!-- example\r\nCloses #123\r\n"]) {
+    assert.throws(() => taskNumber(body), /binding/);
+  }
+  assert.equal(taskNumber("Closes #123\n<!--\nCloses #99"), 123);
+});
+
+test("a task binding hidden in an unterminated comment prevents every mutation", async () => {
+  const api = new FakeAPI([pull(178, { body: "<!--\nCloses #123" }), pull(200), pull(201)]);
+  const records = [];
+  await assert.rejects(run(api, { report: (r) => records.push(structuredClone(r)) }), /binding/);
+  assert.deepEqual(api.closed, []);
+  assert.deepEqual(records.at(-1).effects, []);
+  assert.match(records.at(-1).binding_error, /binding/);
+});
+
 test("missing, conflicting, closed and non-task ticket bindings prevent mutations", async () => {
   for (const change of [
     (api) => { api.pulls[0].body = "No bound ticket"; },
