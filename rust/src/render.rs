@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use base64::Engine;
 use include_dir::{Dir, File, include_dir};
@@ -13,6 +13,7 @@ use minijinja::value::Kwargs;
 use minijinja::{AutoEscape, Environment, Error, ErrorKind, Value};
 use serde_json::{Map, Value as Json};
 
+use crate::names;
 use crate::registry::{self, Lang};
 
 static TEMPLATE_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../src/makeghrepo/templates/project");
@@ -90,6 +91,7 @@ pub struct Data {
     pub year: String,
     pub private: bool,
     pub py_lib: bool,
+    pub project_license: String,
     pub languages: Vec<String>,
 }
 
@@ -116,6 +118,10 @@ fn context(langs: &[Lang], data: &Data) -> Value {
     ctx.insert("private".into(), Json::Bool(data.private));
     ctx.insert("py_lib".into(), Json::Bool(data.py_lib));
     ctx.insert(
+        "project_license".into(),
+        Json::String(data.project_license.clone()),
+    );
+    ctx.insert(
         "languages".into(),
         serde_json::to_value(&data.languages).expect("strings"),
     );
@@ -127,6 +133,14 @@ fn context(langs: &[Lang], data: &Data) -> Value {
 
 /// Render the template into `dest` (which must not exist or must be empty).
 pub fn render(dest: &Path, langs: &[Lang], data: &Data) -> Result<(), String> {
+    names::validate_name(&data.project_name)?;
+    names::validate_owner(&data.github_owner)?;
+    if data.package_name != names::package_name(&data.project_name) {
+        return Err("package name does not match the validated project name".into());
+    }
+    if !matches!(data.project_license.as_str(), "none" | "MIT") {
+        return Err("project license must be none or MIT".into());
+    }
     if dest.exists()
         && fs::read_dir(dest)
             .map_err(|e| e.to_string())?
@@ -158,6 +172,14 @@ pub fn render(dest: &Path, langs: &[Lang], data: &Data) -> Result<(), String> {
             if rendered.is_empty() {
                 skip = true;
                 break;
+            }
+            if rendered.contains(['/', '\\'])
+                || !matches!(
+                    Path::new(&rendered).components().next(),
+                    Some(Component::Normal(_))
+                )
+            {
+                return Err(format!("{raw}: unsafe rendered path component"));
             }
             out.push(rendered);
         }

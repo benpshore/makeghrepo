@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+"""Exercise installed CLIs against real local Git and a controlled GitHub fixture.
+
+No GitHub requests or live configuration changes occur. Only the GitHub CLI and
+Git's network transport are substituted; rendering, git init/commit/push and
+resume run through the installed production executable.
+"""
+
+# Assertions are intentional in this standalone acceptance test.
+# ruff: noqa: S101
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+OWNER = "acceptance-owner"
+OWNER_ID = 42
+
+
+def state_path():
+    return Path(os.environ["ACCEPTANCE_STATE"])
+
+
+def transaction(change):
+    path = state_path()
+    with path.open("r+") as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        state = json.load(stream)
+        result = change(state)
+        stream.seek(0)
+        json.dump(state, stream)
+        stream.truncate()
+        return result
+
+
+def record(state, kind, **fields):
+    event = {"kind": kind, **fields}
+    state["events"].append(event)
+    return event
+
+
+def git_fixture(args):
+    real = os.environ["ACCEPTANCE_GIT"]
+    if "push" not in args and "ls-remote" not in args:
+        return subprocess.run([real, *args], check=False).returncode
+    kind = "push" if "push" in args else "lookup"
+
+    def event(state):
+        record(state, kind)
+        return state["repo"], state.get("failure")
+
+    repo, failure = transaction(event)
+    if kind == "lookup" and failure == "lookup":
+        print("controlled transport failure", file=sys.stderr)
+        return 128
+    remote = state_path().parent / "remote.git"
+    rewrite = f"url.{remote.as_uri()}.insteadOf=https://github.com/{repo}.git"
+    return subprocess.run([real, "-c", rewrite, *args], check=False).returncode
+
+
+def gh_fixture(args):
+    body = json.load(sys.stdin) if "--input" in args else None
+    real = os.environ["ACCEPTANCE_GIT"]
+
+    def handle(state):
+        if args[:2] == ["api", "user"]:
+            return 0, OWNER
+        if args[:2] == ["repo", "view"]:
+            return (0, "{}") if state["created"] else (1, "Could not resolve to a Repository")
+        if args[:2] == ["repo", "create"]:
+            state["created"] = True
+            state["private"] = "--private" in args
+            source = args[args.index("--source") + 1]
+            subprocess.run(
+                [real, "init", "--bare", "-q", str(state_path().parent / "remote.git")], check=True
+            )
+            subprocess.run(
+                [
+                    real,
+                    "-C",
+                    source,
+                    "remote",
+                    "add",
+                    "origin",
+                    f"https://github.com/{state['repo']}.git",
+                ],
+                check=True,
+            )
+            record(state, "create", private=state["private"])
+            return 0, ""
+        if args[:2] == ["api", "graphql"]:
+            return 0, json.dumps(
+                {
+                    "data": {
+                        "user": {
+                            "projectsV2": {
+                                "nodes": [{"number": 1, "title": state["repo"].split("/")[1]}]
+                            }
+                        }
+                    }
+                }
+            )
+        if args[:2] in (["project", "link"], ["label", "create"]):
+            return 0, ""
+        if args[:2] != ["api", "-X"]:
+            return 1, "unexpected gh command: " + repr(args)
+        method, path = args[2:4]
+        event = record(state, "api", method=method, path=path, body=body, succeeded=True)
+        prefix = "repos/" + state["repo"]
+        if method == "GET" and path == prefix:
+            return 0, json.dumps(
+                {
+                    "private": state["private"],
+                    "owner": {"type": "User", "login": OWNER, "id": OWNER_ID},
+                }
+            )
+        if method == "PATCH" and path == prefix:
+            if state.get("failure") == "settings":
+                event["succeeded"] = False
+                return 1, "controlled settings failure"
+            state["settings"] = body
+        if path == prefix + "/actions/permissions":
+            if state.get("failure") == "actions":
+                event["succeeded"] = False
+                return 1, "controlled Actions failure"
+            state["actions"] = body
+        if "/rulesets" in path:
+            if method == "GET":
+                if "?" in path:
+                    return 0, json.dumps(state["rulesets"])
+                return 0, json.dumps(
+                    next(r for r in state["rulesets"] if r["id"] == int(path.rsplit("/", 1)[1]))
+                )
+            if state.get("failure") == "ruleset":
+                event["succeeded"] = False
+                return 1, "controlled ruleset failure"
+            if method == "POST":
+                state["rulesets"].append({"id": len(state["rulesets"]) + 1, **body})
+            elif method == "PUT":
+                index = next(
+                    i
+                    for i, r in enumerate(state["rulesets"])
+                    if r["id"] == int(path.rsplit("/", 1)[1])
+                )
+                state["rulesets"][index] = {"id": state["rulesets"][index]["id"], **body}
+        return 0, "{}"
+
+    code, output = transaction(handle)
+    print(output, file=sys.stderr if code else sys.stdout)
+    return code
+
+
+def command(args, *, env, cwd=None, expected=0):
+    result = subprocess.run(args, env=env, cwd=cwd, capture_output=True, text=True, timeout=90)
+    if result.returncode != expected:
+        raise RuntimeError(
+            f"{args}: expected {expected}, got {result.returncode}\n{result.stdout}{result.stderr}"
+        )
+    return result.stdout.strip()
+
+
+def read_state(root):
+    return json.loads((root / "state.json").read_text())
+
+
+def check_policy(state, private):
+    assert state["settings"]["allow_squash_merge"] is True
+    assert state["settings"]["allow_merge_commit"] is False
+    events = state["events"]
+    push = next(i for i, e in enumerate(events) if e["kind"] == "push")
+    if private:
+        assert state["actions"] == {"enabled": False}
+        assert not state["rulesets"]
+        assert any(
+            e["kind"] == "api"
+            and e["succeeded"]
+            and e["method"] == "PUT"
+            and e["path"] == "repos/" + state["repo"] + "/actions/permissions"
+            and e["body"] == {"enabled": False}
+            for e in events[:push]
+        )
+    else:
+        assert (
+            state["settings"]["security_and_analysis"]["secret_scanning_push_protection"]["status"]
+            == "enabled"
+        )
+        assert any(
+            e["kind"] == "api"
+            and e["succeeded"]
+            and e["method"] == "PATCH"
+            and e["path"] == "repos/" + state["repo"]
+            and e["body"]
+            .get("security_and_analysis", {})
+            .get("secret_scanning_push_protection", {})
+            .get("status")
+            == "enabled"
+            for e in events[:push]
+        )
+        rules = {r["name"]: r for r in state["rulesets"]}
+        assert rules["protect-main"]["bypass_actors"] == []
+        assert {r["type"] for r in rules["protect-main"]["rules"]} == {
+            "deletion",
+            "non_fast_forward",
+            "required_linear_history",
+        }
+        gate = rules["require-pr-and-ci"]
+        assert gate["bypass_actors"] == [
+            {"actor_type": "User", "actor_id": OWNER_ID, "bypass_mode": "always"}
+        ]
+        assert {r["type"] for r in gate["rules"]} == {"pull_request", "required_status_checks"}
+        check = next(r for r in gate["rules"] if r["type"] == "required_status_checks")
+        assert check["parameters"]["strict_required_status_checks_policy"] is True
+        assert check["parameters"]["required_status_checks"] == [
+            {"context": "ci", "integration_id": 15368}
+        ]
+
+
+def scenario(executable, private, failure):
+    real_git = shutil.which("git")
+    assert real_git
+    with tempfile.TemporaryDirectory(prefix="makeghrepo-bootstrap-") as temporary:
+        root = Path(temporary)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        script = Path(__file__).resolve()
+        for name in ("gh", "git"):
+            target = bin_dir / name
+            target.write_text(
+                f"#!{sys.executable}\nimport os, runpy\n"
+                f"os.environ['ACCEPTANCE_TOOL'] = {name!r}\n"
+                f"runpy.run_path({str(script)!r}, run_name='__main__')\n"
+            )
+            target.chmod(0o755)
+        name = "acceptance-project"
+        initial = {
+            "repo": f"{OWNER}/{name}",
+            "created": False,
+            "private": private,
+            "rulesets": [],
+            "events": [],
+            "failure": failure,
+        }
+        (root / "state.json").write_text(json.dumps(initial))
+        config = root / "gitconfig"
+        config.write_text("")
+        env = os.environ | {
+            "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+            "ACCEPTANCE_STATE": str(root / "state.json"),
+            "ACCEPTANCE_GIT": real_git,
+            "MAKEGHREPO_DIR": str(root / "projects"),
+            "GIT_CONFIG_GLOBAL": str(config),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            # Unexpected Git transports fail closed; only our local bare repo is reachable.
+            "GIT_ALLOW_PROTOCOL": "file",
+            "GH_TOKEN": "synthetic-acceptance-token",
+        }
+        args = [executable, name, *(["--private"] if private else [])]
+        start = time.monotonic()
+        command(args, env=env, expected=2 if failure else 0)
+        state = read_state(root)
+        if failure in {"settings", "actions"}:
+            assert not any(e["kind"] == "push" for e in state["events"])
+        if failure:
+            state["failure"] = None
+            (root / "state.json").write_text(json.dumps(state))
+            command(args, env=env)
+        project = root / "projects" / name
+        assert not (project / "LICENSE").exists()
+        marker = json.loads((project / ".git" / "makeghrepo.json").read_text())
+        assert marker["private"] is private and marker["license"] == "none"
+        state = read_state(root)
+        check_policy(state, private)
+        remote_sha = command(
+            [real_git, "--git-dir", str(root / "remote.git"), "rev-parse", "main"], env=env
+        )
+        assert remote_sha == command([real_git, "-C", str(project), "rev-parse", "HEAD"], env=env)
+        # A later commit stays local during successful and failed configuration retries.
+        (project / "later.txt").write_text("keep this local\n")
+        command([real_git, "-C", str(project), "add", "later.txt"], env=env)
+        command([real_git, "-C", str(project), "commit", "-qm", "later local work"], env=env)
+        pushes = sum(e["kind"] == "push" for e in state["events"])
+        command(args, env=env)
+        assert (
+            command([real_git, "--git-dir", str(root / "remote.git"), "rev-parse", "main"], env=env)
+            == remote_sha
+        )
+        state = read_state(root)
+        assert sum(e["kind"] == "push" for e in state["events"]) == pushes
+        state["failure"] = "lookup"
+        before = len(state["events"])
+        (root / "state.json").write_text(json.dumps(state))
+        command(args, env=env, expected=1)
+        after = read_state(root)["events"][before:]
+        assert not any(
+            e["kind"] == "push" or (e["kind"] == "api" and e["method"] != "GET") for e in after
+        )
+        return {
+            "private": private,
+            "failure": failure,
+            "elapsed_seconds": round(time.monotonic() - start, 3),
+            "settings": state["settings"],
+            "rulesets": state["rulesets"],
+            "pushes": pushes,
+        }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "executables", nargs="+", help="Installed Python and/or Rust executable paths"
+    )
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    evidence = {}
+    for executable in args.executables:
+        executable = str(Path(executable).resolve())
+        results = [
+            scenario(executable, private, failure)
+            for private, failure in [
+                (False, None),
+                (True, None),
+                (False, "settings"),
+                (True, "actions"),
+                (False, "ruleset"),
+            ]
+        ]
+        evidence[executable] = results
+        print(f"{executable}: 5 real-Git bootstrap/retry scenarios passed")
+    normalized = [
+        [{k: v for k, v in result.items() if k != "elapsed_seconds"} for result in results]
+        for results in evidence.values()
+    ]
+    assert all(result == normalized[0] for result in normalized), (
+        "Python/Rust configuration results differ"
+    )
+    if args.output:
+        args.output.write_text(json.dumps(evidence, indent=2) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    invoked = os.environ.get("ACCEPTANCE_TOOL", "")
+    raise SystemExit(
+        gh_fixture(sys.argv[1:])
+        if invoked == "gh"
+        else git_fixture(sys.argv[1:])
+        if invoked == "git"
+        else main()
+    )

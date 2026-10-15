@@ -181,7 +181,7 @@ jobs:
       - run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = false
 
 ### END
-### FILE .github/workflows/release.yml exec=0 bytes=945 encoding=utf-8
+### FILE .github/workflows/release.yml exec=0 bytes=1534 encoding=utf-8
 name: Release
 
 # Publish: push a tag, e.g. `git tag v0.1.1 && git push --tags`.
@@ -193,11 +193,11 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -210,9 +210,29 @@ jobs:
       - run: uv run pytest
       - run: uv audit --locked --preview-features audit-command
       - run: uv build
+      - name: Upload release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: dist
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+          path: dist
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*
 
 ### END
@@ -381,10 +401,11 @@ postgres-data/
 3.14
 
 ### END
-### FILE AGENTS.md exec=0 bytes=484 encoding=utf-8
+### FILE AGENTS.md exec=0 bytes=646 encoding=utf-8
 # quiet-otter
 
-- `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
+- Agents must work on a branch and open a PR (`gh pr create --fill`); never push directly to `main` or use the owner's bypass, even when authenticated as the owner.
+- GitHub Actions is disabled for this private repo; run the checks below locally before opening a PR.
 - Never commit secrets, `.env` files, databases or `.DS_Store` (see `.gitignore`; CI rejects them).
 - Python: use **uv** only (`uv add`, `uv run`). Never pip.
 - The version is the git tag; never edit a version field by hand.
@@ -399,31 +420,7 @@ uv run ruff format && uv run ruff check && uv run pytest && uv audit --preview-f
 @AGENTS.md
 
 ### END
-### FILE LICENSE exec=0 bytes=1066 encoding=utf-8
-MIT License
-
-Copyright (c) 2026 Test User
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-### END
-### FILE README.md exec=0 bytes=297 encoding=utf-8
+### FILE README.md exec=0 bytes=385 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -436,7 +433,7 @@ Run these before opening a PR. CI runs the same ones.
 uv run ruff format && uv run ruff check && uv run pytest && uv audit --preview-features audit-command
 ```
 
-`main` is protected: open a PR; the `ci` check must pass before merging (squash only).
+GitHub Actions is disabled and no ruleset is installed for this private repo on GitHub Free. Run checks locally. Agents still work on branches and open PRs (see `AGENTS.md`).
 
 ### END
 ### FILE SECURITY.md exec=0 bytes=213 encoding=utf-8
@@ -447,13 +444,12 @@ Please report vulnerabilities privately via
 Do not open public issues for security problems.
 
 ### END
-### FILE pyproject.toml exec=0 bytes=929 encoding=utf-8
+### FILE pyproject.toml exec=0 bytes=913 encoding=utf-8
 [project]
 name = "quiet-otter"
 dynamic = ["version"]
 description = "a test project"
 readme = "README.md"
-license = "MIT"
 authors = [{ name = "Test User" }]
 requires-python = ">=3.14"
 dependencies = []

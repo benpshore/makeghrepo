@@ -1,6 +1,6 @@
 """GitHub setup via the ``gh`` CLI (which owns auth; we never touch tokens).
 
-Every step is idempotent, so ``makeghrepo configure OWNER/REPO`` can be re-run
+Every step is idempotent, so ``makeghrepo NAME`` can be re-run
 after a partial failure.
 """
 
@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 RULESET_NAME = "protect-main"
+REVIEW_RULESET_NAME = "require-pr-and-ci"
 REQUIRED_CHECK = "ci"  # must match the job name in templates/*/.github/workflows/ci.yml
 GITHUB_ACTIONS_APP_ID = 15368  # only GitHub Actions may satisfy the required check
 LABELS = {"epic": "3E4B9E", "task": "C5DEF5"}
@@ -64,8 +65,7 @@ def create_repo(repo: str, source: Path, description: str, private: bool) -> Non
 
 
 def ruleset_body() -> dict[str, Any]:
-    """PRs only, up-to-date CI must pass, no force-push/delete. Zero approvals: you can't
-    approve your own PR on a solo repo."""
+    """History protections apply to everyone, including the owner."""
     return {
         "name": RULESET_NAME,
         "target": "branch",
@@ -76,6 +76,17 @@ def ruleset_body() -> dict[str, Any]:
             {"type": "deletion"},
             {"type": "non_fast_forward"},
             {"type": "required_linear_history"},
+        ],
+    }
+
+
+def review_ruleset_body(owner_id: int) -> dict[str, Any]:
+    """Only the personal repository owner may push without a PR or passing CI."""
+    return {
+        **ruleset_body(),
+        "name": REVIEW_RULESET_NAME,
+        "bypass_actors": [{"actor_type": "User", "actor_id": owner_id, "bypass_mode": "always"}],
+        "rules": [
             {
                 "type": "pull_request",
                 "parameters": {
@@ -103,12 +114,79 @@ def ruleset_body() -> dict[str, Any]:
 
 
 def configure_ruleset(repo: str) -> None:
-    existing = api("GET", f"repos/{repo}/rulesets?includes_parents=false") or []
-    match = next((r["id"] for r in existing if r.get("name") == RULESET_NAME), None)
-    if match:
-        api("PUT", f"repos/{repo}/rulesets/{match}", ruleset_body())
-    else:
-        api("POST", f"repos/{repo}/rulesets", ruleset_body())
+    # Use GitHub's repository owner, never the caller or commit author identity.
+    owner = api("GET", f"repos/{repo}")["owner"]
+    owner_id = owner.get("id")
+    if (
+        owner.get("type") != "User"
+        or not isinstance(owner_id, int)
+        or isinstance(owner_id, bool)
+        or not 0 < owner_id < 2**64
+        or owner.get("login", "").lower() != repo.split("/")[0].lower()
+    ):
+        raise GhError("owner push bypass requires a personal repository with a verified owner ID")
+
+    bodies = [ruleset_body(), review_ruleset_body(owner_id)]
+    existing = []
+    page = 1
+    while True:
+        batch = api("GET", f"repos/{repo}/rulesets?includes_parents=false&per_page=100&page={page}")
+        existing.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+
+    ids: dict[str, int] = {}
+    saved_rules: dict[str, dict[str, Any]] = {}
+    # Read and validate both full bodies before writing anything. Lists omit
+    # rules/bypasses. Refuse custom scopes and conflicting gate policies rather
+    # than silently granting a wider bypass or dropping an existing requirement.
+    for body in bodies:
+        name = body["name"]
+        matches = [r for r in existing if r.get("name") == name]
+        if len(matches) > 1:
+            raise GhError(f"duplicate ruleset {name!r}; reconcile it manually before configuring")
+        rules: dict[str, Any] = {}
+        if matches:
+            ids[name] = matches[0]["id"]
+            saved = api("GET", f"repos/{repo}/rulesets/{ids[name]}")
+            if any(saved.get(k) != body[k] for k in ("target", "enforcement", "conditions")) or (
+                saved.get("bypass_actors") not in ([], body["bypass_actors"])
+            ):
+                raise GhError(f"customized ruleset {name!r}; review its scope/bypasses manually")
+            for rule in saved["rules"]:
+                if rule["type"] in rules:
+                    raise GhError(f"duplicate rule in {name!r}; reconcile it manually")
+                rules[rule["type"]] = rule
+        saved_rules[name] = rules
+
+    history, review = bodies
+    legacy = saved_rules[RULESET_NAME]
+    gates = saved_rules[REVIEW_RULESET_NAME]
+    gate_types = {rule["type"] for rule in review["rules"]}
+    if gates.keys() - gate_types:
+        raise GhError(f"customized rules in {REVIEW_RULESET_NAME!r}; cannot grant owner bypass")
+    for index, default in enumerate(review["rules"]):
+        kind = default["type"]
+        if kind in legacy and kind in gates and legacy[kind] != gates[kind]:
+            raise GhError(f"conflicting {kind} rules; reconcile them manually before configuring")
+        # Preserve extra checks/review parameters, including fields GitHub adds.
+        review["rules"][index] = gates.get(kind, legacy.get(kind, default))
+    history["rules"] = list(
+        (
+            {r["type"]: r for r in history["rules"]}
+            | {kind: rule for kind, rule in legacy.items() if kind not in gate_types}
+        ).values()
+    )
+
+    # Install the replacement gate before removing the legacy gate. If either
+    # request fails, an existing protected repo retains its PR/CI requirements.
+    for body in (review, history):
+        match = ids.get(body["name"])
+        if match:
+            api("PUT", f"repos/{repo}/rulesets/{match}", body)
+        else:
+            api("POST", f"repos/{repo}/rulesets", body)
 
 
 FIND_PROJECT_QUERY = """
