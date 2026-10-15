@@ -16,6 +16,7 @@ from makeghrepo_beta.cloud_contract import (
     decode,
     integer,
     inventory,
+    prepare_fetch,
     require,
     validate_artifact,
     validate_run,
@@ -123,7 +124,8 @@ def install(plan: CloudPlan, payload: dict, artifact: dict, run: dict, destinati
 def consume(plan: CloudPlan, run_id: int, destination: Path, api: GhAPI | None = None) -> str:
     # Reconstruct even direct Python callers' values before any remote read.
     plan = CloudPlan.parse(canonical(plan.document()))
-    integer(run_id, "run id")
+    request = prepare_fetch(plan, run_id, destination)
+    destination = Path(request["destination"])
     api = api or GhAPI()
     prefix = f"repos/{REPOSITORY}/actions"
     run_endpoint = f"{prefix}/runs/{run_id}"

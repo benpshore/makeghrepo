@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import copy
+import base64
+import csv
+import hashlib
 import io
 import json
 import stat
@@ -30,6 +33,25 @@ def zip_bytes(payload):
     return stream.getvalue()
 
 
+def fixture_wheel(source):
+    info = "makeghrepo_seed-0.0.0.dist-info/"
+    files = {
+        "makeghrepo_seed/__init__.py": (source, 0o644),
+        info + "METADATA": (b"Metadata-Version: 2.3\nName: makeghrepo-seed\n"
+                            b"Version: 0.0.0\nRequires-Python: >=3.14\n", 0o644),
+        info + "WHEEL": (b"Wheel-Version: 1.0\nTag: py3-none-any\nRoot-Is-Purelib: true\n", 0o644),
+        info + "entry_points.txt": (b"[console_scripts]\nmakeghrepo-seed = makeghrepo_seed:main\n", 0o644),
+    }
+    records = io.StringIO()
+    writer = csv.writer(records, lineterminator="\n")
+    for name, (content, _mode) in files.items():
+        digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+        writer.writerow([name, "sha256=" + digest, str(len(content))])
+    writer.writerow([info + "RECORD", "", ""])
+    files[info + "RECORD"] = (records.getvalue().encode(), 0o644)
+    return zip_bytes(files)
+
+
 def fixture(plan):
     golden = (ROOT / "tests/golden/python.golden").read_text()
     manifest = golden.split("### FILE pyproject.toml", 1)[1].split("\n", 1)[1]
@@ -44,7 +66,8 @@ def fixture(plan):
         "source/src/makeghrepo_seed/__init__.py": (b"fixture source\n", 0o644),
         "source/tests/test_smoke.py": (b"fixture test\n", 0o644),
         "source/README.md": (b"fixture readme\n", 0o644),
-        contract.WHEEL: (b"fixture wheel, deliberately never executed\n", 0o644),
+        contract.WHEEL: (fixture_wheel(b"fixture source\n"), 0o644),
+        "build/requirements.lock": (b"fixture hash-locked build tools, never executed\n", 0o644),
     }
     result = {
         "schema": 1, "asset": plan.asset(), "asset_key": plan.asset_key,

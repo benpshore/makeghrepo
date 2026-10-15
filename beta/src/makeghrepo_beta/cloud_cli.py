@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from makeghrepo_beta.cloud_contract import CloudPlan, canonical
+from makeghrepo_beta.cloud_contract import CloudPlan, canonical, prepare_fetch
 
 
 def main(argv: list[str]) -> None:
@@ -24,8 +24,11 @@ def main(argv: list[str]) -> None:
         parser.error("--run and --destination apply only to fetch")
     try:
         plan = CloudPlan(args.source, args.owner, args.name)
+        document = plan.document()
+        if args.operation == "fetch":
+            document = prepare_fetch(plan, args.run, args.destination)
         if args.operation == "plan" or args.dry_run:
-            print(canonical(plan.document()).decode(), end="")
+            print(canonical(document).decode(), end="")
             return
         from makeghrepo_beta.cloud_client import consume
 
