@@ -36,6 +36,21 @@ def test_ci_preserves_running_and_pending_main_runs(workflows):
     assert all("concurrency" not in job for job in ci["jobs"].values())
 
 
+def test_release_build_is_isolated_from_write_token(workflows):
+    release = yaml.safe_load((workflows / "release.yml").read_text())
+    # Repository-controlled builds run with explicit read-only permissions.
+    build = release["jobs"]["build"]
+    assert build["permissions"] == {"contents": "read"}
+
+    # The write token exists only on a fresh runner after the build completes.
+    publish = release["jobs"]["publish"]
+    assert publish["needs"] == "build"
+    assert publish["permissions"] == {"contents": "write"}
+    token_steps = [step for step in publish["steps"] if "GH_TOKEN" in step.get("env", {})]
+    assert len(token_steps) == 1
+    assert token_steps[0]["name"] == "Publish GitHub release"
+
+
 def test_auto_release_queues_instead_of_replacing_pending_runs(workflows):
     path = workflows / "auto-release.yml"
     if not path.exists():
