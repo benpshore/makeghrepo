@@ -233,6 +233,34 @@ class FoundationTests(unittest.TestCase):
         for token in ("--dry-run", "--render", "--owner", "--json", "-p", *LANGS):
             self.assertIn(token, help_text)
 
+    def test_cloud_project_name_retains_positional_and_options_first_forms(self):
+        for args in (
+            ["cloud", "python", "--render", str(self.dest)],
+            ["--render", str(self.dest), "cloud", "python"],
+            ["cloud", "--render", str(self.dest), "python"],
+            ["--owner", "cloud", "--render", str(self.dest), "cloud", "python"],
+        ):
+            with self.subTest(args=args):
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    cli.main([*args, "--dry-run", "--json"])
+                planned = json.loads(output.getvalue())
+                with (
+                    patch("makeghrepo_beta.execute.execute") as effect,
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    cli.main(args)
+                self.assertEqual(effect.call_args.args[0].name, "cloud")
+                self.assertEqual(effect.call_args.args[0].languages, ("python",))
+                self.assertEqual(json.loads(effect.call_args.args[0].as_json()), planned)
+        self.assertFalse(self.dest.exists())
+
+    def test_only_recognized_cloud_subcommands_are_dispatched(self):
+        for operation in ("plan", "fetch"):
+            args = [operation, "--source", "b" * 40, "--owner", "someone", "--name", "sample"]
+            with self.subTest(operation=operation), patch("makeghrepo_beta.cloud_cli.main") as cloud:
+                cli.main(["cloud", *args])
+                cloud.assert_called_once_with(args)
+
     def test_cli_json_without_dry_run_fails_before_writes(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
             cli.main(["sample", "--render", str(self.dest), "--json"])

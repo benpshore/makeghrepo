@@ -7,10 +7,12 @@ registry, Copier templates and renderer; it does **not** depend on or upgrade th
 uv tool environment; do not install both distributions into one Python environment
 because both carry the shared `makeghrepo` import package.
 
-This first increment supports transactional **offline generation**. It creates
+The offline path supports transactional **offline generation**. It creates
 the same starter files as stable `--render`, with the same fixed preview defaults.
-GitHub creation, repository capability checks, dependency installation and project
-checks are not yet exposed in beta. Omitting `--render` fails before effects,
+GitHub creation and publication remain unavailable in beta. The separate `cloud`
+path plans and consumes prebuilt assets using authenticated, read-only GitHub API
+calls. It performs no local daughter dependency installation or checks.
+On the offline path, omitting `--render` fails before effects,
 including with `--dry-run`. Existing stable and Rust commands retain their behavior.
 
 ```sh
@@ -64,7 +66,31 @@ from the repository root and review the manifest diff. CI checks it against trac
 files. Missing files, unsafe paths and source symlinks fail the build. The sdist
 carries the same manifest and payload.
 
+For the beta cloud contract, identity limits, recovery, test evidence and
+integration order, see [cloud assets](../docs/cloud-assets.md). Historical checkpoint
+CI exercised the actual producer and installed coexistence; the combined PR must
+pass those gates again. Live daughter provisioning remains disabled.
+
 See [the complete roadmap](../docs/roadmap.md) and
 [recovery contract](../docs/recovery.md). The ten-minute working-project target is
 a product goal requiring measured starter behavior, checks and recovery per preset;
-offline rendering alone does not establish it.
+offline rendering or prepared assets alone do not establish it.
+
+```sh
+makeghrepo-beta cloud plan \
+  --source "$REVIEWED_SOURCE_SHA" \
+  --owner example --name sample
+makeghrepo-beta cloud fetch \
+  --source "$REVIEWED_SOURCE_SHA" \
+  --owner example --name sample \
+  --run "$SUCCESSFUL_TRUSTED_CI_RUN_ID" \
+  --destination ./prepared-assets \
+  --dry-run
+```
+
+The source must be a reviewed full commit SHA, with a successful main-push or
+manual CI run that includes the prebuild producer. Existing main has no such
+producer yet. Dry-run checks local inputs and reports remote state as unverified;
+remove `--dry-run` to fetch and verify that existing result. The output is a
+prepared asset directory, not a created or cloned Git repository. Its package
+is always `makeghrepo-seed`; the daughter owner/name exist only in `identity.json`.
