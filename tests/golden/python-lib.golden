@@ -124,7 +124,7 @@ Closes #
 <!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
 
 ### END
-### FILE .github/workflows/auto-release.yml exec=0 bytes=3028 encoding=utf-8
+### FILE .github/workflows/auto-release.yml exec=0 bytes=4918 encoding=utf-8
 name: Auto-release
 
 # Every merge to main is a release: once this commit's `ci` check has passed,
@@ -148,16 +148,21 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      SHA: ${{ github.sha }}
+      contents: read
+      checks: read
+    outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+      skip: ${{ steps.guard.outputs.skip }}
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - name: Wait for this commit's ci check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           for _ in $(seq 1 75); do
@@ -175,7 +180,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
       - name: Already released?
         id: guard
         run: |
@@ -198,13 +203,60 @@ jobs:
           uv audit --locked --preview-features audit-command
           uv build
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Push tag and publish
+      - name: Save release artifacts
         if: steps.guard.outputs.skip != 'true'
+        id: artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: needs.build.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
+        run: |
+          mkdir dist
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > artifact.zip
+          unzip -q artifact.zip -d dist
+      - name: Tag
+        id: tag
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Push tag
         env:
           VERSION: ${{ steps.tag.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git push origin "refs/tags/v$VERSION"
-          gh release create "v$VERSION" dist/* --verify-tag --generate-notes
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+            push origin "refs/tags/v$VERSION"
+      - name: Publish
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v$VERSION" dist/* --verify-tag --generate-notes
 
 ### END
 ### FILE .github/workflows/ci.yml exec=0 bytes=1863 encoding=utf-8
@@ -307,7 +359,7 @@ jobs:
           category: "/language:${{ matrix.language }}"
 
 ### END
-### FILE .github/workflows/release.yml exec=0 bytes=1497 encoding=utf-8
+### FILE .github/workflows/release.yml exec=0 bytes=1608 encoding=utf-8
 name: Release
 
 # Publish: push a tag, e.g. `git tag v0.1.1 && git push --tags`.
@@ -337,21 +389,25 @@ jobs:
       - run: uv run pytest
       - run: uv audit --locked --preview-features audit-command
       - run: uv build
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Upload release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-dist
-          path: dist/
-  release:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+          name: release-assets
+          path: dist
+          if-no-files-found: error
+
+  publish:
     needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: release-dist
-          path: dist/
+          name: release-assets
+          path: dist
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -524,10 +580,11 @@ postgres-data/
 3.14
 
 ### END
-### FILE AGENTS.md exec=0 bytes=582 encoding=utf-8
+### FILE AGENTS.md exec=0 bytes=761 encoding=utf-8
 # quiet-otter
 
-- `main` is protected. Work on a branch and open a PR (`gh pr create --fill`); the `ci` check must pass.
+- Agents must work on a branch and open a PR (`gh pr create --fill`); never push directly to `main` or use the owner's bypass, even when authenticated as the owner.
+- The `ci` check must pass for agent-authored work. Only the human owner's own work may use the direct-push exception.
 - Never commit secrets, `.env` files, databases or `.DS_Store` (see `.gitignore`; CI rejects them).
 - Python: use **uv** only (`uv add`, `uv run`). Never pip.
 - The version is the git tag; never edit a version field by hand.
@@ -543,31 +600,7 @@ uv run ruff format && uv run ruff check && uv run pytest && uv audit --preview-f
 @AGENTS.md
 
 ### END
-### FILE LICENSE exec=0 bytes=1066 encoding=utf-8
-MIT License
-
-Copyright (c) 2026 Test User
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-### END
-### FILE README.md exec=0 bytes=297 encoding=utf-8
+### FILE README.md exec=0 bytes=685 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -580,7 +613,9 @@ Run these before opening a PR. CI runs the same ones.
 uv run ruff format && uv run ruff check && uv run pytest && uv audit --preview-features audit-command
 ```
 
-`main` is protected: open a PR; the `ci` check must pass before merging (squash only).
+The owner (`someone`) may push their own work directly to `main` without a PR or passing CI. CI still runs after a push; releases retain their CI gates. Force-push, deletion, and merge commits remain blocked for everyone.
+
+Other accounts must use a squash PR with passing, up-to-date `ci`. Agents must use PRs and CI even when authenticated as the owner (see `AGENTS.md`). GitHub checks the pushing account, so enforcing a human/agent boundary requires separate credentials.
 
 ### END
 ### FILE SECURITY.md exec=0 bytes=213 encoding=utf-8
@@ -591,13 +626,12 @@ Please report vulnerabilities privately via
 Do not open public issues for security problems.
 
 ### END
-### FILE pyproject.toml exec=0 bytes=877 encoding=utf-8
+### FILE pyproject.toml exec=0 bytes=861 encoding=utf-8
 [project]
 name = "quiet-otter"
 dynamic = ["version"]
 description = "a test project"
 readme = "README.md"
-license = "MIT"
 authors = [{ name = "Test User" }]
 requires-python = ">=3.14"
 dependencies = []

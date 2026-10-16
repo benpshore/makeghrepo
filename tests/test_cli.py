@@ -19,6 +19,7 @@ def gh(tmp_path, monkeypatch):
     monkeypatch.setattr(github, "repo_exists", lambda r: r in state["existing"])
     monkeypatch.setattr(github, "is_private", lambda r: False)
     monkeypatch.setattr(github, "create_repo", lambda *a: state["calls"].append(("create", *a)))
+    monkeypatch.setattr(gitops, "remote_has_main", lambda _: False)
 
     def configure_all(repo, *, private, push, log):
         state["calls"].append(("configure", repo, private, push is not None))
@@ -61,6 +62,86 @@ def test_private(tmp_path, gh):
     assert result.exit_code == 0, result.output
     assert gh["calls"][0][-1] is True
     assert not (tmp_path / "secret/.github/workflows/codeql.yml").exists()
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("choice", [None, "none", "MIT"])
+def test_license_is_opt_in_and_recorded(tmp_path, gh, private, choice):
+    args = ["licensing", "python"]
+    if private:
+        args += ["--private"]
+    if choice is not None:
+        args += ["--license", choice]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    dest = tmp_path / "licensing"
+    assert gitops.read_marker(dest)["license"] == (choice or "none")
+    assert (dest / "LICENSE").exists() is (choice == "MIT")
+
+
+def test_unsupported_license_is_rejected_before_github(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(github, "current_user", lambda: calls.append("user"))
+    result = runner.invoke(app, ["licensing", "--license", "arbitrary"])
+    assert result.exit_code == 2
+    assert "arbitrary" in result.output
+    assert calls == []
+    assert not (tmp_path / "licensing").exists()
+
+
+@pytest.mark.parametrize("choice", ["none", "MIT"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_resume_preserves_license_files_and_recorded_choice(tmp_path, gh, choice, explicit):
+    assert runner.invoke(app, ["licensing", "--license", choice]).exit_code == 0
+    dest = tmp_path / "licensing"
+    license_path = dest / "LICENSE"
+    license_path.write_text("Custom terms added after bootstrap.\n")
+    marker_before = (dest / ".git/makeghrepo.json").read_bytes()
+    args = ["licensing", "--license", choice] if explicit else ["licensing"]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert license_path.read_text() == "Custom terms added after bootstrap.\n"
+    assert (dest / ".git/makeghrepo.json").read_bytes() == marker_before
+
+
+@pytest.mark.parametrize("choice,requested", [("none", "MIT"), ("MIT", "none")])
+def test_resume_refuses_an_explicit_license_change(tmp_path, gh, choice, requested):
+    assert runner.invoke(app, ["licensing", "--license", choice]).exit_code == 0
+    gh["calls"].clear()
+    result = runner.invoke(app, ["licensing", "--license", requested])
+    assert result.exit_code == 1
+    assert "a resume never changes licensing" in result.output
+    assert gh["calls"] == []
+    assert (tmp_path / "licensing/LICENSE").exists() is (choice == "MIT")
+
+
+def test_resume_legacy_marker_retains_mit(tmp_path, gh):
+    assert runner.invoke(app, ["licensing", "--license", "MIT"]).exit_code == 0
+    dest = tmp_path / "licensing"
+    marker = gitops.read_marker(dest)
+    del marker["license"]
+    gitops.write_marker(dest, marker)
+    license_before = (dest / "LICENSE").read_bytes()
+    assert runner.invoke(app, ["licensing"]).exit_code == 0
+    assert (dest / "LICENSE").read_bytes() == license_before
+    assert "license" not in gitops.read_marker(dest)
+    gh["calls"].clear()
+    result = runner.invoke(app, ["licensing", "--license", "none"])
+    assert result.exit_code == 1
+    assert "was created with license MIT" in result.output
+    assert gh["calls"] == []
+
+
+@pytest.mark.parametrize("invalid", [None, False, "arbitrary"])
+def test_resume_rejects_an_invalid_recorded_license(tmp_path, gh, invalid):
+    assert runner.invoke(app, ["licensing"]).exit_code == 0
+    dest = tmp_path / "licensing"
+    gitops.write_marker(dest, {**gitops.read_marker(dest), "license": invalid})
+    gh["calls"].clear()
+    result = runner.invoke(app, ["licensing"])
+    assert result.exit_code == 1
+    assert "invalid recorded license" in result.output
+    assert gh["calls"] == []
 
 
 def test_lib_flag_requires_python(tmp_path, gh):
@@ -131,6 +212,61 @@ def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):
     assert result.exit_code == 0, result.output
     assert [c.message.strip() for c in git.Repo(tmp_path / "fixme").iter_commits()] == ["setup"]
     assert gh["calls"][0][0] == "create"
+
+
+@pytest.mark.parametrize("remote_exists", [False, True])
+def test_check_failure_reports_observed_effects_and_exact_target(
+    tmp_path, gh, monkeypatch, remote_exists
+):
+    def broken(*args):
+        raise RuntimeError("native extension failed: missing ruby.h")
+
+    monkeypatch.setattr(scaffold, "smoke_test", broken)
+    # The first attempt leaves a marker but no commit; a later invocation can
+    # observe a remote made by an earlier version, external actor or attempt.
+    assert runner.invoke(app, ["recover", "ruby"]).exit_code == 1
+    if remote_exists:
+        gh["existing"].add("me/recover")
+    result = runner.invoke(app, ["recover"])
+    assert result.exit_code == 1
+    assert "Nothing was published" not in result.output
+    assert "before its GitHub creation/push steps" in result.output
+    observation = "found a repository" if remote_exists else "found no repository"
+    assert f"{observation} at https://github.com/me/recover" in result.output
+    assert str(tmp_path / "recover") in result.output
+    assert gh["calls"] == []
+
+
+def test_remote_create_failure_reports_uncertain_effect_and_target(tmp_path, gh, monkeypatch):
+    def create_then_fail(repo, *args):
+        gh["existing"].add(repo)
+        raise github.GhError("connection lost after remote creation")
+
+    monkeypatch.setattr(github, "create_repo", create_then_fail)
+    result = runner.invoke(app, ["uncertain"])
+    assert result.exit_code == 1
+    assert "remote creation may have completed" in result.output
+    assert "https://github.com/me/uncertain" in result.output
+    assert str(tmp_path / "uncertain") in result.output
+    assert "me/uncertain" in gh["existing"]
+    assert gitops.read_marker(tmp_path / "uncertain") is not None
+
+
+def test_remote_read_failure_does_not_claim_creation_was_attempted(tmp_path, gh, monkeypatch):
+    assert runner.invoke(app, ["existing"]).exit_code == 0
+    gh["existing"].add("me/existing")
+    gh["calls"].clear()
+
+    def read_fails(repo):
+        raise github.GhError("visibility lookup unavailable")
+
+    monkeypatch.setattr(github, "is_private", read_fails)
+    result = runner.invoke(app, ["existing"])
+    assert result.exit_code == 1
+    assert "creation/push was not attempted by this invocation" in result.output
+    assert "remote creation may have completed" not in result.output
+    assert "https://github.com/me/existing" in result.output
+    assert gh["calls"] == []
 
 
 def test_rerun_after_failed_create_keeps_private(tmp_path, gh, monkeypatch):
@@ -255,3 +391,23 @@ def test_rust_refuses_a_name_starting_with_a_digit(tmp_path, gh):
 def test_python_accepts_a_name_starting_with_a_digit(tmp_path, gh):
     assert runner.invoke(app, ["7up", "python"]).exit_code == 0
     assert (tmp_path / "7up" / "src" / "_7up").is_dir()
+
+
+def test_resume_lookup_failure_never_pushes_or_configures(tmp_path, gh, monkeypatch):
+    assert runner.invoke(app, ["again"]).exit_code == 0
+    gh["existing"].add("me/again")
+    gh["calls"].clear()
+    dest = tmp_path / "again"
+    (dest / "later.txt").write_text("local work that must not be published")
+    gitops.commit_all(dest, "later local work")
+    before = git.Repo(dest).head.commit.hexsha
+
+    def unreachable(_):
+        raise git.GitCommandError("git ls-remote", 128, stderr="temporary connection failure")
+
+    monkeypatch.setattr(gitops, "remote_has_main", unreachable)
+    result = runner.invoke(app, ["again"])
+    assert result.exit_code == 1
+    assert "Could not check remote main; refusing to push" in result.output
+    assert gh["calls"] == []
+    assert git.Repo(dest).head.commit.hexsha == before
