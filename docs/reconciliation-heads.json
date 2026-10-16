@@ -1,0 +1,296 @@
+{
+  "schema": 1,
+  "repository": "benpshore/makeghrepo",
+  "inspected_at": "2026-10-15",
+  "integration_pr": 178,
+  "open_pr_count": 17,
+  "policy": "No additional PR; no closure, deletion, merge or existing-head update during this checkpoint",
+  "heads": [
+    {
+      "ref": "refs/heads/agent/olga-input-contract",
+      "sha": "b0c25efca06b3c73b4b576714c8050304044e3b3"
+    },
+    {
+      "ref": "refs/heads/agent/olga-uv-check-policy",
+      "sha": "02106e409c2d3a2525a4d4286b5031baff7ad92b"
+    },
+    {
+      "ref": "refs/heads/agent/olga/packaged-python-lock",
+      "sha": "891b9f62b309995357f67003159e7c8f53249509"
+    },
+    {
+      "ref": "refs/heads/agent/rusty-rick/issue141-no-ci-no-pr",
+      "sha": "d6fae9a8e97eb40111742b9d2aebe034b9c657d1"
+    },
+    {
+      "ref": "refs/heads/agent/rusty-rick/issue143-generated-releases",
+      "sha": "894f976cec3bd356f5555188ef8aa4e7122a14c0"
+    },
+    {
+      "ref": "refs/heads/agent/rusty-rick/issue144-own-release",
+      "sha": "8459b3c2ab9f612e548d958be28138cb0a6630e9"
+    },
+    {
+      "ref": "refs/heads/checkpoint/olga-145-172-20261005",
+      "sha": "b8f14f0e8c1a81ffe1e16fbfc0b9102388a6fc9c"
+    },
+    {
+      "ref": "refs/heads/ci/team-readiness-prep",
+      "sha": "5c2270dfc4a351043107737e5a3d4030af8b3773"
+    },
+    {
+      "ref": "refs/heads/codex/assess-go-release-vulnerability-and-propose-fix",
+      "sha": "6dfc03649ada60200a0b1f54f1709a7ffde4fc76"
+    },
+    {
+      "ref": "refs/heads/codex/beta-plan-foundation",
+      "sha": "427135a63a88b54f53e046e81725a2364b72b10c"
+    },
+    {
+      "ref": "refs/heads/codex/beta-preflight-recovery",
+      "sha": "f0210d049631e6f04d80a1345d652e181fffe99b"
+    },
+    {
+      "ref": "refs/heads/codex/fix-ruby-release-workflow-vulnerability",
+      "sha": "a8e33a0fe46d6a6908c97c713e2068b0e5fdff62"
+    },
+    {
+      "ref": "refs/heads/codex/fix-rust-release-workflow-vulnerability",
+      "sha": "69437b1c04b021141343f0067df00f5e0ada0e29"
+    },
+    {
+      "ref": "refs/heads/codex/fix-vulnerability-in-auto-release-workflow",
+      "sha": "fbf597f908aa0b31dedbf7ad9369a9accb51946e"
+    },
+    {
+      "ref": "refs/heads/codex/propose-fix-for-auto-release-vulnerability",
+      "sha": "c8832c027f35900bc2b3599f39f841ca2a31ac87"
+    },
+    {
+      "ref": "refs/heads/codex/propose-fix-for-cmake-release-vulnerability",
+      "sha": "403fb511e2c801dbe0d4a0b0034d244cdb9e1934"
+    },
+    {
+      "ref": "refs/heads/codex/propose-fix-for-github-actions-vulnerability",
+      "sha": "e942963648693e314e629e8d41c7c5b56401c09a"
+    },
+    {
+      "ref": "refs/heads/codex/python-bootstrap-preflight",
+      "sha": "cc0af490ddb67927fa569a5b590ba3cd5aacbd01"
+    },
+    {
+      "ref": "refs/heads/dependabot/uv/python-75526d469b",
+      "sha": "e0f2fe30ee8f44189b0be9fb31ef1b2d68b33fcc"
+    },
+    {
+      "ref": "refs/heads/main",
+      "sha": "bf1ed67859d8786c16f41196765d3ef1582e685f"
+    }
+  ],
+  "prs": [
+    {
+      "number": 178,
+      "title": "feat: isolate beta offline generation with shared planning and recovery",
+      "url": "https://github.com/benpshore/makeghrepo/pull/178",
+      "head": "codex/beta-plan-foundation",
+      "head_sha": "427135a63a88b54f53e046e81725a2364b72b10c",
+      "base": "main",
+      "base_sha": "bf1ed67859d8786c16f41196765d3ef1582e685f",
+      "draft": false,
+      "updated_at": "2026-10-14T07:23:58Z",
+      "changed_files": 21
+    },
+    {
+      "number": 177,
+      "title": "fix: gate Python bootstrap publication on required setup and readback",
+      "url": "https://github.com/benpshore/makeghrepo/pull/177",
+      "head": "codex/python-bootstrap-preflight",
+      "head_sha": "cc0af490ddb67927fa569a5b590ba3cd5aacbd01",
+      "base": "main",
+      "base_sha": "bf1ed67859d8786c16f41196765d3ef1582e685f",
+      "draft": true,
+      "updated_at": "2026-10-11T19:57:10Z",
+      "changed_files": 15
+    },
+    {
+      "number": 176,
+      "title": "build(deps): bump the python group with 2 updates",
+      "url": "https://github.com/benpshore/makeghrepo/pull/176",
+      "head": "dependabot/uv/python-75526d469b",
+      "head_sha": "e0f2fe30ee8f44189b0be9fb31ef1b2d68b33fcc",
+      "base": "main",
+      "base_sha": "bf1ed67859d8786c16f41196765d3ef1582e685f",
+      "draft": false,
+      "updated_at": "2026-10-09T20:30:36Z",
+      "changed_files": 1
+    },
+    {
+      "number": 174,
+      "title": "Prevent uv overrides from bypassing local check policy",
+      "url": "https://github.com/benpshore/makeghrepo/pull/174",
+      "head": "agent/olga-uv-check-policy",
+      "head_sha": "02106e409c2d3a2525a4d4286b5031baff7ad92b",
+      "base": "main",
+      "base_sha": "bf1ed67859d8786c16f41196765d3ef1582e685f",
+      "draft": true,
+      "updated_at": "2026-10-07T04:19:46Z",
+      "changed_files": 3
+    },
+    {
+      "number": 175,
+      "title": "Bootstrap supported Python projects from a packaged lock without local package execution",
+      "url": "https://github.com/benpshore/makeghrepo/pull/175",
+      "head": "agent/olga/packaged-python-lock",
+      "head_sha": "891b9f62b309995357f67003159e7c8f53249509",
+      "base": "main",
+      "base_sha": "bf1ed67859d8786c16f41196765d3ef1582e685f",
+      "draft": true,
+      "updated_at": "2026-10-05T11:33:09Z",
+      "changed_files": 12
+    },
+    {
+      "number": 145,
+      "title": "fix: verify complete, version-consistent releases before publication",
+      "url": "https://github.com/benpshore/makeghrepo/pull/145",
+      "head": "agent/rusty-rick/issue144-own-release",
+      "head_sha": "8459b3c2ab9f612e548d958be28138cb0a6630e9",
+      "base": "main",
+      "base_sha": "bf1ed67859d8786c16f41196765d3ef1582e685f",
+      "draft": false,
+      "updated_at": "2026-10-05T10:16:17Z",
+      "changed_files": 9
+    },
+    {
+      "number": 173,
+      "title": "Checkpoint only: validate reviewed #145 and #172 together",
+      "url": "https://github.com/benpshore/makeghrepo/pull/173",
+      "head": "checkpoint/olga-145-172-20261005",
+      "head_sha": "b8f14f0e8c1a81ffe1e16fbfc0b9102388a6fc9c",
+      "base": "main",
+      "base_sha": "bf1ed67859d8786c16f41196765d3ef1582e685f",
+      "draft": true,
+      "updated_at": "2026-10-05T09:35:54Z",
+      "changed_files": 16
+    },
+    {
+      "number": 172,
+      "title": "Validate the fixed positional grammar before bootstrap",
+      "url": "https://github.com/benpshore/makeghrepo/pull/172",
+      "head": "agent/olga-input-contract",
+      "head_sha": "b0c25efca06b3c73b4b576714c8050304044e3b3",
+      "base": "main",
+      "base_sha": "bf1ed67859d8786c16f41196765d3ef1582e685f",
+      "draft": true,
+      "updated_at": "2026-10-05T08:32:03Z",
+      "changed_files": 8
+    },
+    {
+      "number": 147,
+      "title": "fix: release generated public stacks with coherent build versions",
+      "url": "https://github.com/benpshore/makeghrepo/pull/147",
+      "head": "agent/rusty-rick/issue143-generated-releases",
+      "head_sha": "894f976cec3bd356f5555188ef8aa4e7122a14c0",
+      "base": "main",
+      "base_sha": "bf1ed67859d8786c16f41196765d3ef1582e685f",
+      "draft": true,
+      "updated_at": "2026-10-05T08:07:41Z",
+      "changed_files": 13
+    },
+    {
+      "number": 142,
+      "title": "feat: add public --no-ci and --no-pr creation policies in Python and Rust",
+      "url": "https://github.com/benpshore/makeghrepo/pull/142",
+      "head": "agent/rusty-rick/issue141-no-ci-no-pr",
+      "head_sha": "d6fae9a8e97eb40111742b9d2aebe034b9c657d1",
+      "base": "main",
+      "base_sha": "bf1ed67859d8786c16f41196765d3ef1582e685f",
+      "draft": true,
+      "updated_at": "2026-10-04T15:52:28Z",
+      "changed_files": 22
+    },
+    {
+      "number": 136,
+      "title": "fix: isolate release builds from write tokens",
+      "url": "https://github.com/benpshore/makeghrepo/pull/136",
+      "head": "codex/fix-vulnerability-in-auto-release-workflow",
+      "head_sha": "fbf597f908aa0b31dedbf7ad9369a9accb51946e",
+      "base": "main",
+      "base_sha": "37e335d5eed473d9ac96bc46a0a08a7ad081626c",
+      "draft": false,
+      "updated_at": "2026-10-01T05:32:30Z",
+      "changed_files": 10
+    },
+    {
+      "number": 134,
+      "title": "Isolate generated auto-release builds from write credentials",
+      "url": "https://github.com/benpshore/makeghrepo/pull/134",
+      "head": "codex/propose-fix-for-auto-release-vulnerability",
+      "head_sha": "c8832c027f35900bc2b3599f39f841ca2a31ac87",
+      "base": "main",
+      "base_sha": "37e335d5eed473d9ac96bc46a0a08a7ad081626c",
+      "draft": false,
+      "updated_at": "2026-09-29T10:07:47Z",
+      "changed_files": 9
+    },
+    {
+      "number": 135,
+      "title": "fix: isolate generated release builds from write tokens",
+      "url": "https://github.com/benpshore/makeghrepo/pull/135",
+      "head": "codex/fix-rust-release-workflow-vulnerability",
+      "head_sha": "69437b1c04b021141343f0067df00f5e0ada0e29",
+      "base": "main",
+      "base_sha": "37e335d5eed473d9ac96bc46a0a08a7ad081626c",
+      "draft": false,
+      "updated_at": "2026-09-29T10:06:19Z",
+      "changed_files": 41
+    },
+    {
+      "number": 133,
+      "title": "Isolate generated release publishing from project code",
+      "url": "https://github.com/benpshore/makeghrepo/pull/133",
+      "head": "codex/assess-go-release-vulnerability-and-propose-fix",
+      "head_sha": "6dfc03649ada60200a0b1f54f1709a7ffde4fc76",
+      "base": "main",
+      "base_sha": "37e335d5eed473d9ac96bc46a0a08a7ad081626c",
+      "draft": false,
+      "updated_at": "2026-09-29T10:05:55Z",
+      "changed_files": 41
+    },
+    {
+      "number": 131,
+      "title": "fix: isolate release publishing credentials",
+      "url": "https://github.com/benpshore/makeghrepo/pull/131",
+      "head": "codex/fix-ruby-release-workflow-vulnerability",
+      "head_sha": "a8e33a0fe46d6a6908c97c713e2068b0e5fdff62",
+      "base": "main",
+      "base_sha": "37e335d5eed473d9ac96bc46a0a08a7ad081626c",
+      "draft": false,
+      "updated_at": "2026-09-29T10:05:52Z",
+      "changed_files": 42
+    },
+    {
+      "number": 132,
+      "title": "Disable npm lifecycle scripts in release workflows",
+      "url": "https://github.com/benpshore/makeghrepo/pull/132",
+      "head": "codex/propose-fix-for-github-actions-vulnerability",
+      "head_sha": "e942963648693e314e629e8d41c7c5b56401c09a",
+      "base": "main",
+      "base_sha": "37e335d5eed473d9ac96bc46a0a08a7ad081626c",
+      "draft": false,
+      "updated_at": "2026-09-29T10:04:58Z",
+      "changed_files": 11
+    },
+    {
+      "number": 130,
+      "title": "Isolate release builds from repository write tokens",
+      "url": "https://github.com/benpshore/makeghrepo/pull/130",
+      "head": "codex/propose-fix-for-cmake-release-vulnerability",
+      "head_sha": "403fb511e2c801dbe0d4a0b0034d244cdb9e1934",
+      "base": "main",
+      "base_sha": "37e335d5eed473d9ac96bc46a0a08a7ad081626c",
+      "draft": false,
+      "updated_at": "2026-09-29T10:04:44Z",
+      "changed_files": 42
+    }
+  ]
+}

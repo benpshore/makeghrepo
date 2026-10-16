@@ -13,6 +13,7 @@ import zipfile
 from pathlib import Path
 
 import yaml
+from release_fixtures import verify_transfer, write_fixtures
 
 ROOT = Path(__file__).resolve().parents[1]
 record = runpy.run_path(str(ROOT / "scripts/release-inventory"))["record"]
@@ -27,35 +28,8 @@ class ReleaseInventoryTests(unittest.TestCase):
             dist = root / "dist"
             dist.mkdir()
             version, source = "0.36.0", "a" * 40
-            slots = {
-                "python": [
-                    f"makeghrepo-{version}-py3-none-any.whl",
-                    f"makeghrepo-{version}.tar.gz",
-                ],
-                **{
-                    target: [f"makeghrepo-{target}", f"makeghrepo-{target}.sha256"]
-                    for target in (
-                        "x86_64-unknown-linux-gnu",
-                        "aarch64-unknown-linux-gnu",
-                        "aarch64-apple-darwin",
-                    )
-                },
-            }
-            for slot, names in slots.items():
-                assets = []
-                for name in names:
-                    content = name.encode()
-                    (dist / name).write_bytes(content)
-                    assets.append(
-                        {
-                            "name": name,
-                            "size": len(content),
-                            "sha256": hashlib.sha256(content).hexdigest(),
-                        }
-                    )
-                (dist / f"{slot}.json").write_text(
-                    json.dumps({"version": version, "source": source, "assets": assets})
-                )
+            write_fixtures(dist, version, source)
+            self.assertEqual(verify_transfer(dist, version, source), 10)
             env = os.environ | {"VERSION": version, "SOURCE": source}
             missing = dist / "makeghrepo-aarch64-apple-darwin"
             content = missing.read_bytes()
@@ -94,21 +68,26 @@ class ReleaseInventoryTests(unittest.TestCase):
                 "from pathlib import Path\n"
                 "args=sys.argv[1:]\n"
                 "state=Path('state.json')\n"
-                "data=json.loads(state.read_text()) if state.exists() else {}\n"
+                "data=json.loads(state.read_text()) if state.exists() else {'latest':'v99.0.0'}\n"
+                "if args[0]=='release': assert args[2]=='v'+os.environ['VERSION']\n"
                 "if args[0]=='api':\n"
                 " if 'git/ref/tags' in args[1]:\n"
                 "  if not data.get('tag'): sys.exit(1)\n"
                 "  print(json.dumps({'object':{'type':'tag','sha':'c'*40}}))\n"
                 " elif 'git/tags/' in args[1]:\n"
-                "  print(json.dumps({'object':{'type':'commit','sha':os.environ['SOURCE']}}))\n"
+                "  print(json.dumps({'object':{'type':'commit','sha':data['tag_source']}}))\n"
                 " elif args[1]=='--method':\n"
-                "  if 'git/tags' in args[3]: print('c'*40)\n"
+                "  if 'git/tags' in args[3]:\n"
+                "   data['tag_source']=os.environ['SOURCE']\n"
+                "   print('c'*40)\n"
                 "  else:\n"
                 "   assert 'sha='+('c'*40) in args\n"
                 "   data['tag']=True\n"
                 " elif 'releases/tags' in args[1]:\n"
                 "  assets=json.loads(Path('expected-assets.json').read_text())\n"
                 "  records=[dict(a,digest='sha256:'+a['sha256']) for a in assets]\n"
+                "  if os.environ.get('BAD_REMOTE_DIGEST'):\n"
+                "   records[0]['digest']='sha256:incorrect'\n"
                 "  print(json.dumps({'assets':records}))\n"
                 " else: sys.exit(2)\n"
                 "elif args[:2]==['release','view']:\n"
@@ -126,8 +105,19 @@ class ReleaseInventoryTests(unittest.TestCase):
             )
             fake.chmod(0o755)
             (root / "payload").mkdir()
-            (root / "payload" / "fixture.whl").write_bytes(b"verified inert payload")
-            (root / "expected-assets.json").write_text("[]")
+            content = b"verified inert payload"
+            (root / "payload" / "fixture.whl").write_bytes(content)
+            (root / "expected-assets.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "name": "fixture.whl",
+                            "size": len(content),
+                            "sha256": hashlib.sha256(content).hexdigest(),
+                        }
+                    ]
+                )
+            )
             env = os.environ | {
                 "PATH": f"{tools}:{os.environ['PATH']}",
                 "VERSION": "0.36.0",
@@ -143,11 +133,33 @@ class ReleaseInventoryTests(unittest.TestCase):
             )
             self.assertNotEqual(failed.returncode, 0)
             self.assertTrue(json.loads((root / "state.json").read_text())["draft"])
+            corrupt = subprocess.run(
+                ["bash", "-c", publication],
+                cwd=root,
+                env=env | {"BAD_REMOTE_DIGEST": "1"},
+                capture_output=True,
+            )
+            self.assertNotEqual(corrupt.returncode, 0)
+            self.assertTrue(json.loads((root / "state.json").read_text())["draft"])
             retry = subprocess.run(
                 ["bash", "-c", publication], cwd=root, env=env, capture_output=True
             )
             self.assertEqual(retry.returncode, 0, retry.stderr.decode())
             self.assertFalse(json.loads((root / "state.json").read_text())["draft"])
+            published = (root / "state.json").read_text()
+            public_retry = subprocess.run(
+                ["bash", "-c", publication], cwd=root, env=env, capture_output=True
+            )
+            self.assertEqual(public_retry.returncode, 0, public_retry.stderr.decode())
+            self.assertEqual((root / "state.json").read_text(), published)
+            collision = subprocess.run(
+                ["bash", "-c", publication],
+                cwd=root,
+                env=env | {"SOURCE": "d" * 40},
+                capture_output=True,
+            )
+            self.assertNotEqual(collision.returncode, 0)
+            self.assertEqual((root / "state.json").read_text(), published)
 
     def test_python_metadata_mismatch_fails_before_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -209,6 +221,21 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertEqual(
                 data["jobs"]["release"]["uses"], "./.github/workflows/release-build.yml"
             )
+            self.assertEqual(
+                data["concurrency"],
+                {"group": "auto-release", "cancel-in-progress": False, "queue": "max"},
+            )
+            plan = data["jobs"]["plan"]
+            self.assertEqual(plan["permissions"], {"contents": "read", "checks": "read"})
+            self.assertNotIn("GH_TOKEN", plan.get("env", {}))
+            wait, checkout = plan["steps"][:2]
+            self.assertEqual(wait["env"]["SHA"], "${{ github.sha }}")
+            self.assertEqual(wait["env"]["GH_TOKEN"], "${{ github.token }}")
+            self.assertIn('.app.slug == "github-actions"', wait["run"])
+            self.assertIn("commits/$SHA/check-runs?check_name=ci", wait["run"])
+            self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
+            self.assertFalse(checkout["with"]["persist-credentials"])
+            self.assertTrue(all("GH_TOKEN" not in s.get("env", {}) for s in plan["steps"][1:]))
         automatic = yaml.safe_load((ROOT / ".github/workflows/auto-release.yml").read_text())
         self.assertEqual(automatic[True]["push"], {"branches": ["main"]})
         self.assertNotIn("pull_request", automatic[True])

@@ -4,6 +4,12 @@ One command creates a new, fully configured GitHub repo: public by default, and 
 
 It exists to save keystrokes, and so that AI coding agents can start new repos without broad shell or GitHub admin access.
 
+Experimental work lives in the separate [makeghrepo-beta package](beta/README.md).
+Its first increment adds transactional offline generation and a genuine
+`--dry-run`; installing it as a uv tool does not replace `makeghrepo`. See the
+[numbered platform roadmap](docs/roadmap.md) for the ten-minute working-project
+target, current evidence and remaining scope.
+
 ## Install
 
 ```sh
@@ -68,7 +74,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 ## What it does
 
 1. Renders one copier template (`src/makeghrepo/templates/project/`). The shared base is always included; each language you name adds its own files.
-2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). If a check fails, nothing is published.
+2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). A failed check stops this invocation before its GitHub creation/push steps. The recovery message identifies the target and earlier lookup result; it does not establish whether an earlier attempt published anything. See [effect accounting and recovery](docs/recovery.md).
 3. Runs `git init -b main`, `git add --all`, `git commit -m setup`.
 4. Creates the GitHub repo empty, then configures it:
    - squash-merge only (explicitly enabled; merge commits and rebase merges disabled), auto-merge and branch updates on, delete branches after merge, wiki off
@@ -90,9 +96,9 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 - `codeql.yml` (public repos): actions, plus python, js, rust, go, ruby, c-cpp and swift as chosen.
 - `dependabot.yml`: GitHub Actions, plus uv, cargo, gomod, bundler, swift, npm, docker and docker-compose as chosen; weekly and grouped, with a 7-day cooldown.
 - `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python the version *is* the tag (hatchling + uv-dynamic-versioning, nothing to bump by hand): it checks the tag against the computed version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`. For Rust it checks the tag against `Cargo.toml`, tests, builds a release binary and attaches it with a `SHA256SUMS` file. For Go it tests and attaches static linux amd64 and arm64 binaries with `SHA256SUMS`. For C/C++ (without ObjC) it builds Release, runs ctest and attaches the linux x86_64 binaries with `SHA256SUMS`. For js/ts/css it attaches the `npm pack` tarball.
-- `auto-release.yml` (public Python repos): every merge to `main` waits for that commit's `ci` check, then tags the next minor version and publishes the release. The same design makeghrepo itself uses.
+- `auto-release.yml` (public Python repos): every merge to `main` waits for that commit's `ci` check, then tags the next minor version and publishes the release. Generated projects retain their own release workflow; makeghrepo's repository pipeline is described below.
 
-makeghrepo itself uses one shared automatic/manual release build graph. The exact source commit selects one stable tag version (a retry reuses its existing tag). Python wheel/sdist metadata, all three native CLI versions, and checksums must agree before a checkout-free publisher receives write authority. Uploads first form a draft release; a remote digest/size check verifies the complete eight-asset set before publication. A failed build or upload leaves no newly public partial release. Recover a failed draft by re-running auto-release on its source or Release on its existing stable tag. Existing public releases are verified and never overwritten; older incomplete releases require explicit review. No source branch/version-bump commit is pushed.
+makeghrepo itself uses one shared automatic/manual release build graph. The exact source commit selects one stable tag version (a retry reuses its existing tag). Read-only build runners verify Python wheel/sdist metadata, all three native CLI versions, and checksums. A fresh checkout-free publisher has write authority for its whole job, executes only reviewed workflow code, and independently verifies the downloaded inventories before any publication request. Uploads first form a draft release; a remote digest/size check verifies the complete eight-asset set before publication. A failed build or upload leaves no newly public partial release. Recover a failed draft by re-running auto-release on its source or Release on its existing stable tag. Existing public releases are verified and never overwritten; older incomplete releases require explicit review. No source branch/version-bump commit is pushed.
 
 Main-push CI runs independently for each run; only superseded PR runs are canceled. Auto-releases use GitHub's native `queue: max` to serialize releases without replacing pending runs. The queue holds at most 100 pending runs; overflow runs are canceled. Queue order follows arrival at the concurrency group, not necessarily commit order. Failed CI still blocks that commit's release. These are platform limits on the every-merge release policy; see [GitHub's concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 

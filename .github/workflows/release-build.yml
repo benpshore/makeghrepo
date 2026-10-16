@@ -66,7 +66,7 @@ jobs:
         include:
           - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
-          - { os: macos-15, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     permissions:
@@ -118,9 +118,11 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: dist
+          digest-mismatch: error
       # This inline verifier belongs to the reviewed workflow, not downloaded
       # repository code. Inventories are data: fixed names, source/version,
-      # size and digest must agree before the token is exposed to publication.
+      # size and digest must agree before any publication request. The job's
+      # token already has write authority; only reviewed workflow code runs here.
       - name: Verify complete immutable artifact set
         run: |
           python3 - <<'PYCODE'
