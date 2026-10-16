@@ -236,7 +236,10 @@ def test_release_uses_built_version_even_if_latest_tag_changes(workflows, tmp_pa
             assert shared[name]["env"]["SOURCE"] == "${{ inputs.sha }}"
         writer = shared["publish"]["steps"][-1]["run"]
         assert 'tag="v$VERSION"' in writer
-        assert "latest=" not in writer
+        # Allow only the explicit server publication policy; selecting the
+        # built version again from a moving latest tag remains forbidden.
+        assert writer.count("-f make_latest=legacy") == 1
+        assert "latest=" not in writer.replace("-f make_latest=legacy", "")
         # The real shared writer is exercised against newer-tag, collision,
         # failed-upload and public-retry fixtures in test_release_inventory.py.
         return

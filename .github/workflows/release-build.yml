@@ -212,4 +212,13 @@ jobs:
           fi
           gh release upload "$tag" payload/* --clobber
           verify_remote_assets
-          gh release edit "$tag" --draft=false --latest
+          # Let GitHub select latest by its documented semantic-version policy
+          # in the publication request. Forcing latest (including the API's
+          # default) would let a recovered older draft replace a newer release.
+          # There is no client-side latest lookup that can become stale. Both
+          # callers still share the allocation/publication concurrency queue.
+          # https://docs.github.com/en/rest/releases/releases#update-a-release
+          release_id=$(jq -er --arg tag "$tag" \
+            'select(.tag_name == $tag) | .id | select(type == "number" and . > 0 and . == floor)' release.json)
+          gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
+            -f tag_name="$tag" -F draft=false -f make_latest=legacy --silent

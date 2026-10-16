@@ -19,6 +19,72 @@ ROOT = Path(__file__).resolve().parents[1]
 record = runpy.run_path(str(ROOT / "scripts/release-inventory"))["record"]
 
 
+def publication_fixture(root):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release-build.yml").read_text())
+    publication = workflow["jobs"]["publish"]["steps"][-1]["run"]
+    tools = root / "bin"
+    tools.mkdir()
+    fake = tools / "gh"
+    fake.write_text("#!/usr/bin/env python3\n" + (ROOT / "tests/fake_release_api.py").read_text())
+    fake.chmod(0o755)
+    (root / "payload").mkdir()
+    content = b"verified inert payload"
+    (root / "payload" / "fixture.whl").write_bytes(content)
+    (root / "expected-assets.json").write_text(
+        json.dumps(
+            [
+                {
+                    "name": "fixture.whl",
+                    "size": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+            ]
+        )
+    )
+    (root / "state.json").write_text(
+        json.dumps(
+            {
+                "latest": None,
+                "objects": {},
+                "tags": {},
+                "releases": {},
+                "tag_creations": 0,
+                "release_creations": 0,
+                "publications": 0,
+                "uploads": 0,
+            }
+        )
+    )
+    env = os.environ | {
+        "PATH": f"{tools}:{os.environ['PATH']}",
+        "VERSION": "0.36.0",
+        "SOURCE": "b" * 40,
+        "GH_REPO": "fixture/no-remote",
+        "GH_TOKEN": "inert-fixture",
+    }
+    return publication, env
+
+
+def seed_release(root, tag, *, draft=False, prerelease=False):
+    """Create prior server state independently of the workflow under test."""
+    state = root / "state.json"
+    data = json.loads(state.read_text())
+    oid = hashlib.sha1(tag.encode(), usedforsecurity=False).hexdigest()
+    data["objects"][oid] = {"tag": tag, "source": "b" * 40}
+    data["tags"][tag] = oid
+    expected = json.loads((root / "expected-assets.json").read_text())
+    data["releases"][tag] = {
+        "id": len(data["releases"]) + 1,
+        "tag_name": tag,
+        "draft": draft,
+        "prerelease": prerelease,
+        "assets": [dict(a, digest="sha256:" + a["sha256"]) for a in expected],
+    }
+    if not draft and not prerelease:
+        data["latest"] = tag
+    state.write_text(json.dumps(data))
+
+
 class ReleaseInventoryTests(unittest.TestCase):
     def test_incomplete_or_corrupt_transfer_fails_before_publication(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/release-build.yml").read_text())
@@ -52,79 +118,9 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertEqual(len(list((root / "payload").iterdir())), 8)
 
     def test_failed_upload_never_publishes_and_draft_retry_completes(self):
-        workflow = yaml.safe_load((ROOT / ".github/workflows/release-build.yml").read_text())
-        publication = workflow["jobs"]["publish"]["steps"][-1]["run"]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            tools = root / "bin"
-            tools.mkdir()
-            fake = tools / "gh"
-            # The fixture records public visibility, not just successful shell
-            # exit: a failed upload must retain the private draft, and retry
-            # must verify the remote digest before changing that visibility.
-            fake.write_text(
-                "#!/usr/bin/env python3\n"
-                "import json,os,sys\n"
-                "from pathlib import Path\n"
-                "args=sys.argv[1:]\n"
-                "state=Path('state.json')\n"
-                "data=json.loads(state.read_text()) if state.exists() else {'latest':'v99.0.0'}\n"
-                "if args[0]=='release': assert args[2]=='v'+os.environ['VERSION']\n"
-                "if args[0]=='api':\n"
-                " if 'git/ref/tags' in args[1]:\n"
-                "  if not data.get('tag'): sys.exit(1)\n"
-                "  print(json.dumps({'object':{'type':'tag','sha':'c'*40}}))\n"
-                " elif 'git/tags/' in args[1]:\n"
-                "  print(json.dumps({'object':{'type':'commit','sha':data['tag_source']}}))\n"
-                " elif args[1]=='--method':\n"
-                "  if 'git/tags' in args[3]:\n"
-                "   data['tag_source']=os.environ['SOURCE']\n"
-                "   print('c'*40)\n"
-                "  else:\n"
-                "   assert 'sha='+('c'*40) in args\n"
-                "   data['tag']=True\n"
-                " elif 'releases/tags' in args[1]:\n"
-                "  assets=json.loads(Path('expected-assets.json').read_text())\n"
-                "  records=[dict(a,digest='sha256:'+a['sha256']) for a in assets]\n"
-                "  if os.environ.get('BAD_REMOTE_DIGEST'):\n"
-                "   records[0]['digest']='sha256:incorrect'\n"
-                "  print(json.dumps({'assets':records}))\n"
-                " else: sys.exit(2)\n"
-                "elif args[:2]==['release','view']:\n"
-                " if 'draft' not in data: sys.exit(1)\n"
-                " print(str(data['draft']).lower())\n"
-                "elif args[:2]==['release','create']: data['draft']=True\n"
-                "elif args[:2]==['release','upload']:\n"
-                " if os.environ.get('FAIL_UPLOAD'): sys.exit(1)\n"
-                " data['uploaded']=True\n"
-                "elif args[:2]==['release','edit']:\n"
-                " assert data.get('uploaded')\n"
-                " data['draft']=False\n"
-                "else: sys.exit(2)\n"
-                "state.write_text(json.dumps(data))\n"
-            )
-            fake.chmod(0o755)
-            (root / "payload").mkdir()
-            content = b"verified inert payload"
-            (root / "payload" / "fixture.whl").write_bytes(content)
-            (root / "expected-assets.json").write_text(
-                json.dumps(
-                    [
-                        {
-                            "name": "fixture.whl",
-                            "size": len(content),
-                            "sha256": hashlib.sha256(content).hexdigest(),
-                        }
-                    ]
-                )
-            )
-            env = os.environ | {
-                "PATH": f"{tools}:{os.environ['PATH']}",
-                "VERSION": "0.36.0",
-                "SOURCE": "b" * 40,
-                "GH_REPO": "fixture/no-remote",
-                "GH_TOKEN": "inert-fixture",
-            }
+            publication, env = publication_fixture(root)
             failed = subprocess.run(
                 ["bash", "-c", publication],
                 cwd=root,
@@ -132,7 +128,11 @@ class ReleaseInventoryTests(unittest.TestCase):
                 capture_output=True,
             )
             self.assertNotEqual(failed.returncode, 0)
-            self.assertTrue(json.loads((root / "state.json").read_text())["draft"])
+            state = json.loads((root / "state.json").read_text())
+            self.assertTrue(state["releases"]["v0.36.0"]["draft"])
+            self.assertIsNone(state["latest"])
+            # A newer version is published while the old failed draft waits.
+            seed_release(root, "v0.37.0")
             corrupt = subprocess.run(
                 ["bash", "-c", publication],
                 cwd=root,
@@ -140,12 +140,19 @@ class ReleaseInventoryTests(unittest.TestCase):
                 capture_output=True,
             )
             self.assertNotEqual(corrupt.returncode, 0)
-            self.assertTrue(json.loads((root / "state.json").read_text())["draft"])
+            state = json.loads((root / "state.json").read_text())
+            self.assertTrue(state["releases"]["v0.36.0"]["draft"])
+            self.assertEqual(state["latest"], "v0.37.0")
             retry = subprocess.run(
                 ["bash", "-c", publication], cwd=root, env=env, capture_output=True
             )
             self.assertEqual(retry.returncode, 0, retry.stderr.decode())
-            self.assertFalse(json.loads((root / "state.json").read_text())["draft"])
+            state = json.loads((root / "state.json").read_text())
+            self.assertFalse(state["releases"]["v0.36.0"]["draft"])
+            self.assertEqual(state["latest"], "v0.37.0")
+            self.assertEqual(state["tag_creations"], 1)
+            self.assertEqual(state["release_creations"], 1)
+            self.assertEqual(state["publications"], 1)
             published = (root / "state.json").read_text()
             public_retry = subprocess.run(
                 ["bash", "-c", publication], cwd=root, env=env, capture_output=True
@@ -160,6 +167,63 @@ class ReleaseInventoryTests(unittest.TestCase):
             )
             self.assertNotEqual(collision.returncode, 0)
             self.assertEqual((root / "state.json").read_text(), published)
+
+    def test_latest_is_numeric_and_independent_of_publication_order(self):
+        # The shared queue serializes both callers, but its arrival order need
+        # not be version order. Recovered 0.9 must not replace published 0.10.
+        for versions in [("0.9.0", "0.10.0"), ("0.10.0", "0.9.0")]:
+            with self.subTest(versions=versions), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                publication, env = publication_fixture(root)
+                seed_release(root, "v99.0.0", draft=True)
+                seed_release(root, "v100.0.0", prerelease=True)
+                latest = None
+                for version in versions:
+                    result = subprocess.run(
+                        ["bash", "-c", publication],
+                        cwd=root,
+                        env=env | {"VERSION": version},
+                        capture_output=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    latest = max(
+                        filter(None, [latest, version]),
+                        key=lambda v: tuple(map(int, v.split("."))),
+                    )
+                    state = json.loads((root / "state.json").read_text())
+                    self.assertEqual(state["latest"], "v" + latest)
+                self.assertEqual(state["latest"], "v0.10.0")
+                self.assertEqual(state["tag_creations"], 2)
+                self.assertEqual(state["release_creations"], 2)
+
+    def test_newer_publication_before_patch_and_lost_response_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            publication, env = publication_fixture(root)
+            seed_release(root, "v0.35.0")
+            seed_release(root, "v0.37.0", draft=True)
+            result = subprocess.run(
+                ["bash", "-c", publication],
+                cwd=root,
+                env=env | {
+                    "PUBLISH_BEFORE_PATCH": "v0.37.0",
+                    "LOSE_PUBLICATION_RESPONSE": "1",
+                },
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            state = json.loads((root / "state.json").read_text())
+            self.assertFalse(state["releases"]["v0.36.0"]["draft"])
+            self.assertEqual(state["latest"], "v0.37.0")
+            self.assertEqual(state["publications"], 2)
+            published = (root / "state.json").read_text()
+            retry = subprocess.run(
+                ["bash", "-c", publication], cwd=root, env=env, capture_output=True
+            )
+            self.assertEqual(retry.returncode, 0, retry.stderr.decode())
+            self.assertEqual((root / "state.json").read_text(), published)
+            self.assertEqual(state["tag_creations"], 1)
+            self.assertEqual(state["release_creations"], 1)
 
     def test_python_metadata_mismatch_fails_before_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -213,7 +277,7 @@ class ReleaseInventoryTests(unittest.TestCase):
         self.assertFalse(any("checkout@" in step.get("uses", "") for step in steps))
         self.assertNotIn("GH_TOKEN", jobs["publish"]["env"])
         publication = steps[-1]["run"]
-        self.assertLess(publication.index("gh release upload"), publication.index("--draft=false"))
+        self.assertLess(publication.index("gh release upload"), publication.index("-F draft=false"))
         self.assertIn("--draft --verify-tag", publication)
         self.assertIn('test "$sha" = "$SOURCE"', publication)
         for entry in ("auto-release.yml", "release.yml"):
