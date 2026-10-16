@@ -46,6 +46,8 @@ elif args[:2] == ['api', 'graphql']:
     time.sleep(0.4)
     log('project-done')
     print(json.dumps({{'data': {{'user': {{'projectsV2': {{'nodes': [{{'number': 1, 'title': 'probe-case'}}]}}}}}}}}))
+elif args == ['api', '-X', 'GET', 'repos/probe-user/probe-case']:
+    print(json.dumps({{'owner': {{'type': 'User', 'login': 'probe-user', 'id': 123}}}}))
 elif args[:1] == ['api']:
     if any('rulesets' in arg for arg in args):
         log('ruleset')
