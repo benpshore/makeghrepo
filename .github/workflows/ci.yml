@@ -67,8 +67,8 @@ jobs:
           uv tool install dist/*.whl
           makeghrepo --help
 
-  # Exercise the exact release-only download action and input contracts with
-  # inert fixtures. This catches unavailable pins without invoking a release.
+  # Retain both verified download modes with inert fixtures. The complete
+  # release handoff below additionally exercises the current publisher contract.
   artifact-download-contract:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -117,6 +117,49 @@ jobs:
           (cd binaries && sha256sum -c makeghrepo-linux.sha256 makeghrepo-macos.sha256)
           test "$(find dist -type f | wc -l)" -eq 1
           test "$(find binaries -type f | wc -l)" -eq 4
+
+  release-inventory-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+      - name: Create four inert release artifacts
+        run: uv run --locked python tests/release_fixtures.py create "$RUNNER_TEMP/release-contract"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-python
+          path: ${{ runner.temp }}/release-contract/python/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-x86_64-unknown-linux-gnu
+          path: ${{ runner.temp }}/release-contract/x86_64-unknown-linux-gnu/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-aarch64-unknown-linux-gnu
+          path: ${{ runner.temp }}/release-contract/aarch64-unknown-linux-gnu/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-aarch64-apple-darwin
+          path: ${{ runner.temp }}/release-contract/aarch64-apple-darwin/*
+          if-no-files-found: error
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+          digest-mismatch: error
+      - name: Exercise the actual publisher verifier after download
+        run: uv run --locked python tests/release_fixtures.py verify dist
 
   beta-assets:
     name: beta-assets
@@ -350,7 +393,7 @@ jobs:
   ci:
     name: ci
     if: always()
-    needs: [test, plan, templates, actionlint, rust, distribution, beta-assets, artifact-download-contract, one-open-pr-tests]
+    needs: [test, plan, templates, actionlint, rust, distribution, beta-assets, artifact-download-contract, release-inventory-contract, one-open-pr-tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
