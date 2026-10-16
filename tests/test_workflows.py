@@ -350,9 +350,7 @@ def test_auto_release_downloads_use_verified_action_contract():
     assert "continue-on-error" not in inventory
     assert "GH_TOKEN" not in inventory.get("env", {})
     transfers = [
-        s
-        for s in inventory["steps"]
-        if s.get("uses", "").startswith("actions/download-artifact@")
+        s for s in inventory["steps"] if s.get("uses", "").startswith("actions/download-artifact@")
     ]
     assert len(transfers) == 1
     assert transfers[0]["uses"] == download_action
