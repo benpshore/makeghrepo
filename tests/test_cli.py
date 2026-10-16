@@ -272,6 +272,61 @@ def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):
     assert gh["calls"][0][0] == "create"
 
 
+@pytest.mark.parametrize("remote_exists", [False, True])
+def test_check_failure_reports_observed_effects_and_exact_target(
+    tmp_path, gh, monkeypatch, remote_exists
+):
+    def broken(*args):
+        raise RuntimeError("native extension failed: missing ruby.h")
+
+    monkeypatch.setattr(scaffold, "smoke_test", broken)
+    # The first attempt leaves a marker but no commit; a later invocation can
+    # observe a remote made by an earlier version, external actor or attempt.
+    assert runner.invoke(app, ["recover", "ruby"]).exit_code == 1
+    if remote_exists:
+        gh["existing"].add("me/recover")
+    result = runner.invoke(app, ["recover"])
+    assert result.exit_code == 1
+    assert "Nothing was published" not in result.output
+    assert "before its GitHub creation/push steps" in result.output
+    observation = "found a repository" if remote_exists else "found no repository"
+    assert f"{observation} at https://github.com/me/recover" in result.output
+    assert str(tmp_path / "recover") in result.output
+    assert gh["calls"] == []
+
+
+def test_remote_create_failure_reports_uncertain_effect_and_target(tmp_path, gh, monkeypatch):
+    def create_then_fail(repo, *args):
+        gh["existing"].add(repo)
+        raise github.GhError("connection lost after remote creation")
+
+    monkeypatch.setattr(github, "create_repo", create_then_fail)
+    result = runner.invoke(app, ["uncertain"])
+    assert result.exit_code == 1
+    assert "remote creation may have completed" in result.output
+    assert "https://github.com/me/uncertain" in result.output
+    assert str(tmp_path / "uncertain") in result.output
+    assert "me/uncertain" in gh["existing"]
+    assert gitops.read_marker(tmp_path / "uncertain") is not None
+
+
+def test_remote_read_failure_does_not_claim_creation_was_attempted(tmp_path, gh, monkeypatch):
+    assert runner.invoke(app, ["existing"]).exit_code == 0
+    gh["existing"].add("me/existing")
+    gh["calls"].clear()
+
+    def read_fails(repo):
+        raise github.GhError("visibility lookup unavailable")
+
+    monkeypatch.setattr(github, "is_private", read_fails)
+    result = runner.invoke(app, ["existing"])
+    assert result.exit_code == 1
+    assert "creation/push was not attempted by this invocation" in result.output
+    assert "remote creation may have completed" not in result.output
+    assert "https://github.com/me/existing" in result.output
+    assert gh["calls"] == []
+
+
 def test_rerun_after_failed_create_keeps_private(tmp_path, gh, monkeypatch):
     def create_fails(*a):
         raise github.GhError("network down")
