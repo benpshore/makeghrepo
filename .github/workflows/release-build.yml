@@ -169,12 +169,23 @@ jobs:
           set -euo pipefail
           tag="v$VERSION"
           verify_remote_assets() {
-            gh api "repos/$GH_REPO/releases/tags/$tag" > release.json
-            python3 - <<'PYCODE'
-          import json
+            # gh resolves drafts through GraphQL, then REST by numeric ID.
+            # The REST tag endpoint only supports published releases.
+            gh release view "$tag" --json databaseId,tagName > release-lookup.json
+            release_id=$(jq -er --arg tag "$tag" \
+              'select(.tagName == $tag) | .databaseId | select(type == "number" and . > 0 and . == floor)' release-lookup.json)
+            gh api "repos/$GH_REPO/releases/$release_id" > release.json
+            RELEASE_ID="$release_id" EXPECTED_DRAFT="$1" python3 - <<'PYCODE'
+          import json, os
           from pathlib import Path
           expected = json.loads(Path("expected-assets.json").read_text())
-          actual = json.loads(Path("release.json").read_text())["assets"]
+          release = json.loads(Path("release.json").read_text())
+          assert type(release["id"]) is int and release["id"] == int(os.environ["RELEASE_ID"])
+          assert release["tag_name"] == "v" + os.environ["VERSION"]
+          assert type(release["draft"]) is bool
+          assert release["draft"] == (os.environ["EXPECTED_DRAFT"] == "true")
+          assert release["prerelease"] is False
+          actual = release["assets"]
           assert {a["name"] for a in actual} == {a["name"] for a in expected}
           for wanted in expected:
               found = next(a for a in actual if a["name"] == wanted["name"])
@@ -204,21 +215,57 @@ jobs:
             # digest/size inventory; an older incomplete release needs explicit
             # human repair rather than pretending this attempt completed it.
             if [ "$(cat draft.txt)" != true ]; then
-              verify_remote_assets
+              verify_remote_assets false
               exit 0
             fi
           else
             gh release create "$tag" --draft --verify-tag --target "$SOURCE" --generate-notes
           fi
           gh release upload "$tag" payload/* --clobber
-          verify_remote_assets
-          # Let GitHub select latest by its documented semantic-version policy
-          # in the publication request. Forcing latest (including the API's
-          # default) would let a recovered older draft replace a newer release.
-          # There is no client-side latest lookup that can become stale. Both
-          # callers still share the allocation/publication concurrency queue.
-          # https://docs.github.com/en/rest/releases/releases#update-a-release
-          release_id=$(jq -er --arg tag "$tag" \
-            'select(.tag_name == $tag) | .id | select(type == "number" and . > 0 and . == floor)' release.json)
+          verify_remote_assets true
+          # Both authorized callers hold the same workflow concurrency queue
+          # across this read/compare/PATCH sequence. Legacy selection is date-
+          # based, so compare every published stable version numerically and
+          # send an explicit true/false decision. Invalid/ambiguous evidence
+          # leaves the complete release as a draft. GitHub has no documented
+          # conditional release PATCH: publishers outside this queue can race
+          # this decision and must be coordinated separately.
+          gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > release-pages.json
+          make_latest=$(RELEASE_ID="$release_id" python3 - <<'PYCODE'
+          import json, os, re
+          from pathlib import Path
+          pages = json.loads(Path("release-pages.json").read_text())
+          assert type(pages) is list and pages
+          stable = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+          tag = "v" + os.environ["VERSION"]
+          candidate = tuple(map(int, stable.fullmatch(tag).groups()))
+          release_id = int(os.environ["RELEASE_ID"])
+          ids, tags, published = set(), set(), []
+          found = False
+          for page in pages:
+              assert type(page) is list
+              for release in page:
+                  assert type(release) is dict
+                  rid, name = release["id"], release["tag_name"]
+                  assert type(rid) is int and rid > 0 and rid not in ids
+                  assert type(name) is str and name and name not in tags
+                  assert type(release["draft"]) is bool
+                  assert type(release["prerelease"]) is bool
+                  ids.add(rid)
+                  tags.add(name)
+                  if rid == release_id:
+                      assert name == tag and release["draft"] and not release["prerelease"]
+                      found = True
+                  else:
+                      assert name != tag
+                  if release["draft"] or release["prerelease"]:
+                      continue
+                  version = stable.fullmatch(name)
+                  assert version is not None, "published release has an unrecognized stable tag"
+                  published.append(tuple(map(int, version.groups())))
+          assert found, "candidate draft missing from release catalog"
+          print("true" if all(candidate >= version for version in published) else "false")
+          PYCODE
+          )
           gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
-            -f tag_name="$tag" -F draft=false -f make_latest=legacy --silent
+            -f tag_name="$tag" -F draft=false -f make_latest="$make_latest" --silent

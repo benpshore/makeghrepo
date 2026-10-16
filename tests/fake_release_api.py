@@ -1,7 +1,8 @@
 """Stateful GitHub release API model; invoked only as an inert fake gh in tests.
 
-The true/false/legacy modes model GitHub's documented make_latest contract for
-stable semantic versions. This is not evidence of a live service mutation.
+Legacy uses creation date first and semantic version only as a tie-break,
+matching GitHub's historical policy. This model makes no stronger guarantee.
+Draft-by-tag REST requests fail; GraphQL lookup and numeric REST IDs work.
 """
 
 import copy
@@ -17,6 +18,8 @@ def main():
     args = sys.argv[1:]
     state = Path("state.json")
     data = json.loads(state.read_text())
+    with Path("requests.jsonl").open("a") as requests:
+        requests.write(json.dumps(args) + "\n")
 
     def save():
         state.write_text(json.dumps(data))
@@ -43,7 +46,7 @@ def main():
             data["latest"] = tag
         elif mode == "legacy":
             stable = {
-                name: tuple(map(int, name[1:].split(".")))
+                name: (item["created_at"], tuple(map(int, name[1:].split("."))))
                 for name, item in data["releases"].items()
                 if not item["draft"]
                 and not item["prerelease"]
@@ -64,8 +67,8 @@ def main():
             sys.exit(1)
 
     if args[0] == "api":
-        method = args[2] if args[1] == "--method" else "GET"
-        endpoint = args[3] if args[1] == "--method" else args[1]
+        method = args[args.index("--method") + 1] if "--method" in args else "GET"
+        endpoint = next(arg for arg in args[1:] if arg.startswith("repos/"))
         if method == "POST" and endpoint.endswith("/git/tags"):
             request = fields()
             assert request["type"] == "commit"
@@ -88,9 +91,51 @@ def main():
         elif method == "GET" and "/releases/tags/" in endpoint:
             tag = endpoint.split("/releases/tags/", 1)[1]
             release = copy.deepcopy(data["releases"][tag])
+            if release["draft"]:
+                print(
+                    "GET release by tag only supports published releases (HTTP 404)",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             if os.environ.get("BAD_REMOTE_DIGEST"):
                 release["assets"][0]["digest"] = "sha256:incorrect"
             print(json.dumps(release))
+        elif method == "GET" and re.fullmatch(r"repos/[^/]+/[^/]+/releases/[0-9]+", endpoint):
+            release_id = int(endpoint.rsplit("/", 1)[1])
+            release = copy.deepcopy(
+                next(v for v in data["releases"].values() if v["id"] == release_id)
+            )
+            if os.environ.get("BAD_RELEASE_ID"):
+                release["id"] = release_id + 1
+            if os.environ.get("BAD_RELEASE_TAG"):
+                release["tag_name"] = "v99.0.0"
+            if os.environ.get("BAD_REMOTE_DIGEST"):
+                release["assets"][0]["digest"] = "sha256:incorrect"
+            print(json.dumps(release))
+        elif method == "GET" and endpoint.endswith("/releases?per_page=100"):
+            assert "--paginate" in args and "--slurp" in args
+            if os.environ.get("FAIL_CATALOG"):
+                sys.exit(1)
+            releases = sorted(
+                copy.deepcopy(list(data["releases"].values())),
+                key=lambda r: r["created_at"],
+                reverse=True,
+            )
+            mode = os.environ.get("BAD_CATALOG")
+            if mode == "duplicate_id":
+                releases.append(releases[0])
+            elif mode == "duplicate_tag":
+                releases.append(dict(releases[0], id=9999))
+            elif mode == "malformed_id":
+                releases[0]["id"] = "not-a-number"
+            elif mode == "malformed_state":
+                releases[0]["draft"] = "false"
+            elif mode == "malformed_tag":
+                releases.append(dict(releases[0], id=9999, tag_name="v01.2.0", draft=False))
+            elif mode == "missing_candidate":
+                releases = [r for r in releases if r["tag_name"] != "v" + os.environ["VERSION"]]
+            pages = [releases[i : i + 100] for i in range(0, len(releases), 100)] or [[]]
+            print(json.dumps({"unexpected": pages} if mode == "malformed_pages" else pages))
         elif method == "PATCH" and "/releases/" in endpoint:
             request = fields()
             release_id = int(endpoint.rsplit("/", 1)[1])
@@ -107,7 +152,17 @@ def main():
         if command == "view":
             if tag not in data["releases"]:
                 sys.exit(1)
-            print(str(data["releases"][tag]["draft"]).lower())
+            release = data["releases"][tag]
+            if "--jq" in args:
+                print(str(release["draft"]).lower())
+            else:
+                assert args[args.index("--json") + 1] == "databaseId,tagName"
+                lookup = {"databaseId": release["id"], "tagName": release["tag_name"]}
+                if os.environ.get("BAD_LOOKUP_ID"):
+                    lookup["databaseId"] = "../other"
+                if os.environ.get("BAD_LOOKUP_TAG"):
+                    lookup["tagName"] = "v99.0.0"
+                print(json.dumps(lookup))
         elif command == "create":
             assert "--draft" in args and "--verify-tag" in args
             assert tag in data["tags"] and tag not in data["releases"]
@@ -116,6 +171,7 @@ def main():
                 "tag_name": tag,
                 "draft": True,
                 "prerelease": False,
+                "created_at": "2026-01-02T00:00:00Z",
                 "assets": [],
             }
             data["release_creations"] += 1

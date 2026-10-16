@@ -65,7 +65,7 @@ def publication_fixture(root):
     return publication, env
 
 
-def seed_release(root, tag, *, draft=False, prerelease=False):
+def seed_release(root, tag, *, draft=False, prerelease=False, created_at="2026-01-01T00:00:00Z"):
     """Create prior server state independently of the workflow under test."""
     state = root / "state.json"
     data = json.loads(state.read_text())
@@ -78,6 +78,7 @@ def seed_release(root, tag, *, draft=False, prerelease=False):
         "tag_name": tag,
         "draft": draft,
         "prerelease": prerelease,
+        "created_at": created_at,
         "assets": [dict(a, digest="sha256:" + a["sha256"]) for a in expected],
     }
     if not draft and not prerelease:
@@ -196,27 +197,22 @@ class ReleaseInventoryTests(unittest.TestCase):
                 self.assertEqual(state["tag_creations"], 2)
                 self.assertEqual(state["release_creations"], 2)
 
-    def test_newer_publication_before_patch_and_lost_response_retry(self):
+    def test_lost_publication_response_retry_is_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             publication, env = publication_fixture(root)
             seed_release(root, "v0.35.0")
-            seed_release(root, "v0.37.0", draft=True)
             result = subprocess.run(
                 ["bash", "-c", publication],
                 cwd=root,
-                env=env
-                | {
-                    "PUBLISH_BEFORE_PATCH": "v0.37.0",
-                    "LOSE_PUBLICATION_RESPONSE": "1",
-                },
+                env=env | {"LOSE_PUBLICATION_RESPONSE": "1"},
                 capture_output=True,
             )
             self.assertNotEqual(result.returncode, 0)
             state = json.loads((root / "state.json").read_text())
             self.assertFalse(state["releases"]["v0.36.0"]["draft"])
-            self.assertEqual(state["latest"], "v0.37.0")
-            self.assertEqual(state["publications"], 2)
+            self.assertEqual(state["latest"], "v0.36.0")
+            self.assertEqual(state["publications"], 1)
             published = (root / "state.json").read_text()
             retry = subprocess.run(
                 ["bash", "-c", publication], cwd=root, env=env, capture_output=True
@@ -225,6 +221,116 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertEqual((root / "state.json").read_text(), published)
             self.assertEqual(state["tag_creations"], 1)
             self.assertEqual(state["release_creations"], 1)
+
+    def test_external_publication_outside_queue_can_race_latest_decision(self):
+        # Preserve the earlier interleaving as an explicit boundary. This
+        # external writer bypasses the callers' shared queue. The Releases API
+        # has no documented conditional PATCH, so numeric ordering is not
+        # guaranteed for that unsupported concurrent writer.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            publication, env = publication_fixture(root)
+            seed_release(root, "v0.35.0")
+            seed_release(root, "v0.37.0", draft=True)
+            result = subprocess.run(
+                ["bash", "-c", publication],
+                cwd=root,
+                env=env | {"PUBLISH_BEFORE_PATCH": "v0.37.0"},
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            state = json.loads((root / "state.json").read_text())
+            self.assertFalse(state["releases"]["v0.37.0"]["draft"])
+            self.assertEqual(state["latest"], "v0.36.0")
+            self.assertEqual(state["publications"], 2)
+
+    def test_draft_lookup_uses_validated_numeric_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            publication, env = publication_fixture(root)
+            seed_release(root, "v0.36.0", draft=True)
+            unsupported = subprocess.run(
+                ["gh", "api", "repos/fixture/no-remote/releases/tags/v0.36.0"],
+                cwd=root,
+                env=env,
+                capture_output=True,
+            )
+            self.assertNotEqual(unsupported.returncode, 0)
+            self.assertIn(b"HTTP 404", unsupported.stderr)
+            (root / "requests.jsonl").unlink()
+            result = subprocess.run(
+                ["bash", "-c", publication], cwd=root, env=env, capture_output=True
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            requests = [
+                json.loads(line) for line in (root / "requests.jsonl").read_text().splitlines()
+            ]
+            self.assertIn(["release", "view", "v0.36.0", "--json", "databaseId,tagName"], requests)
+            self.assertIn(["api", "repos/fixture/no-remote/releases/1"], requests)
+            self.assertFalse(any("/releases/tags/" in str(request) for request in requests))
+            state = json.loads((root / "state.json").read_text())
+            self.assertEqual(state["tag_creations"], 0)
+            self.assertEqual(state["release_creations"], 0)
+            self.assertFalse(state["releases"]["v0.36.0"]["draft"])
+
+    def test_latest_ignores_creation_date_and_reads_every_catalog_page(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            publication, env = publication_fixture(root)
+            # The numeric maximum is on page two, with an older creation date.
+            for patch in range(100):
+                seed_release(root, f"v0.1.{patch}", created_at="2026-02-01T00:00:00Z")
+            seed_release(root, "v0.37.0", created_at="2025-01-01T00:00:00Z")
+            seed_release(root, "v0.36.0", draft=True, created_at="2026-03-01T00:00:00Z")
+            result = subprocess.run(
+                ["bash", "-c", publication], cwd=root, env=env, capture_output=True
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            pages = json.loads((root / "release-pages.json").read_text())
+            self.assertEqual([len(page) for page in pages], [100, 2])
+            self.assertEqual(pages[-1][-1]["tag_name"], "v0.37.0")
+            state = json.loads((root / "state.json").read_text())
+            self.assertEqual(state["latest"], "v0.37.0")
+            self.assertFalse(state["releases"]["v0.36.0"]["draft"])
+
+    def test_malformed_or_incomplete_publication_evidence_fails_closed(self):
+        cases = [
+            {"BAD_CATALOG": value}
+            for value in (
+                "duplicate_id",
+                "duplicate_tag",
+                "malformed_id",
+                "malformed_state",
+                "malformed_tag",
+                "missing_candidate",
+                "malformed_pages",
+            )
+        ] + [
+            {name: "1"}
+            for name in (
+                "FAIL_CATALOG",
+                "BAD_LOOKUP_ID",
+                "BAD_LOOKUP_TAG",
+                "BAD_RELEASE_ID",
+                "BAD_RELEASE_TAG",
+            )
+        ]
+        for errors in cases:
+            with self.subTest(errors=errors), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                publication, env = publication_fixture(root)
+                seed_release(root, "v0.35.0")
+                result = subprocess.run(
+                    ["bash", "-c", publication],
+                    cwd=root,
+                    env=env | errors,
+                    capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                state = json.loads((root / "state.json").read_text())
+                self.assertEqual(state["latest"], "v0.35.0")
+                self.assertTrue(state["releases"]["v0.36.0"]["draft"])
+                self.assertEqual(state["publications"], 0)
 
     def test_python_metadata_mismatch_fails_before_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -263,6 +369,16 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertEqual(len(inventory["assets"]), 2)
 
     def test_every_build_blocks_publisher_and_write_jobs_never_build(self):
+        directory = ROOT / ".github/workflows"
+        callers = {
+            path.name
+            for path in directory.glob("*.yml")
+            if any(
+                job.get("uses") == "./.github/workflows/release-build.yml"
+                for job in yaml.safe_load(path.read_text()).get("jobs", {}).values()
+            )
+        }
+        self.assertEqual(callers, {"auto-release.yml", "release.yml"})
         workflow = yaml.safe_load((ROOT / ".github/workflows/release-build.yml").read_text())
         jobs = workflow["jobs"]
         self.assertEqual(jobs["publish"]["needs"], ["python", "binaries"])
