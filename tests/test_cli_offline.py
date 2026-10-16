@@ -123,6 +123,21 @@ def test_render_preserves_existing_destination(tmp_path):
     assert (dest / "keep.txt").read_text() == "keep this"
 
 
+def test_demonstrated_library_command_ignores_stdin(tmp_path):
+    dest = tmp_path / "output"
+    result = runner.invoke(
+        cli.app,
+        ["python", "--lib", "sqlite", "api", "--render", str(dest)],
+        input="gh auth token\nnot another command\n",
+    )
+    assert result.exit_code == 0, result.output
+    project = tomllib.loads((dest / "pyproject.toml").read_text())["project"]
+    assert "scripts" not in project
+    assert (dest / "sqlite/schema.sql").is_file()
+    assert (dest / "openapi.yaml").is_file()
+    assert "not another command" not in result.output
+
+
 @pytest.mark.parametrize("option", ["--owner", "--author", "--description", "--year"])
 def test_fixed_render_metadata_requires_render(option):
     result = runner.invoke(cli.app, ["sample", option, "test"])

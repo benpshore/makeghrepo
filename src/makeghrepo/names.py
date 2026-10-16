@@ -43,7 +43,7 @@ def normalize_name(name: str) -> str:
 
 
 def validate_name(name: str) -> str:
-    if not _VALID_NAME.match(name):
+    if not _VALID_NAME.fullmatch(name):
         raise ValueError(
             f"invalid repo name {name!r}: use lowercase letters, digits and "
             "dashes (not leading/trailing), max 100 chars"
