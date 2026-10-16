@@ -130,6 +130,9 @@ def test_tag_release_isolates_build_code_from_write_token(workflows):
     assert build["permissions"] == {"contents": "read"}
     assert publish["permissions"] == {"contents": "write"}
     assert publish["needs"] == "build"
+    # Only the final publication command may run on the write-enabled runner.
+    assert all("run" not in step for step in publish["steps"][:-1])
+    assert publish["steps"][-1]["name"] == "Publish GitHub release"
 
     token_steps = [step for step in publish["steps"] if "GH_TOKEN" in step.get("env", {})]
     assert len(token_steps) == 1
