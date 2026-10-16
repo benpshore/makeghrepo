@@ -4,6 +4,12 @@ One command creates a new, fully configured GitHub repo: public by default, and 
 
 It exists to save keystrokes, and so that AI coding agents can start new repos without broad shell or GitHub admin access.
 
+Experimental work lives in the separate [makeghrepo-beta package](beta/README.md).
+Its first increment adds transactional offline generation and a genuine
+`--dry-run`; installing it as a uv tool does not replace `makeghrepo`. See the
+[numbered platform roadmap](docs/roadmap.md) for the ten-minute working-project
+target, current evidence and remaining scope.
+
 ## Install
 
 ```sh
@@ -68,7 +74,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 ## What it does
 
 1. Renders one copier template (`src/makeghrepo/templates/project/`). The shared base is always included; each language you name adds its own files.
-2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). If a check fails, nothing is published.
+2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). A failed check stops this invocation before its GitHub creation/push steps. The recovery message identifies the target and earlier lookup result; it does not establish whether an earlier attempt published anything. See [effect accounting and recovery](docs/recovery.md).
 3. Runs `git init -b main`, `git add --all`, `git commit -m setup`.
 4. Creates the GitHub repo empty, then configures it:
    - squash-merge only (explicitly enabled; merge commits and rebase merges disabled), auto-merge and branch updates on, delete branches after merge, wiki off
