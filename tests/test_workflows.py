@@ -139,10 +139,9 @@ def test_tag_release_isolates_build_code_from_write_token(workflows):
     assert token_steps[0]["name"] == "Publish GitHub release"
     assert token_steps[0]["env"]["GH_TOKEN"] == "${{ github.token }}"  # noqa: S105
     assert token_steps[0]["env"]["GH_REPO"] == "${{ github.repository }}"
-    assert not any(
-        step.get("uses", "").startswith("actions/checkout@") for step in publish["steps"]
-    )
+    assert all("checkout" not in step.get("uses", "") for step in publish["steps"])
     assert all("GH_TOKEN" not in step.get("env", {}) for step in build["steps"])
+    assert all("github.token" not in str(step) for step in build["steps"])
 
 
 @pytest.mark.parametrize(
