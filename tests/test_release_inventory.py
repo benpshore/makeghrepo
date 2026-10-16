@@ -205,7 +205,8 @@ class ReleaseInventoryTests(unittest.TestCase):
             result = subprocess.run(
                 ["bash", "-c", publication],
                 cwd=root,
-                env=env | {
+                env=env
+                | {
                     "PUBLISH_BEFORE_PATCH": "v0.37.0",
                     "LOSE_PUBLICATION_RESPONSE": "1",
                 },
