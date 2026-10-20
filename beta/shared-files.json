@@ -4,6 +4,7 @@
     "cli.py",
     "github.py",
     "gitops.py",
+    "inputs.py",
     "langs/api.toml",
     "langs/c.toml",
     "langs/cpp.toml",
