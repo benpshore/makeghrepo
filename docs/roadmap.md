@@ -24,7 +24,8 @@ cleanup, create credentials, release, deploy or enable actual merges.
 ## Current evidence and integration boundaries
 
 The inspected baseline already contains a shared TOML language registry, Copier
-templates, Python and Rust renderers, Docker branches, offline `--render`, resume
+templates, Python and Rust renderers (Rust is now parked on the `rust` branch,
+#150), Docker branches, offline `--render`, resume
 markers, a full-stack golden fixture, native distribution checks, release templates,
 issue templates, and Spotlight ignores. The existing CLI does not expose an
 `--all` macro in this baseline; its all-stack *fixture* is distinct from that CLI
@@ -55,8 +56,8 @@ Relevant open work inspected before this increment:
 
 These are integration inputs, not changes silently merged into this checkpoint.
 Reinspect their current heads and tests before integration. Beta shares baseline
-registry/templates without editing them; stable/Rust rendered output must retain
-parity. Its separate workflow orchestration is not a claim of Rust execution parity.
+registry/templates without editing them; stable rendered output must stay
+unchanged. Its separate workflow orchestration is not a claim of execution parity.
 
 ## Numbered requirements
 

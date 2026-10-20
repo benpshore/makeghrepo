@@ -45,7 +45,7 @@ def test_ci_preserves_running_and_pending_main_runs(workflows):
 def test_release_build_is_isolated_from_write_token(workflows):
     jobs = release_jobs(workflows)
     # Repository-controlled builds run with explicit read-only permissions.
-    build_names = ["python", "binaries"] if "python" in jobs else ["build"]
+    build_names = ["python"] if "python" in jobs else ["build"]
     for name in build_names:
         assert jobs[name]["permissions"] == {"contents": "read"}
 
@@ -130,7 +130,7 @@ def test_auto_release_isolates_write_credentials_from_project_code(workflows):
 def test_tag_release_isolates_build_code_from_write_token(workflows):
     jobs = release_jobs(workflows)
     shared = "python" in jobs
-    build_names = ["python", "binaries"] if shared else ["build"]
+    build_names = ["python"] if shared else ["build"]
     publish = jobs["publish"]
 
     assert publish["permissions"] == {"contents": "write"}
@@ -231,7 +231,7 @@ def test_release_uses_built_version_even_if_latest_tag_changes(workflows, tmp_pa
             "sha": "${{ needs.plan.outputs.sha }}",
         }
         shared = release_jobs(workflows)
-        for name in ["python", "binaries", "publish"]:
+        for name in ["python", "publish"]:
             assert shared[name]["env"]["VERSION"] == "${{ inputs.version }}"
             assert shared[name]["env"]["SOURCE"] == "${{ inputs.sha }}"
         writer = shared["publish"]["steps"][-1]["run"]
@@ -277,14 +277,13 @@ def test_release_uses_built_version_even_if_latest_tag_changes(workflows, tmp_pa
             assert step["env"]["VERSION"] == "${{ steps.tag.outputs.version }}"
 
 
-def test_complete_rust_matrix_must_succeed_before_any_publication():
+def test_complete_build_must_succeed_before_any_publication():
     jobs = yaml.safe_load(
         (Path(__file__).resolve().parents[1] / ".github/workflows/release-build.yml").read_text()
     )["jobs"]
-    assert jobs["binaries"]["strategy"]["fail-fast"] is False
     publish = jobs["publish"]
-    assert publish["needs"] == ["python", "binaries"]
-    # Preserve GitHub's default success() gate for the entire native matrix.
+    assert publish["needs"] == ["python"]
+    # Preserve GitHub's default success() gate for every build job.
     # PR145 strengthens the old partial-attachment behavior to all-or-nothing.
     assert "if" not in publish
     download = publish["steps"][0]["with"]
@@ -346,7 +345,7 @@ def test_auto_release_downloads_use_verified_action_contract():
     assert "gh release" not in commands
     assert not any(step.get("uses", "").startswith("actions/checkout@") for step in smoke["steps"])
 
-    # The new four-artifact handoff also runs the actual publisher verifier.
+    # The release-artifact handoff also runs the actual publisher verifier.
     inventory = ci["release-inventory-contract"]
     assert inventory["permissions"] == {"contents": "read"}
     assert "release-inventory-contract" in ci["ci"]["needs"]

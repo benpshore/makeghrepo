@@ -98,7 +98,7 @@ class ReleaseInventoryTests(unittest.TestCase):
             write_fixtures(dist, version, source)
             self.assertEqual(verify_transfer(dist, version, source), 10)
             env = os.environ | {"VERSION": version, "SOURCE": source}
-            missing = dist / "makeghrepo-aarch64-apple-darwin"
+            missing = dist / f"makeghrepo-{version}-py3-none-any.whl"
             content = missing.read_bytes()
             missing.unlink()
             result = subprocess.run(
@@ -116,7 +116,7 @@ class ReleaseInventoryTests(unittest.TestCase):
                 ["bash", "-c", verification], cwd=root, env=env, capture_output=True
             )
             self.assertEqual(result.returncode, 0, result.stderr.decode())
-            self.assertEqual(len(list((root / "payload").iterdir())), 8)
+            self.assertEqual(len(list((root / "payload").iterdir())), 2)
 
     def test_failed_upload_never_publishes_and_draft_retry_completes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -349,24 +349,13 @@ class ReleaseInventoryTests(unittest.TestCase):
                 record("python", root, "0.1.0", "a" * 40)
             self.assertFalse((root / "python.json").exists())
 
-    def test_native_checksum_and_source_inventory(self):
+    def test_unknown_slot_is_rejected_before_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             slot = "aarch64-apple-darwin"
-            binary = root / f"makeghrepo-{slot}"
-            binary.write_bytes(b"inert native fixture")
-            checksum = root / f"{binary.name}.sha256"
-            checksum.write_text("incorrect checksum\n")
-            with self.assertRaisesRegex(ValueError, "checksum"):
+            with self.assertRaisesRegex(ValueError, "unknown release slot"):
                 record(slot, root, "0.36.0", "b" * 40)
-            checksum.write_text(
-                f"{hashlib.sha256(binary.read_bytes()).hexdigest()}  {binary.name}\n"
-            )
-            record(slot, root, "0.36.0", "b" * 40)
-            inventory = json.loads((root / f"{slot}.json").read_text())
-            self.assertEqual(inventory["source"], "b" * 40)
-            self.assertEqual(inventory["version"], "0.36.0")
-            self.assertEqual(len(inventory["assets"]), 2)
+            self.assertFalse((root / f"{slot}.json").exists())
 
     def test_every_build_blocks_publisher_and_write_jobs_never_build(self):
         directory = ROOT / ".github/workflows"
@@ -381,10 +370,10 @@ class ReleaseInventoryTests(unittest.TestCase):
         self.assertEqual(callers, {"auto-release.yml", "release.yml"})
         workflow = yaml.safe_load((ROOT / ".github/workflows/release-build.yml").read_text())
         jobs = workflow["jobs"]
-        self.assertEqual(jobs["publish"]["needs"], ["python", "binaries"])
+        self.assertEqual(jobs["publish"]["needs"], ["python"])
         self.assertNotIn("if", jobs["publish"])
-        self.assertEqual(len(jobs["binaries"]["strategy"]["matrix"]["include"]), 3)
-        for name in ("python", "binaries"):
+        self.assertNotIn("binaries", jobs)
+        for name in ("python",):
             self.assertEqual(jobs[name]["permissions"], {"contents": "read"})
             self.assertNotIn("GH_TOKEN", jobs[name].get("env", {}))
             checkout = jobs[name]["steps"][0]

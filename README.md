@@ -19,8 +19,8 @@ gh auth refresh -s project,workflow   # once: project boards + pushing workflow 
 
 Update the existing unpinned Git installation with `uv tool upgrade makeghrepo`,
 then check `makeghrepo --version`. Python and Copier remain supported. See
-[installation and updates](docs/install.md) for pinned installs and the separate
-prebuilt Rust command on Apple Silicon and Linux.
+[installation and updates](docs/install.md) for pinned installs and the last
+prebuilt Rust binaries (v0.51.0).
 
 ## Use
 
@@ -53,7 +53,7 @@ through fixed `match`/`case` branches, then renders with Copier/Jinja.
 GitHub requests, local checks, or creating a git repository or resume marker.
 It preserves Copier in the Python installation; Copier may inspect local Git
 metadata when Git is available. The destination must be absent or empty.
-Python and Rust use the same preview defaults: `quiet-otter` when no name is
+Previews use fixed defaults: `quiet-otter` when no name is
 given, owner `someone`, author `Test User`, description `a test project`, and
 year `2026`. For repeatable previews, `--owner`, `--author`, `--description`, and
 `--year` override those values alongside `--render`. `--private` and `--lib`
@@ -114,7 +114,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 - `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python the version *is* the tag (hatchling + uv-dynamic-versioning, nothing to bump by hand): it checks the tag against the computed version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`. For Rust it checks the tag against `Cargo.toml`, tests, builds a release binary and attaches it with a `SHA256SUMS` file. For Go it tests and attaches static linux amd64 and arm64 binaries with `SHA256SUMS`. For C/C++ (without ObjC) it builds Release, runs ctest and attaches the linux x86_64 binaries with `SHA256SUMS`. For js/ts/css it attaches the `npm pack` tarball.
 - `auto-release.yml` (public Python repos): every merge to `main` waits for that commit's `ci` check, then tags the next minor version and publishes the release. Generated projects retain their own release workflow; makeghrepo's repository pipeline is described below.
 
-makeghrepo itself uses one shared automatic/manual release build graph. The exact source commit selects one stable tag version (a retry reuses its existing tag). Read-only build runners verify Python wheel/sdist metadata, all three native CLI versions, and checksums. A fresh checkout-free publisher has write authority for its whole job, executes only reviewed workflow code, and independently verifies the downloaded inventories before any publication request. Uploads first form a draft release; a remote digest/size check verifies the complete eight-asset set before publication. A failed build or upload leaves no newly public partial release. Recover a failed draft by re-running auto-release on its source or Release on its existing stable tag. Drafts are resolved through `gh release view` and verified using their validated numeric REST ID. Both authorized callers hold the same publication queue while reading every release-list page, comparing published stable versions numerically, and explicitly setting `make_latest=true` only when the candidate is at least as new as their maximum; otherwise they send `false`. Malformed or ambiguous evidence leaves the release as a draft. This ordering guarantee applies to those serialized callers: GitHub documents no conditional release PATCH, so an external publisher outside the queue can race the read/update and must be coordinated separately. Creation dates and the legacy latest policy do not determine this decision. Existing public releases are verified and never overwritten; older incomplete releases require explicit review. No source branch/version-bump commit is pushed.
+makeghrepo itself uses one shared automatic/manual release build graph. The exact source commit selects one stable tag version (a retry reuses its existing tag). A read-only build runner verifies the Python wheel/sdist metadata against the selected version. A fresh checkout-free publisher has write authority for its whole job, executes only reviewed workflow code, and independently verifies the downloaded inventories before any publication request. Uploads first form a draft release; a remote digest/size check verifies the complete two-asset set (wheel and sdist) before publication. A failed build or upload leaves no newly public partial release. Recover a failed draft by re-running auto-release on its source or Release on its existing stable tag. Drafts are resolved through `gh release view` and verified using their validated numeric REST ID. Both authorized callers hold the same publication queue while reading every release-list page, comparing published stable versions numerically, and explicitly setting `make_latest=true` only when the candidate is at least as new as their maximum; otherwise they send `false`. Malformed or ambiguous evidence leaves the release as a draft. This ordering guarantee applies to those serialized callers: GitHub documents no conditional release PATCH, so an external publisher outside the queue can race the read/update and must be coordinated separately. Creation dates and the legacy latest policy do not determine this decision. Existing public releases are verified and never overwritten; older incomplete releases require explicit review. No source branch/version-bump commit is pushed.
 
 Main-push CI runs independently for each run; only superseded PR runs are canceled. Auto-releases use GitHub's native `queue: max` to serialize releases without replacing pending runs. The queue holds at most 100 pending runs; overflow runs are canceled. Queue order follows arrival at the concurrency group, not necessarily commit order. Failed CI still blocks that commit's release. These are platform limits on the every-merge release policy; see [GitHub's concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 
@@ -137,17 +137,13 @@ Main-push CI runs independently for each run; only superseded PR runs are cancel
 | docker | `Dockerfile` for your language (non-root, `/data` volume), `compose.yaml` (app service, `appdata` volume), `.dockerignore` | hadolint, `docker build` (CI) |
 | shell | `scripts/hello.sh` | shellcheck |
 
-## Rust build
+## Rust implementation
 
-`rust/` provides an alternative implementation using the same registry and
-templates. Every golden snapshot must match Python byte for byte. Releases attach
-optimized binaries for Linux x86_64, Linux ARM64, and Apple Silicon, each with a
-checksum. Follow [the prebuilt installation steps](docs/install.md#prebuilt-rust-alternative)
-to install it as `makeghrepo-rs`, keeping the uv-managed Python command intact.
+The Rust implementation is parked on the `rust` branch (see #150).
 
-Both commands support `NAME LANG... --render DIR` for offline previews. Rust also
-supports `--snapshot [--combo NAME]` for golden comparisons. CI builds and tests
-Rust; using the prebuilt distribution requires no local compiler.
+Releases up to v0.51.0 still carry its prebuilt binaries; later releases are
+Python-only. Generating Rust *projects* (`makeghrepo NAME rust`) is unchanged. See
+[the native binaries section](docs/install.md#native-rust-binaries-parked).
 
 ## Develop
 
@@ -165,7 +161,7 @@ makeghrepo's own CI does all the real verification on GitHub runners; nothing ne
 - **`test`:** ruff, the full pytest suite, and the golden snapshots.
 - **`templates`:** renders every combo in `tests/golden_snapshots.py` and runs the generated project's own local checks on real toolchains. ObjC combos run on macOS.
 - **`actionlint`:** lints makeghrepo's workflows and every generated one.
-- **`distribution`:** clean wheel installs, Git tool upgrades, installed Python/Rust parity, and real local Git bootstrap/retry checks on all three supported native architectures. GitHub responses use a controlled fixture; these checks do not change live settings.
+- **`distribution`:** clean wheel installs, Git tool upgrades, wheel/Git-install render parity, and real local Git bootstrap/retry checks on Linux x86_64, Linux ARM64 and Apple Silicon. GitHub responses use a controlled fixture; these checks do not change live settings.
 - **`ci`:** rolls all of the above up into the one required check.
 
 ### Golden snapshots

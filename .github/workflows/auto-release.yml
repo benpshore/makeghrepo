@@ -2,7 +2,7 @@ name: Auto-release
 
 # A main push selects one stable minor version for its exact source. The queue
 # serializes allocation through publication. No branch bump/PR/PAT is needed:
-# dynamic Python versions and the Rust compile-time version use the same tag.
+# dynamic Python versions use the same tag.
 # Re-dispatch retries an existing source tag, including an unpublished draft.
 on:
   push:

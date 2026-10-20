@@ -316,7 +316,7 @@ def scenario(executable, private, failure):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "executables", nargs="+", help="Installed Python and/or Rust executable paths"
+        "executables", nargs="+", help="Installed makeghrepo executable paths"
     )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -340,7 +340,7 @@ def main():
         for results in evidence.values()
     ]
     assert all(result == normalized[0] for result in normalized), (
-        "Python/Rust configuration results differ"
+        "installed configuration results differ"
     )
     if args.output:
         args.output.write_text(json.dumps(evidence, indent=2) + "\n")

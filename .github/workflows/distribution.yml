@@ -43,13 +43,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-      - name: Rust toolchain for candidate builds
-        if: env.RELEASE == ''
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add "$TARGET"
-      - name: Clean installations, Git upgrade, and native parity
+      - name: Clean installations and Git upgrade
         if: env.RELEASE == ''
         run: |
           uv run --no-project --python 3.14 scripts/distribution-check \
