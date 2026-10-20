@@ -50,6 +50,54 @@ def _project_name(raw: str, langs: list[str]) -> str:
     return name
 
 
+def _dry_run(
+    raw_name: str | None,
+    langs: list[str],
+    *,
+    private: bool,
+    lib: bool,
+    project_license: ProjectLicense | None,
+    render: Path | None,
+    render_only: tuple[str | None, ...],
+) -> None:
+    """Print the bootstrap plan without writing files, running commands or using the network.
+
+    Offline by design (#154): the GitHub account, name availability and resume
+    state are reported as unverified instead of looked up.
+    """
+    if render is not None:
+        raise fail("--dry-run cannot be combined with --render; --render writes preview files")
+    if any(value is not None for value in render_only):
+        raise fail("--owner, --author, --description and --year require --render")
+    base_dir = Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")).expanduser().resolve()
+    if raw_name is None:
+        name, dest, exists = "random, chosen at creation", base_dir / "<random name>", False
+    else:
+        try:
+            name = _project_name(raw_name, langs)
+        except ValueError as exc:
+            raise fail(str(exc)) from exc
+        dest = base_dir / name
+        exists = dest.exists()
+    typer.echo("Dry run only: no files or directories were written; no network requests were made.")
+    typer.echo(f"Project: {name}")
+    typer.echo(f"Languages: {', '.join(langs) or 'any language'}")
+    typer.echo(f"Destination: {dest}")
+    resume_note = "yes (a real run would try to resume it)" if exists else "no"
+    typer.echo(f"Destination already exists: {resume_note}")
+    typer.echo(f"Visibility requested: {'private' if private else 'public'}")
+    typer.echo(f"License requested: {(project_license or ProjectLicense.NONE).value}")
+    typer.echo(f"Python library layout: {'yes' if lib else 'no'}")
+    typer.echo(
+        "Plan: look up the GitHub account, render the project (or resume it), run local "
+        "checks, commit, create the GitHub repository, apply settings, then push main."
+    )
+    typer.echo(
+        "Unverified: GitHub identity/authentication, repository availability and remote state, "
+        "local resume metadata, and local tool availability."
+    )
+
+
 @app.command(
     help="Create a new GitHub repo, fully configured. Re-run the same command to resume.\n\n"
     f"Languages (any number, or none): {', '.join(LANGS)}.",
@@ -77,6 +125,14 @@ def main(
             "--render", metavar="DIR", help="Render offline into DIR; no checks, repo or GitHub."
         ),
     ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            "-n",
+            help="Show the plan; write nothing, run nothing, no network. Not --render.",
+        ),
+    ] = False,
     show_version: Annotated[
         bool,
         typer.Option("--version", callback=_show_version, is_eager=True, help="Show the version."),
@@ -97,6 +153,17 @@ def main(
         raise fail(str(exc)) from exc
     if lib and "python" not in langs:
         raise fail("--lib only applies to python; add `python` to the language list")
+    if dry_run:
+        _dry_run(
+            raw_name,
+            langs,
+            private=private,
+            lib=lib,
+            project_license=project_license,
+            render=render,
+            render_only=(owner, author, description, year),
+        )
+        return
 
     # Only validated positional actions reach the renderer. Copier remains the
     # rendering implementation; parsing/help/version need none of its probes.
