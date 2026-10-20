@@ -106,6 +106,18 @@ def _deletes(calls):
 
 
 @pytest.mark.parametrize(
+    "created_at", ["not-a-date", "2027-01-15", _iso(NOW - 3600) + "junk", " " + _iso(NOW - 3600)]
+)
+def test_refuses_an_unparseable_creation_time(trash, created_at):
+    _clone(trash.base)
+    fixture = _fixture(repo={"owner": "me", "created_at": created_at})
+    result, calls = trash(NAME, fixture=fixture)
+    assert result.returncode == 1
+    assert "can't parse created_at" in result.stderr
+    assert _deletes(calls) == []
+
+
+@pytest.mark.parametrize(
     "args",
     [
         ["makeghrepo"],
