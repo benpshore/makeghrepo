@@ -11,6 +11,11 @@ def test_ensure_identity_lets_commit_succeed_without_any_host_identity(tmp_path,
     for role in ("AUTHOR", "COMMITTER"):
         monkeypatch.delenv(f"GIT_{role}_NAME", raising=False)
         monkeypatch.delenv(f"GIT_{role}_EMAIL", raising=False)
+    # Without configured identity, git may still guess user@hostname (macOS
+    # hostnames end in .local). Forbid guessing so "no identity" is real on every host.
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
     gitops.init(tmp_path)
     repo = git.Repo(tmp_path)
     (tmp_path / "f.txt").write_text("x")

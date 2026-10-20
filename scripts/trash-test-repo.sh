@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# lint: allow-bash (needs [[ =~ ]], (( )) and $'...')
 # Delete a throwaway test repo that makeghrepo created: its GitHub Project board(s),
 # the GitHub repo, and the local clone. Every guard runs before anything is deleted.
 #
@@ -50,7 +51,13 @@ created_at=${info#*$'\t'}
 
 # Guard 3: created less than 24 hours ago.
 now=${TRASH_NOW_EPOCH:-$(date -u +%s)}
-created=$(date -u -d "$created_at" +%s) || die "can't parse created_at '$created_at'"
+# GitHub returns UTC ISO-8601. Check the exact shape first: BSD date ignores trailing junk.
+[[ "$created_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+  die "can't parse created_at '$created_at'"
+# GNU date (Linux), then BSD date (macOS).
+created=$(date -u -d "$created_at" +%s 2>/dev/null ||
+  date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$created_at" +%s 2>/dev/null) ||
+  die "can't parse created_at '$created_at'"
 ((now - created < 86400)) || die "$owner/$name was created $created_at, over 24 hours ago"
 
 # Guard 4: if the local clone exists, it must really be this repo's clone.
