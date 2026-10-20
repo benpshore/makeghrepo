@@ -296,9 +296,9 @@ def test_complete_rust_matrix_must_succeed_before_any_publication():
 
 
 def test_auto_release_downloads_use_verified_action_contract():
-    # Verified against actions/download-artifact v8.0.1 action.yml at this SHA:
+    # Verified against actions/download-artifact v8.0.2 action.yml at this SHA:
     # same-run access needs no github-token; digest-mismatch defaults to error.
-    download_action = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+    download_action = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"
     root = Path(__file__).resolve().parents[1] / ".github/workflows"
     release = yaml.safe_load((root / "release-build.yml").read_text())["jobs"]
     ci = yaml.safe_load((root / "ci.yml").read_text())["jobs"]
