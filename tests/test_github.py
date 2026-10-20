@@ -10,7 +10,7 @@ from makeghrepo import github
 
 @pytest.fixture
 def github_defaults():
-    # The Rust tests read this same policy contract; it is not a rendered snapshot.
+    # A shared policy contract (the parked Rust port read it too); not a rendered snapshot.
     return json.loads((Path(__file__).parent / "fixtures/github_defaults.json").read_text())
 
 

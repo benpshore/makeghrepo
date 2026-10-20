@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Verify each build's version before passing inert files to publication.
 
-The wheel and sdist must agree with the selected tag. Native runners execute
-their own binary's --version before calling this script, then record digests
-and sizes. The publisher independently verifies these four fixed inventories;
-neither a partial matrix nor an accidental extra asset can become public.
+The wheel and sdist must agree with the selected tag; their digests and sizes
+are recorded. The publisher independently verifies this fixed inventory; neither
+a partial build nor an accidental extra asset can become public. Native Rust
+binaries are no longer released here (parked on the rust branch, see #150).
 """
 
 import argparse
@@ -17,28 +17,22 @@ from pathlib import Path
 
 
 def record(slot: str, root: Path, version: str, source: str) -> None:
-    if slot == "python":
-        wheel = root / f"makeghrepo-{version}-py3-none-any.whl"
-        sdist = root / f"makeghrepo-{version}.tar.gz"
-        with zipfile.ZipFile(wheel) as archive:
-            metadata = archive.read(f"makeghrepo-{version}.dist-info/METADATA").decode()
-        with tarfile.open(sdist) as archive:
-            member = archive.extractfile(f"makeghrepo-{version}/PKG-INFO")
-            if member is None:
-                raise ValueError("sdist has no package metadata")
-            info = member.read().decode()
-        for content in (metadata, info):
-            fields = email.message_from_string(content)
-            if fields["Name"] != "makeghrepo" or fields["Version"] != version:
-                raise ValueError("built Python metadata does not match selected release")
-        files = [wheel, sdist]
-    else:
-        binary = root / f"makeghrepo-{slot}"
-        checksum = root / f"makeghrepo-{slot}.sha256"
-        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-        if checksum.read_text().split() != [digest, binary.name]:
-            raise ValueError("native checksum does not match binary")
-        files = [binary, checksum]
+    if slot != "python":
+        raise ValueError(f"unknown release slot: {slot}")
+    wheel = root / f"makeghrepo-{version}-py3-none-any.whl"
+    sdist = root / f"makeghrepo-{version}.tar.gz"
+    with zipfile.ZipFile(wheel) as archive:
+        metadata = archive.read(f"makeghrepo-{version}.dist-info/METADATA").decode()
+    with tarfile.open(sdist) as archive:
+        member = archive.extractfile(f"makeghrepo-{version}/PKG-INFO")
+        if member is None:
+            raise ValueError("sdist has no package metadata")
+        info = member.read().decode()
+    for content in (metadata, info):
+        fields = email.message_from_string(content)
+        if fields["Name"] != "makeghrepo" or fields["Version"] != version:
+            raise ValueError("built Python metadata does not match selected release")
+    files = [wheel, sdist]
     assets = []
     for path in files:
         content = path.read_bytes()

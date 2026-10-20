@@ -13,7 +13,7 @@ GitHub creation and publication remain unavailable in beta. The separate `cloud`
 path plans and consumes prebuilt assets using authenticated, read-only GitHub API
 calls. It performs no local daughter dependency installation or checks.
 On the offline path, omitting `--render` fails before effects,
-including with `--dry-run`. Existing stable and Rust commands retain their behavior.
+including with `--dry-run`. The existing stable command retains its behavior.
 
 ```sh
 uv tool install ./beta

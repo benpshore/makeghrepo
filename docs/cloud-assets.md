@@ -167,8 +167,8 @@ uv run python scripts/regen-beta-sources --check
 Stable source retains PR178's CLI reporting correction and regression tests; it
 is not identical to main. Stable rendering/templates, Rust, golden files, root
 packaging/lock and release workflows are unchanged from the inspected main.
-The source manifest, installed distributions, producer and native renderer parity
-remain required CI gates. Passing historical or local fixture runs alone does not
+The source manifest, installed distributions and producer remain required CI
+gates; the Rust renderer is parked on the `rust` branch (#150). Passing historical or local fixture runs alone does not
 establish that this combined tree passes them.
 
 Existing upstream CI was independently re-read through GitHub: PR175's
@@ -185,7 +185,7 @@ heads and remain open; this task does not authorize closing them or claim their
 unique changes landed. The historical inventory is in `reconciliation-heads.json`.
 
 1. Preserve PR178 and the cloud checkpoint as parents of the additive integration.
-   Keep stable/Rust rendering unchanged. Run the full existing CI, including the
+   Keep stable rendering unchanged. Run the full existing CI, including the
    beta-assets and installed coexistence gates, on the exact integration head.
 2. Resolve producer/format/integration failures there. A reviewed manual run at
    that exact source is the first consumable artifact; PR candidates remain test
@@ -196,8 +196,8 @@ unique changes landed. The historical inventory is in `reconciliation-heads.json
    persisted remote intent/uncertainty reconciliation, a cloud metadata
    materializer and a verified-source clone gate before enabling live bootstrap.
 4. If adopting PR175's stable shared lock template, generate trusted goldens by
-   the existing main/manual artifact procedure, validate them completely and
-   pass Python/Rust parity. Do not carry its known failing goldens forward or
+   the existing main/manual artifact procedure, validate them completely.
+   Do not carry its known failing goldens forward or
    silently restrict stable language support.
 5. Keep PR145's release refactor and its missing required ci context outside
    this implementation; preserve it in the consolidation inventory for separate

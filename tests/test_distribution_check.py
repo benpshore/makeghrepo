@@ -1,6 +1,5 @@
 """Checks for the acceptance harness's artifact and renderer comparisons."""
 
-import hashlib
 import json
 import runpy
 import shutil
@@ -12,47 +11,31 @@ import pytest
 CHECK = runpy.run_path(str(Path(__file__).parents[1] / "scripts/distribution-check"))
 
 
-def test_native_checksum_rejects_changed_bytes_and_unexpected_paths(tmp_path):
-    binary = tmp_path / "makeghrepo-target"
-    binary.write_bytes(b"native fixture")
-    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-    checksum = tmp_path / "binary.sha256"
-    checksum.write_text(f"{digest}  {binary.name}\n")
-    assert CHECK["verify_checksum"](binary, checksum) == digest
-    binary.write_bytes(b"changed")
-    with pytest.raises(RuntimeError, match="checksum mismatch"):
-        CHECK["verify_checksum"](binary, checksum)
-    for text in (f"{digest}  ../{binary.name}\n", f"{digest}  {binary.name}\nextra\n"):
-        checksum.write_text(text)
-        with pytest.raises(RuntimeError, match="invalid native checksum manifest"):
-            CHECK["verify_checksum"](binary, checksum)
-
-
 @pytest.mark.parametrize("change", ["content", "name", "executable", "extra", "symlink", "git"])
 def test_render_comparison_detects_real_distribution_differences(tmp_path, change):
-    python, rust = tmp_path / "python", tmp_path / "rust"
+    python, other = tmp_path / "python", tmp_path / "other"
     python.mkdir()
     (python / ".hidden").write_text("included\n")
     script = python / "hello.sh"
     script.write_text("#!/bin/sh\nexit 0\n")
     script.chmod(0o755)
-    shutil.copytree(python, rust)
-    result = CHECK["compare_trees"](python, rust)
+    shutil.copytree(python, other)
+    result = CHECK["compare_trees"](python, other)
     assert result["files"] == 2 and len(result["tree_sha256"]) == 64
     if change == "content":
-        (rust / ".hidden").write_text("different\n")
+        (other / ".hidden").write_text("different\n")
     elif change == "name":
-        (rust / ".hidden").rename(rust / "renamed")
+        (other / ".hidden").rename(other / "renamed")
     elif change == "executable":
-        (rust / "hello.sh").chmod(0o644)
+        (other / "hello.sh").chmod(0o644)
     elif change == "extra":
-        (rust / "extra").touch()
+        (other / "extra").touch()
     elif change == "symlink":
-        (rust / "outside").symlink_to(script)
+        (other / "outside").symlink_to(script)
     else:
-        (rust / ".git").mkdir()
+        (other / ".git").mkdir()
     with pytest.raises(RuntimeError):
-        CHECK["compare_trees"](python, rust)
+        CHECK["compare_trees"](python, other)
 
 
 def test_wheel_metadata_identifies_actual_distribution(tmp_path):

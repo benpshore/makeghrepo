@@ -2,8 +2,7 @@
 
 Each file owns everything makeghrepo knows about one token (aliases, local checks,
 CI job, Dependabot ecosystem, CodeQL language, npm scripts...), so adding a language
-adds files instead of editing shared tables and templates. The Rust port reads the
-same files. Field meanings (schema 1):
+adds files instead of editing shared tables and templates. Field meanings (schema 1):
 
 - ``id``/``order``: the token and its position in ``LANGUAGES`` (and so in every
   generated file that lists languages).

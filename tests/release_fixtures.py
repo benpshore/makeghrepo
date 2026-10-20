@@ -12,17 +12,11 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGETS = (
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-    "aarch64-apple-darwin",
-)
 
 
 def write_fixtures(root, version, source, *, split=False):
     slots = {
         "python": [f"makeghrepo-{version}-py3-none-any.whl", f"makeghrepo-{version}.tar.gz"],
-        **{target: [f"makeghrepo-{target}", f"makeghrepo-{target}.sha256"] for target in TARGETS},
     }
     for slot, names in slots.items():
         directory = root / slot if split else root
@@ -30,10 +24,6 @@ def write_fixtures(root, version, source, *, split=False):
         assets = []
         for name in names:
             content = ("inert fixture: " + name + "\n").encode()
-            if name.endswith(".sha256"):
-                binary = directory / name.removesuffix(".sha256")
-                digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-                content = f"{digest}  {binary.name}\n".encode()
             (directory / name).write_bytes(content)
             assets.append(
                 {"name": name, "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
@@ -64,14 +54,14 @@ def verify_transfer(downloaded, version, source):
             trial = Path(temporary)
             dist = trial / "dist"
             shutil.copytree(downloaded, dist, symlinks=True)
-            native = dist / "makeghrepo-aarch64-apple-darwin"
+            payload = dist / f"makeghrepo-{version}-py3-none-any.whl"
             inventory = dist / "python.json"
             data = json.loads(inventory.read_text())
             env = os.environ | {"VERSION": version, "SOURCE": source}
             if case == "missing":
-                native.unlink()
+                payload.unlink()
             elif case == "corrupt":
-                native.write_bytes(b"corrupt fixture")
+                payload.write_bytes(b"corrupt fixture")
             elif case == "wrong_source":
                 data["source"] = "b" * 40
             elif case == "wrong_version":
@@ -84,8 +74,8 @@ def verify_transfer(downloaded, version, source):
                 data["assets"].append(data["assets"][0])
             elif case == "symlink_payload":
                 target = trial / "inert-target"
-                native.rename(target)
-                native.symlink_to(target)
+                payload.rename(target)
+                payload.symlink_to(target)
             elif case == "invalid_source":
                 env["SOURCE"] = "invalid-source"
             elif case == "invalid_version":
@@ -97,7 +87,7 @@ def verify_transfer(downloaded, version, source):
             if case == "valid":
                 assert result.returncode == 0, result.stderr.decode()
                 assets = json.loads((trial / "expected-assets.json").read_text())
-                assert len(assets) == 8
+                assert len(assets) == 2
                 assert {p.name for p in (trial / "payload").iterdir()} == {
                     a["name"] for a in assets
                 }
@@ -115,7 +105,7 @@ if __name__ == "__main__":
     version, source = "0.0.0", "a" * 40
     if args.operation == "create":
         write_fixtures(args.directory, version, source, split=True)
-        print("Created four inert release artifacts containing eight payloads")
+        print("Created one inert release artifact containing two payloads")
     else:
         rejected = verify_transfer(args.directory, version, source)
-        print(f"Verified eight downloaded payloads; rejected {rejected} invalid transfers")
+        print(f"Verified two downloaded payloads; rejected {rejected} invalid transfers")

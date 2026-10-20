@@ -1,8 +1,7 @@
 # Install and update
 
-Python with Copier and the native Rust binary are supported alternatives from the
-same releases. Keep the Python route if you already use `uv tool install`; installing
-Rust is optional. Both need Git and an authenticated GitHub CLI (`gh auth login`)
+Install the Python/Copier distribution with uv. The native Rust binary is parked
+(see below). It needs Git and an authenticated GitHub CLI (`gh auth login`)
 for repository creation. Offline rendering needs no GitHub authentication. Selected
 language checks can additionally require their own toolchains.
 
@@ -29,9 +28,12 @@ This assumes the original Git source was unpinned, as shown above. A source pinn
 to a tag or commit keeps that constraint during an upgrade; use `uv tool install`
 with the intended new source/ref to change it. See [uv's upgrade behavior](https://docs.astral.sh/uv/concepts/tools/#upgrading-tools).
 
-## Native Rust binaries
+## Native Rust binaries (parked)
 
-Releases contain optimized binaries and `.sha256` files for these platforms:
+The Rust implementation is parked on the `rust` branch (see #150). Releases up to
+and including **v0.51.0** contain optimized binaries and `.sha256` files; later
+releases are Python-only, so the commands below pin that tag instead of following
+the latest release. Existing tags and release assets are unchanged.
 
 | Platform | Asset suffix |
 | --- | --- |
@@ -39,19 +41,15 @@ Releases contain optimized binaries and `.sha256` files for these platforms:
 | Linux x86_64 | `x86_64-unknown-linux-gnu` |
 | Linux ARM64 | `aarch64-unknown-linux-gnu` |
 
-The native Linux acceptance checks run on Ubuntu 24.04; the macOS checks run on an
-Apple Silicon runner. Choose an asset matching your operating system and CPU.
-No Rust compiler is needed to install it.
-
 The following Apple Silicon example installs under **`makeghrepo-rs`**, keeping the
 uv-managed `makeghrepo` executable intact. For Linux, change `target` to the matching
-suffix in the table. Run the same sequence to update to a later release.
+suffix in the table. No Rust compiler is needed to install it.
 
 ```sh
 (
   set -eu
   target=aarch64-apple-darwin
-  version=$(gh release view --repo benpshore/makeghrepo --json tagName --jq .tagName)
+  version=v0.51.0  # last release with native binaries; the Rust port is parked (#150)
   download_dir=$(mktemp -d)
   trap 'rm -rf "$download_dir"' EXIT
   gh release download "$version" --repo benpshore/makeghrepo \
@@ -74,6 +72,7 @@ suffix in the table. Run the same sequence to update to a later release.
 
 Invoke `~/.local/bin/makeghrepo-rs`, or add `~/.local/bin` to your shell's `PATH`.
 An unavailable asset or failed checksum stops the sequence before installation.
+It receives no further updates; prefer the Python route for new features.
 
 ## Check the installed tool
 
@@ -82,33 +81,33 @@ running generated-project checks, or publishing anything:
 
 ```sh
 makeghrepo preview python --lib --private --render ./preview-python
-makeghrepo-rs preview rust --render ./preview-rust
+makeghrepo preview rust --render ./preview-rust
 ```
 
 New projects have no license file or license metadata by default. Add `--license MIT`
-only when that is the intended license. Both tools refuse to overwrite a nonempty
+only when that is the intended license. The tool refuses to overwrite a nonempty
 render directory. For repository creation, omit `--render`; its normal checks and
 GitHub configuration then apply. Installing an update does not change any existing
 repository's live rules.
 
 ## Release verification
 
-CI runs `scripts/distribution-check` on all three native architectures. It builds
-an optimized Rust binary and a wheel, installs the wheel into a clean uv tool
-directory, and upgrades a separate Git-installed tool from v0.33.0 to the exact
-candidate commit. Candidate version v0.34.0 is a disposable local fixture; no
-release or remote tag is created. Installed tools must pass help/version checks
-and render matching file names, bytes, and executable bits for eight representative
-public/private and licensed/unlicensed projects.
+CI runs `scripts/distribution-check` on Linux x86_64, Linux ARM64 and Apple Silicon
+runners. It builds a wheel, installs it into a clean uv tool directory, and upgrades
+a separate Git-installed tool from v0.33.0 to the exact candidate commit. Candidate
+version v0.34.0 is a disposable local fixture; no release or remote tag is created.
+Both installed tools must pass help/version checks and render matching file names,
+bytes, and executable bits for eight representative public/private and
+licensed/unlicensed projects.
 
-The installed wheel and Rust binary also run five real-Git bootstrap and retry
-scenarios against a controlled GitHub fixture, comparing their resulting settings,
-rulesets and push behavior. These tests use local bare remotes and never call
-GitHub or change live policy.
+The installed wheel also runs five real-Git bootstrap and retry scenarios against a
+controlled GitHub fixture, recording the resulting settings, rulesets and push
+behavior. These tests use local bare remotes and never call GitHub or change live
+policy.
 
 The workflow's optional `release` input runs the same installation/render checks
-against a published stable tag instead, verifying the native asset's checksum
-before execution. Each runner uploads JSON evidence containing the tested version,
+against a published stable tag's wheel instead, verifying its version before
+execution. Each runner uploads JSON evidence containing the tested version,
 commit transition where applicable, artifact hashes, rendered-tree hashes,
 bootstrap configuration results, and elapsed stage times. These checks complement the full generated-project CI matrix;
 they do not exercise live GitHub administrative settings.

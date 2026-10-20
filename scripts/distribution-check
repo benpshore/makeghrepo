@@ -3,7 +3,8 @@
 
 The candidate path upgrades an unpinned local Git source from v0.33.0 to this
 checkout. Its v0.34.0 tag exists only inside a disposable clone. --release instead
-downloads published assets and verifies the native binary's checksum first.
+downloads a published wheel and verifies its version first. The Rust
+implementation and its native binaries are parked on the rust branch (#150).
 Neither path creates GitHub repositories, pushes refs, or changes user tools.
 """
 
@@ -91,15 +92,6 @@ def wheel_version(path: Path) -> str:
     require(parsed["Name"] == "makeghrepo", "unexpected wheel project")
     require(bool(parsed["Version"]), "wheel has no version")
     return parsed["Version"]
-
-
-def verify_checksum(binary: Path, checksum: Path) -> str:
-    # Accept only the one exact asset, never paths or extra commands from a checksum file.
-    match = re.fullmatch(r"([0-9a-f]{64})  (\S+)\n?", checksum.read_text())
-    require(match is not None and match[2] == binary.name, "invalid native checksum manifest")
-    actual = sha256(binary)
-    require(actual == match[1], "native release checksum mismatch")
-    return actual
 
 
 def rendered_files(root: Path) -> dict[str, tuple[bool, bytes]]:
@@ -252,7 +244,7 @@ def check_installed_tools(tools: dict[str, Path], version: str, root: Path, env:
     bootstrap = Path(__file__).resolve().with_name("bootstrap-check")
     require(bootstrap.is_file(), "scripts/bootstrap-check is required for distribution acceptance")
     report = root / "bootstrap-evidence.json"
-    checked = {name: tools[name] for name in ("python-wheel", "rust")}
+    checked = {"python-wheel": tools["python-wheel"]}
     run([sys.executable, bootstrap, *checked.values(), "--output", report], env=env, timeout=300)
     bootstrap_results = json.loads(report.read_text())
     return {
@@ -314,25 +306,7 @@ def candidate_check(repo: Path, target: str, root: Path, evidence: dict, env: di
         require(len(wheels) == 1, "candidate must build exactly one wheel")
         wheel = wheels[0]
         require(wheel_version(wheel) == CANDIDATE_VERSION, "candidate wheel version mismatch")
-    with stage(evidence, "build native release binary"):
-        build_env = {
-            **env,
-            "CARGO_TARGET_DIR": str(root / "target"),
-            "MAKEGHREPO_VERSION": CANDIDATE_VERSION,
-        }
-        evidence["rustc"] = run(["rustc", "--version"], env=env)
-        run(
-            ["cargo", "build", "--release", "--locked", "--target", target],
-            cwd=source / "rust",
-            env=build_env,
-            timeout=1500,
-        )
-        binary = root / "target" / target / "release" / "makeghrepo"
-        evidence.update(
-            version=CANDIDATE_VERSION,
-            rust_profile="release",
-            artifacts={wheel.name: sha256(wheel), f"makeghrepo-{target}": sha256(binary)},
-        )
+        evidence.update(version=CANDIDATE_VERSION, artifacts={wheel.name: sha256(wheel)})
     wheel_env = tool_env(root / "wheel-install", env)
     with stage(evidence, "clean wheel install"):
         python_wheel = install_wheel(wheel, wheel_env)
@@ -354,7 +328,6 @@ def candidate_check(repo: Path, target: str, root: Path, evidence: dict, env: di
                 {
                     "python-wheel": python_wheel,
                     "python-git": Path(git_env["UV_TOOL_BIN_DIR"]) / "makeghrepo",
-                    "rust": binary,
                 },
                 CANDIDATE_VERSION,
                 root,
@@ -372,8 +345,6 @@ def release_check(tag: str, target: str, root: Path, evidence: dict, env: dict) 
     evidence.update(version=version, release=tag, repository=REPOSITORY)
     downloads = root / "downloads"
     downloads.mkdir()
-    binary = downloads / f"makeghrepo-{target}"
-    checksum = binary.with_name(binary.name + ".sha256")
     wheel = downloads / f"makeghrepo-{version}-py3-none-any.whl"
     with stage(evidence, "download and verify published assets"):
         # Only this read-only download retains the caller's gh authentication.
@@ -388,27 +359,15 @@ def release_check(tag: str, target: str, root: Path, evidence: dict, env: dict) 
                 "--dir",
                 downloads,
                 "--pattern",
-                binary.name,
-                "--pattern",
-                checksum.name,
-                "--pattern",
                 wheel.name,
             ]
         )
-        digest = verify_checksum(binary, checksum)
         require(wheel_version(wheel) == version, "published wheel version does not match its tag")
-        binary.chmod(0o755)
-        evidence["artifacts"] = {
-            binary.name: digest,
-            checksum.name: sha256(checksum),
-            wheel.name: sha256(wheel),
-        }
+        evidence["artifacts"] = {wheel.name: sha256(wheel)}
     with stage(evidence, "clean published wheel install"):
         python = install_wheel(wheel, tool_env(root / "wheel-install", env))
     with stage(evidence, "published CLI, renderer, and bootstrap parity"):
-        evidence.update(
-            check_installed_tools({"python-wheel": python, "rust": binary}, version, root, env)
-        )
+        evidence.update(check_installed_tools({"python-wheel": python}, version, root, env))
 
 
 def main() -> int:
@@ -420,7 +379,7 @@ def main() -> int:
     evidence = {"platform": platform.platform(), "stages": [], "status": "failed"}
     try:
         target = TARGETS.get((platform.system(), platform.machine()))
-        require(target is not None, "this platform has no supported native makeghrepo distribution")
+        require(target is not None, "this platform has no supported distribution check target")
         require(args.expected_target in (None, target), "runner architecture does not match target")
         evidence["target"] = target
         with tempfile.TemporaryDirectory(prefix="makeghrepo-distribution-") as temporary:
