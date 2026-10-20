@@ -35,6 +35,7 @@ makeghrepo quiet-otter python --license MIT # explicitly opt in to an MIT licens
 makeghrepo quiet-otter python --lib # library layout, no console script (like `uv init --lib`)
 makeghrepo --version
 makeghrepo -h                       # --help also works
+makeghrepo quiet-otter python -n    # --dry-run: print the plan, change nothing
 makeghrepo quiet-otter python --render ./preview
 ```
 
@@ -58,6 +59,11 @@ year `2026`. For repeatable previews, `--owner`, `--author`, `--description`, an
 `--year` override those values alongside `--render`. `--private` and `--lib`
 work as usual. Preview folders have no resume marker and cannot be published
 by rerunning the bootstrap command against them.
+
+`--dry-run` (`-n`) is separate from `--render`: it checks the name and languages,
+prints the planned bootstrap and returns without writing files, running commands
+or making network requests. GitHub identity, name availability, remote state and
+resume metadata are reported as unverified. It cannot be combined with `--render`.
 
 If anything fails, fix it and run the same command again. The repo already exists, so makeghrepo skips creating it and only finishes what's missing: pushing `main` and re-applying settings. Every setting is safe to re-apply.
 

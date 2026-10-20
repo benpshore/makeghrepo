@@ -1,4 +1,9 @@
+import builtins
 import json
+import os
+import socket
+import subprocess
+from pathlib import Path
 
 import git
 import pytest
@@ -28,6 +33,122 @@ def gh(tmp_path, monkeypatch):
     monkeypatch.setattr(github, "configure_all", configure_all)
     monkeypatch.setattr(scaffold, "smoke_test", lambda *a: None)  # covered in test_template
     return state
+
+
+@pytest.fixture
+def forbid_effects(monkeypatch):
+    """Make any file write, subprocess, network connection or gh/git/render call fail."""
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("dry-run attempted an external or mutating operation")
+
+    original_open = builtins.open
+    original_path_open = Path.open
+    original_os_open = os.open
+    write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+
+    def read_only_open(file, mode="r", *args, **kwargs):
+        if any(flag in mode for flag in "wax+"):
+            forbidden(file, mode)
+        return original_open(file, mode, *args, **kwargs)
+
+    def read_only_path_open(path, mode="r", *args, **kwargs):
+        if any(flag in mode for flag in "wax+"):
+            forbidden(path, mode)
+        return original_path_open(path, mode, *args, **kwargs)
+
+    def read_only_os_open(path, flags, *args, **kwargs):
+        if flags & write_flags:
+            forbidden(path, flags)
+        return original_os_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", read_only_open)
+    monkeypatch.setattr(Path, "open", read_only_path_open)
+    monkeypatch.setattr(os, "open", read_only_os_open)
+    for name in ("write_text", "write_bytes", "mkdir", "touch"):
+        monkeypatch.setattr(Path, name, forbidden)
+    for name in ("mkdir", "remove", "rename", "replace"):
+        monkeypatch.setattr(os, name, forbidden)
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    for name in ("api", "gh", "current_user", "repo_exists", "is_private", "create_repo"):
+        monkeypatch.setattr(github, name, forbidden)
+    monkeypatch.setattr(github, "configure_all", forbidden)
+    monkeypatch.setattr(scaffold, "render", forbidden)
+    monkeypatch.setattr(scaffold, "smoke_test", forbidden)
+    for name in ("init", "write_marker", "ensure_identity", "commit_all", "push_main"):
+        monkeypatch.setattr(gitops, name, forbidden)
+
+
+def test_effect_guard_catches_a_write(tmp_path, forbid_effects):
+    """Positive control: the guard used by the dry-run tests really trips."""
+    with pytest.raises(AssertionError, match="dry-run attempted"):
+        (tmp_path / "x").write_text("x")
+    with pytest.raises(AssertionError, match="dry-run attempted"):
+        github.current_user()
+
+
+@pytest.mark.parametrize("dry_flag", ["--dry-run", "-n"])
+def test_dry_run_shows_plan_without_effects(tmp_path, gh, forbid_effects, dry_flag):
+    args = ["My Project", "python", "c++", "--private", "--license", "MIT", "--lib", dry_flag]
+    result = runner.invoke(app, args, catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert "Project: my-project" in result.output
+    assert "Languages: python, cpp" in result.output
+    assert f"Destination: {tmp_path / 'my-project'}" in result.output
+    assert "Destination already exists: no" in result.output
+    assert "Visibility requested: private" in result.output
+    assert "License requested: MIT" in result.output
+    assert "Python library layout: yes" in result.output
+    assert "no network requests were made" in result.output
+    assert "Unverified:" in result.output
+    assert list(tmp_path.iterdir()) == []
+    assert gh["calls"] == []
+
+
+def test_dry_run_without_a_name_does_not_look_one_up(tmp_path, gh, forbid_effects):
+    result = runner.invoke(app, ["python", "-n"], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert "Project: random, chosen at creation" in result.output
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_dry_run_reports_an_existing_destination(tmp_path, gh):
+    (tmp_path / "taken").mkdir()
+    result = runner.invoke(app, ["taken", "-n"], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert "Destination already exists: yes" in result.output
+    assert list((tmp_path / "taken").iterdir()) == []
+    assert gh["calls"] == []
+
+
+@pytest.mark.parametrize("dry_flag", ["--dry-run", "-n"])
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["project", "cobol"], "'cobol'"),
+        (["!!!"], "invalid repo name"),
+        (["a" * 101], "invalid repo name"),
+        (["9lives", "rust"], "must start with a letter"),
+        (["project", "--lib"], "--lib only applies to python"),
+        (["project", "--render", "preview"], "cannot be combined with --render"),
+        (["project", "--owner", "someone"], "require --render"),
+    ],
+)
+def test_dry_run_rejects_invalid_requests_without_effects(
+    tmp_path, gh, forbid_effects, args, message, dry_flag
+):
+    result = runner.invoke(app, [*args, dry_flag], catch_exceptions=False)
+
+    assert result.exit_code == 1
+    assert message in result.output
+    assert list(tmp_path.iterdir()) == []
+    assert gh["calls"] == []
 
 
 def test_name_and_languages(tmp_path, gh):
