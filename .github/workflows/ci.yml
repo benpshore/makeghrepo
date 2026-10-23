@@ -244,7 +244,7 @@ jobs:
         with:
           node-version: 24
       # The runner images ship no `bundle` on PATH; the ruby combos need it for their lockfile.
-      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1.328.0
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
       # macOS runners have no Docker daemon, so the docker checks skip there anyway.
