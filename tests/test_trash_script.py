@@ -7,7 +7,7 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
-import git
+import gitcli
 import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "trash-test-repo.sh"
@@ -63,7 +63,7 @@ def _fixture(**overrides):
 def _clone(base: Path, name: str = NAME, origin: str = f"https://github.com/me/{NAME}.git"):
     path = base / name
     path.mkdir(parents=True)
-    git.Repo.init(path).create_remote("origin", origin)
+    gitcli.init_with_origin(path, origin)
     return path
 
 

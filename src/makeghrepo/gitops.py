@@ -1,14 +1,50 @@
-"""Local git operations via GitPython."""
+"""Local git operations by shelling out to the ``git`` CLI (standard library only)."""
 
 from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
-import git
-
 MARKER = "makeghrepo.json"  # lives inside .git, so it is never committed or pushed
+
+
+class GitError(RuntimeError):
+    """A ``git`` invocation failed, could not start, or timed out.
+
+    ``returncode`` is git's exit status, or None when git never ran (not installed).
+    """
+
+    def __init__(self, args: tuple[str, ...], returncode: int | None, stderr: str = "") -> None:
+        self.args_ = args
+        self.returncode = returncode
+        self.stderr = stderr.strip()
+        detail = f": {self.stderr}" if self.stderr else ""
+        status = "could not run" if returncode is None else f"exited with {returncode}"
+        super().__init__(f"git {' '.join(args)} {status}{detail}")
+
+
+def _git(
+    *args: str, cwd: Path | None = None, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    """Run ``git <args>`` (in ``cwd`` when given) and return the finished process.
+
+    Raises GitError on a non-zero exit when ``check`` is true, and always when git
+    cannot be started. Output is decoded as UTF-8 with replacement so a stray byte
+    in a path or message can never raise.
+    """
+    command = ["git", *(["-C", str(cwd)] if cwd is not None else []), *args]
+    try:
+        proc = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            stdin=subprocess.DEVNULL, check=False,
+        )  # fmt: skip
+    except OSError as exc:  # git missing or not executable
+        raise GitError(args, None, str(exc)) from exc
+    if check and proc.returncode != 0:
+        raise GitError(args, proc.returncode, proc.stderr)
+    return proc
 
 
 # Same pattern as the `repo` job in the generated ci.yml (a test keeps them in sync).
@@ -44,53 +80,55 @@ def read_marker(path: Path) -> dict[str, object] | None:
 
 def author_from_git_config() -> tuple[str, str]:
     """Return (name, email) from the user's global git config, or empty strings."""
-    reader = git.GitConfigParser(git.config.get_config_path("global"), read_only=True)
-    return (
-        str(reader.get_value("user", "name", default="")),
-        str(reader.get_value("user", "email", default="")),
-    )
+
+    def get(key: str) -> str:
+        # Exit 1 just means "not set". Any other failure (git missing, unreadable
+        # config) is also treated as unset: this only picks a display name.
+        try:
+            proc = _git("config", "--global", "--get", key, check=False)
+        except GitError:
+            return ""
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+
+    return get("user.name"), get("user.email")
 
 
 def init(path: Path) -> None:
-    git.Repo.init(path, initial_branch="main")
+    _git("init", "--quiet", "--initial-branch=main", str(path))
 
 
 def ensure_identity(path: Path, name: str, email: str) -> None:
     """Set commit identity on this repo only, if none is set at any config level.
 
     A fresh host or CI runner often has no ``user.name``/``user.email`` configured
-    anywhere, and ``git commit`` refuses to run without one. Shell out to ``git
-    config`` itself (not GitPython's own config parser, which resolves file paths
-    independently of ``git``'s ``GIT_CONFIG_*`` env vars and can disagree with what
-    ``git commit`` actually sees) so the check matches reality. Never touch the
-    user's global config: a plain ``git config <key> <value>`` writes to this
-    repo's own ``.git/config``.
+    anywhere, and ``git commit`` refuses to run without one. Ask ``git config``
+    itself so the check matches what ``git commit`` will see, including
+    ``GIT_CONFIG_*`` env vars. Never touch the user's global config: a plain
+    ``git config <key> <value>`` writes to this repo's own ``.git/config``.
     """
-    repo = git.Repo(path)
     for key, value in (("user.name", name), ("user.email", email)):
-        try:
-            repo.git.config("--get", key)
-        except git.GitCommandError:
-            repo.git.config(key, value)
+        if _git("config", "--get", key, cwd=path, check=False).returncode != 0:
+            _git("config", key, value, cwd=path)
 
 
 def has_commits(path: Path) -> bool:
-    return git.Repo(path).head.is_valid()
+    return _git("rev-parse", "--verify", "--quiet", "HEAD", cwd=path, check=False).returncode == 0
 
 
 def commit_all(path: Path, message: str = "setup") -> None:
     """``git add --all && git commit -m <message>``, refusing anything CI would reject."""
-    repo = git.Repo(path)
-    repo.git.add(all=True)
-    junk = junk_files(repo.git.diff("--cached", "--name-only").splitlines())
+    _git("add", "--all", cwd=path)
+    # -z: NUL-separated and unquoted, so unusual file names are checked as written.
+    staged = _git("diff", "--cached", "--name-only", "-z", cwd=path).stdout
+    junk = junk_files([name for name in staged.split("\0") if name])
     if junk:
         raise RuntimeError(f"refusing to commit junk or secrets: {', '.join(junk)}")
-    # Use the git CLI (not index.commit) so hooks and commit signing are honored.
-    repo.git.commit("-m", message)
+    # The git CLI honors hooks and commit signing.
+    _git("commit", "-m", message, cwd=path)
 
 
 def push_main(path: Path) -> None:
-    git.Repo(path).git.push("-u", "origin", "main")
+    _git("push", "-u", "origin", "main", cwd=path)
 
 
 def validate_origin(path: Path, full_name: str) -> None:
@@ -100,8 +138,7 @@ def validate_origin(path: Path, full_name: str) -> None:
     Ask git for expanded URLs so pushurl and insteadOf rewrites are checked too.
     Never print an unexpected URL: it could contain embedded credentials.
     """
-    repo = git.Repo(path)
-    if "origin" not in repo.remotes:
+    if "origin" not in _git("remote", cwd=path).stdout.split():
         return
     allowed = {
         f"{prefix}{full_name}{suffix}".casefold()
@@ -115,7 +152,7 @@ def validate_origin(path: Path, full_name: str) -> None:
         for suffix in ("", ".git")
     }
     for options in (("--all",), ("--push", "--all")):
-        urls = repo.git.remote("get-url", *options, "origin").splitlines()
+        urls = _git("remote", "get-url", *options, "origin", cwd=path).stdout.splitlines()
         if not urls or any(url.rstrip("/").casefold() not in allowed for url in urls):
             raise RuntimeError(
                 f"origin does not match {full_name}; restore its GitHub fetch and push URLs "
@@ -130,4 +167,4 @@ def remote_has_main(path: Path) -> bool:
     authentication failures and unreachable remotes must stop a configuration
     retry, otherwise it could publish subsequent local commits.
     """
-    return bool(git.Repo(path).git.ls_remote("--heads", "origin", "main").strip())
+    return bool(_git("ls-remote", "--heads", "origin", "main", cwd=path).stdout.strip())
