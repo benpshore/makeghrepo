@@ -192,10 +192,8 @@ def main(
     if any(value is not None for value in (owner, author, description, year)):
         raise fail("--owner, --author, --description and --year require --render")
 
-    # GitPython probes git when imported. Help, version and offline rendering
-    # must also work on a machine without git or GitHub credentials.
-    import git
-
+    # Help, version and offline rendering must work on a machine without git or
+    # GitHub credentials, so these are imported only once a real run starts.
     from makeghrepo import github, gitops
 
     base_dir = Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")).expanduser().resolve()
@@ -233,7 +231,7 @@ def main(
             )
         try:
             gitops.validate_origin(dest, repo)
-        except (RuntimeError, git.GitCommandError) as exc:
+        except RuntimeError as exc:  # includes gitops.GitError
             raise fail(str(exc)) from exc
         if private and not marker.get("private"):
             raise fail(f"{repo} was created public; re-run without --private or pick another name")
@@ -295,7 +293,7 @@ def main(
         try:
             scaffold.smoke_test(dest, langs, typer.echo)
             gitops.commit_all(dest, "setup")
-        except (RuntimeError, git.GitCommandError) as exc:
+        except RuntimeError as exc:  # includes gitops.GitError
             raise fail(
                 f"{exc}\nThis invocation stopped before its GitHub creation/push steps.\n"
                 f"Earlier lookup {'found a repository' if on_github else 'found no repository'} "
@@ -336,7 +334,7 @@ def main(
     # Bootstrap only: a configuration rerun must never publish subsequent local work.
     try:
         pushed = on_github and gitops.remote_has_main(dest)
-    except git.GitCommandError as exc:
+    except gitops.GitError as exc:
         raise fail(
             f"{exc}\nCould not check remote main; refusing to push. "
             f"Inspect https://github.com/{repo}.\n"
