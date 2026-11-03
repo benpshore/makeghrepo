@@ -120,3 +120,25 @@ def test_remote_main_distinguishes_empty_published_and_unreachable(tmp_path):
     gitcli.git(dest, "remote", "remove", "origin")
     with pytest.raises(gitops.GitError):
         gitops.remote_has_main(dest)
+
+
+def test_missing_git_raises_a_clean_git_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))  # an empty directory: no git here
+    with pytest.raises(gitops.GitError, match="could not run") as caught:
+        gitops.init(tmp_path / "repo")
+    assert caught.value.returncode is None
+
+
+def test_failed_git_reports_exit_status_and_stderr(tmp_path):
+    with pytest.raises(gitops.GitError, match=r"exited with \d+: .+") as caught:
+        gitops.push_main(tmp_path)  # not a repo
+    assert caught.value.returncode not in (None, 0)
+    assert caught.value.stderr
+
+
+def test_author_from_git_config_reads_global_and_tolerates_unset(tmp_path, monkeypatch):
+    config = tmp_path / "gitconfig"
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    assert gitops.author_from_git_config() == ("", "")
+    config.write_text("[user]\n\tname = Ada Lovelace\n\temail = ada@example.com\n")
+    assert gitops.author_from_git_config() == ("Ada Lovelace", "ada@example.com")
