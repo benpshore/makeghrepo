@@ -20,8 +20,10 @@ concurrency:
 
 jobs:
   reconcile:
+    # Identity by immutable repository ID, not by slug: survives transfers and
+    # renames, and never runs in a fork or a repository that reused the name.
     if: >-
-      github.repository == 'benpshore/makeghrepo' &&
+      github.repository_id == '1386536822' &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
     timeout-minutes: 10

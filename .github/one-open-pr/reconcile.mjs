@@ -2,7 +2,13 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
-export const REPOSITORY = "benpshore/makeghrepo";
+// The repository is identified by its immutable numeric ID, which survives
+// transfers and renames. The slug (owner/name) is runtime context, validated
+// before it routes any credential, and cross-checked against that ID in the
+// event payload and in the live API. A reused slug with a different ID, a
+// fork, or a redirect fails closed.
+export const REPOSITORY_ID = 1386536822;
+const SLUG_PATTERN = /^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}\/[A-Za-z0-9._-]{1,100}$/;
 // Immutable migration boundary, not recalculated from the latest open PR.
 export const MIGRATION_CUTOFF = 178;
 const MAX_ATTEMPTS = 3;
@@ -13,10 +19,35 @@ function require(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+export function validateSlug(slug) {
+  require(typeof slug === "string" && SLUG_PATTERN.test(slug) && !slug.includes(".."), "Invalid repository slug");
+  return slug;
+}
+
+export function validateIdentity(identity) {
+  require(identity && identity.id === REPOSITORY_ID, "Unexpected repository identity");
+  validateSlug(identity.slug);
+  return identity;
+}
+
+function sameRepository(repo, identity) {
+  return Boolean(repo) && repo.id === identity.id && repo.full_name === identity.slug;
+}
+
+export function repositoryIdentity(env, event) {
+  // Trusted execution context first: the runner's own repository ID and slug.
+  const slug = validateSlug(env.GITHUB_REPOSITORY);
+  require(Number(env.GITHUB_REPOSITORY_ID) === REPOSITORY_ID, "Run only in this repository's Actions workflow");
+  const identity = { id: REPOSITORY_ID, slug };
+  // Then the event payload must describe the same repository, by ID and slug.
+  require(sameRepository(event?.repository, identity), "Event repository does not match the trusted execution identity");
+  return identity;
+}
+
 export function validatePolicy(policy) {
-  const keys = ["schema", "repository", "mode", "migration_cutoff", "retained_pr", "task_issue"];
+  const keys = ["schema", "repository_id", "mode", "migration_cutoff", "retained_pr", "task_issue"];
   require(policy && Object.keys(policy).sort().join() === keys.sort().join(), "Invalid policy fields");
-  require(policy.schema === 1 && policy.repository === REPOSITORY, "Unexpected policy repository/schema");
+  require(policy.schema === 2 && policy.repository_id === REPOSITORY_ID, "Unexpected policy repository/schema");
   require(policy.migration_cutoff === MIGRATION_CUTOFF, "Migration cutoff must remain immutable");
   require(["audit", "enforce"].includes(policy.mode), "Invalid policy mode");
   for (const key of ["retained_pr", "task_issue"]) {
@@ -49,23 +80,24 @@ function retryDelay(error, attempt) {
   return Math.max(delay, 250 * 2 ** attempt);
 }
 
-function validatePull(pr) {
+function validatePull(pr, identity) {
   require(pr && Number.isSafeInteger(pr.number) && pr.number > 0, "Invalid PR number");
   require(["open", "closed"].includes(pr.state), "Invalid PR state");
-  require(pr.base?.repo?.full_name === REPOSITORY, "Unexpected PR repository");
+  require(sameRepository(pr.base?.repo, identity), "Unexpected PR repository");
   require(/^[a-f0-9]{40}$/.test(pr.head?.sha ?? ""), "Invalid PR head");
   require(typeof pr.created_at === "string" && Number.isFinite(Date.parse(pr.created_at)), "Invalid PR creation time");
   return pr;
 }
 
-export async function listOpen(api, sleep = pause) {
+export async function listOpen(api, identity, sleep = pause) {
+  validateIdentity(identity);
   const result = [];
   const seen = new Set();
   for (let page = 1; page <= MAX_PAGES; page++) {
     const response = await retryRead(() => api.listPage(page), sleep);
     require(Array.isArray(response.items) && response.items.length <= 100 && typeof response.hasNext === "boolean", "Invalid PR page");
     for (const pr of response.items) {
-      validatePull(pr);
+      validatePull(pr, identity);
       require(pr.state === "open" && !seen.has(pr.number), "Unstable or duplicate PR pagination; retry later");
       seen.add(pr.number);
       result.push(pr); // Drafts and bots count, without exceptions.
@@ -80,10 +112,10 @@ function fingerprint(pulls) {
   return JSON.stringify(pulls.map((pr) => [pr.number, pr.head.sha, pr.body, pr.updated_at]));
 }
 
-export async function stableSnapshot(api, sleep = pause) {
-  let prior = await listOpen(api, sleep);
+export async function stableSnapshot(api, identity, sleep = pause) {
+  let prior = await listOpen(api, identity, sleep);
   for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt++) {
-    const current = await listOpen(api, sleep);
+    const current = await listOpen(api, identity, sleep);
     if (fingerprint(prior) === fingerprint(current)) return current;
     prior = current;
   }
@@ -129,45 +161,46 @@ async function validateTask(api, pr, policy, sleep) {
   require(issue.labels?.some((label) => (typeof label === "string" ? label : label.name) === "task"), "Issue must use the existing task label");
 }
 
-async function getPull(api, number, sleep) {
-  const pr = validatePull(await retryRead(() => api.getPull(number), sleep));
+async function getPull(api, number, identity, sleep) {
+  const pr = validatePull(await retryRead(() => api.getPull(number), sleep), identity);
   require(pr.number === number, "PR readback number mismatch");
   return pr;
 }
 
-async function checkLiveHead(api, execution, sleep) {
+async function checkLiveHead(api, execution, identity, sleep) {
   const repository = await retryRead(() => api.getRepository(), sleep);
-  require(repository.full_name === REPOSITORY && repository.default_branch === execution.defaultBranch, "Live default branch differs from execution provenance");
+  require(sameRepository(repository, identity), "Live repository identity differs from the trusted execution identity");
+  require(repository.default_branch === execution.defaultBranch, "Live default branch differs from execution provenance");
   const ref = await retryRead(() => api.getDefaultHead(execution.defaultBranch), sleep);
   require(ref.ref === `refs/heads/${execution.defaultBranch}` && ref.object?.type === "commit", "Unexpected live default-branch ref");
   require(ref.object.sha === execution.headSHA, "Stale guard execution; dispatch the current default-branch head after review");
 }
 
-async function authorizeClose(api, policy, execution, sleep) {
+async function authorizeClose(api, policy, execution, identity, sleep) {
   require(typeof execution?.defaultBranch === "string" && execution.defaultBranch.length > 0 &&
     /^[a-f0-9]{40}$/.test(execution?.headSHA ?? ""), "Missing or invalid execution provenance");
   // Queued/rerun workflows keep their original code and env switches. A later
   // default-branch commit (including a pause) invalidates that older authority.
-  await checkLiveHead(api, execution, sleep);
+  await checkLiveHead(api, execution, identity, sleep);
   const livePolicy = validatePolicy(await retryRead(() => api.getPolicy(execution.headSHA), sleep));
   require(livePolicy.mode === "enforce" && Object.keys(policy).every((key) => livePolicy[key] === policy[key]), "Live guard policy no longer authorizes this execution");
   // Read the live head again after the pinned policy; never accept a moving ref.
-  await checkLiveHead(api, execution, sleep);
+  await checkLiveHead(api, execution, identity, sleep);
 }
 
-async function closeExtra({ api, candidate, retained, policy, execution, sleep, onAttempt, onReadback }) {
+async function closeExtra({ api, candidate, retained, policy, execution, identity, sleep, onAttempt, onReadback }) {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const current = await getPull(api, candidate.number, sleep);
+    const current = await getPull(api, candidate.number, identity, sleep);
     onReadback(current, attempt + 1, "preflight");
     require(current.head.sha === candidate.head.sha, `PR #${candidate.number} changed; retain new work and retry later`);
     if (current.state === "closed") return "already-closed";
     require(current.number > MIGRATION_CUTOFF && current.number !== retained.number, "Refusing protected PR closure");
-    const keeper = await getPull(api, retained.number, sleep);
+    const keeper = await getPull(api, retained.number, identity, sleep);
     require(keeper.state === "open", "Retained PR closed during reconciliation; stop and recompute later");
     await validateTask(api, keeper, policy, sleep);
     // This is the last API read before each PATCH, including retries. No stale
     // event policy may authorize a close after the live default branch changes.
-    await authorizeClose(api, policy, execution, sleep);
+    await authorizeClose(api, policy, execution, identity, sleep);
     onAttempt(attempt + 1);
     let failure;
     try {
@@ -176,7 +209,7 @@ async function closeExtra({ api, candidate, retained, policy, execution, sleep, 
       failure = error;
     }
     // A timeout/5xx can follow a successful server-side close. Read before retrying.
-    const observed = await getPull(api, current.number, sleep);
+    const observed = await getPull(api, current.number, identity, sleep);
     onReadback(observed, attempt + 1, "post-close");
     require(observed.head.sha === candidate.head.sha, `PR #${candidate.number} head changed during closure; inspect actual readback before any further effects`);
     if (observed.state === "closed") return failure ? "confirmed-after-uncertain-response" : "closed";
@@ -186,9 +219,10 @@ async function closeExtra({ api, candidate, retained, policy, execution, sleep, 
   }
 }
 
-export async function reconcile({ api, policy, execution, apply = false, sleep = pause, report = () => {} }) {
+export async function reconcile({ api, policy, execution, identity, apply = false, sleep = pause, report = () => {} }) {
   validatePolicy(policy);
-  const pulls = await stableSnapshot(api, sleep);
+  validateIdentity(identity);
+  const pulls = await stableSnapshot(api, identity, sleep);
   const retained = chooseRetained(pulls, policy);
   const result = {
     mode: policy.mode,
@@ -216,7 +250,7 @@ export async function reconcile({ api, policy, execution, apply = false, sleep =
     report(result);
     const effect = result.effects.at(-1);
     try {
-      effect.state = await closeExtra({ api, candidate, retained, policy, execution, sleep,
+      effect.state = await closeExtra({ api, candidate, retained, policy, execution, identity, sleep,
         onAttempt: (attempt) => {
           effect.state = "attempted";
           effect.attempt = attempt;
@@ -230,7 +264,7 @@ export async function reconcile({ api, policy, execution, apply = false, sleep =
         },
       });
       report(result);
-      const keeper = await getPull(api, retained.number, sleep);
+      const keeper = await getPull(api, retained.number, identity, sleep);
       require(keeper.state === "open", "Retained PR closed after an effect; inspect the recorded closures before retrying");
     } catch (error) {
       effect.detail = error.message;
@@ -238,16 +272,17 @@ export async function reconcile({ api, policy, execution, apply = false, sleep =
       throw error;
     }
   }
-  result.remaining = (await stableSnapshot(api, sleep)).map((pr) => pr.number);
+  result.remaining = (await stableSnapshot(api, identity, sleep)).map((pr) => pr.number);
   result.needs_migration = result.remaining.length > 1;
   report(result);
   return result;
 }
 
-export function githubAPI(token, transport = fetch) {
+export function githubAPI(token, slug, transport = fetch) {
   require(typeof token === "string" && token.length > 0, "Missing Actions token");
+  validateSlug(slug); // Validated before it is placed in any credentialed URL.
   async function request(path, method = "GET", body) {
-    const response = await transport(`https://api.github.com/repos/${REPOSITORY}${path ? `/${path}` : ""}`, {
+    const response = await transport(`https://api.github.com/repos/${slug}${path ? `/${path}` : ""}`, {
       method,
       redirect: "error",
       signal: AbortSignal.timeout(30000),
@@ -292,16 +327,18 @@ export function githubAPI(token, transport = fetch) {
 }
 
 export async function main(env = process.env) {
-  require(env.GITHUB_ACTIONS === "true" && env.GITHUB_REPOSITORY === REPOSITORY, "Run only in this repository's Actions workflow");
+  require(env.GITHUB_ACTIONS === "true" && Number(env.GITHUB_REPOSITORY_ID) === REPOSITORY_ID &&
+    typeof env.GITHUB_REPOSITORY === "string" && SLUG_PATTERN.test(env.GITHUB_REPOSITORY), "Run only in this repository's Actions workflow");
   const event = JSON.parse(await readFile(env.GITHUB_EVENT_PATH, "utf8"));
   require(["pull_request_target", "schedule", "workflow_dispatch"].includes(env.GITHUB_EVENT_NAME), "Unsupported guard event");
+  const identity = repositoryIdentity(env, event);
   const branch = event.repository?.default_branch;
-  require(event.repository?.full_name === REPOSITORY && branch && env.GITHUB_REF === `refs/heads/${branch}`, "Guard requires the trusted default-branch ref");
+  require(branch && env.GITHUB_REF === `refs/heads/${branch}`, "Guard requires the trusted default-branch ref");
   if (env.GITHUB_EVENT_NAME === "pull_request_target") {
-    require(event.pull_request?.base?.ref === branch && event.pull_request?.base?.repo?.full_name === REPOSITORY, "Unexpected PR base");
+    require(event.pull_request?.base?.ref === branch && sameRepository(event.pull_request?.base?.repo, identity), "Unexpected PR base");
   }
   const policy = JSON.parse(await readFile(new URL("./policy.json", import.meta.url), "utf8"));
-  const result = await reconcile({ api: githubAPI(env.GH_TOKEN), policy,
+  const result = await reconcile({ api: githubAPI(env.GH_TOKEN, identity.slug), policy, identity,
     execution: { defaultBranch: branch, headSHA: env.GITHUB_SHA },
     apply: env.ONE_OPEN_PR_APPLY === "1", report: (entry) => console.log(JSON.stringify(entry)) });
   console.log(JSON.stringify(result));

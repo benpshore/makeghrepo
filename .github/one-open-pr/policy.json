@@ -1,6 +1,6 @@
 {
-  "schema": 1,
-  "repository": "benpshore/makeghrepo",
+  "schema": 2,
+  "repository_id": 1386536822,
   "mode": "audit",
   "migration_cutoff": 178,
   "retained_pr": 178,
