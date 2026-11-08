@@ -3,8 +3,8 @@
 
 The source commit, not the moving main branch, owns the release. A retry uses
 its existing stable tag; otherwise the highest valid stable version reserves
-the next minor. Ignore preview/malformed tags instead of feeding arbitrary
-tag text to shell arithmetic. Numeric tuples also avoid lexicographic 9/10
+the next patch (the first release is 0.1.0). Ignore preview/malformed tags
+instead of feeding arbitrary tag text to shell arithmetic. Numeric tuples also avoid lexicographic 9/10
 ordering and the empty-history edge case that prompted this repair.
 """
 
@@ -26,8 +26,10 @@ def select(tags: list[str], source_tags: list[str]) -> str:
         raise ValueError("source has multiple stable release tags; select one manually")
     if existing:
         return existing[0][1:]
-    major, minor, _ = max(stable.values(), default=(0, 0, 0))
-    return f"{major}.{minor + 1}.0"
+    if not stable:
+        return "0.1.0"
+    major, minor, patch = max(stable.values())
+    return f"{major}.{minor}.{patch + 1}"
 
 
 def main() -> None:
