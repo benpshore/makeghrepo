@@ -1,12 +1,14 @@
 """GitHub setup via the ``gh`` CLI (which owns auth; we never touch tokens).
 
 Every step is idempotent, so ``makeghrepo NAME`` can be re-run
-after a partial failure.
+after a partial failure. Authentication is whatever token gh already has
+(a classic PAT); makeghrepo never changes it.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -24,13 +26,27 @@ class GhError(RuntimeError):
     pass
 
 
+# On a missing scope gh suggests a command that replaces the stored credential
+# with a new sign-in. Drop that suggestion; keep gh's description of the scope.
+# Two ordered passes: cut the hint off the end of gh's sentence, then drop any line
+# that still suggests it (one pass would erase a whole one-line error).
+_HINT_TAIL = re.compile(r"[ \t]*To request it, run:[^\n]*")
+_HINT_LINE = re.compile(r"^[^\n]*\bgh\s+auth\b[^\n]*(?:\n|$)", re.M)
+
+
+def without_auth_hint(text: str) -> str:
+    """gh's error text without its re-authentication suggestion."""
+    return _HINT_LINE.sub("", _HINT_TAIL.sub("", text)).strip()
+
+
 def gh(*args: str, body: Any = None) -> str:
     cmd = ["gh", *args] + (["--input", "-"] if body is not None else [])
     result = subprocess.run(
         cmd, input=None if body is None else json.dumps(body), capture_output=True, text=True
     )
     if result.returncode != 0:
-        raise GhError(f"{' '.join(cmd)}\n{(result.stderr or result.stdout).strip()}")
+        detail = without_auth_hint((result.stderr or result.stdout).strip())
+        raise GhError(f"{' '.join(cmd)}\n{detail}")
     return result.stdout
 
 

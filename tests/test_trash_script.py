@@ -34,6 +34,9 @@ elif args[:2] == ["project", "list"]:
     for p in fx.get("projects", []):
         if p["title"] == title:
             print(p["number"])
+elif args[:2] == ["repo", "delete"] and fx.get("delete_error"):
+    print(fx["delete_error"], file=sys.stderr)
+    sys.exit(1)
 elif args[:2] in (["project", "delete"], ["repo", "delete"]):
     pass
 else:
@@ -91,9 +94,7 @@ def trash(tmp_path):
             "FAKE_GH_FIXTURE": str(fx),
             "TRASH_NOW_EPOCH": str(NOW),
         }
-        result = subprocess.run(
-            ["bash", str(SCRIPT), *args], env=env, capture_output=True, text=True
-        )
+        result = subprocess.run(["sh", str(SCRIPT), *args], env=env, capture_output=True, text=True)
         calls = [json.loads(line) for line in log.read_text().splitlines()]
         return result, calls
 
@@ -214,7 +215,43 @@ def test_dry_run_deletes_nothing(trash):
     assert all(line.startswith("- would ") for line in result.stdout.splitlines())
 
 
-@pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")
-def test_shellcheck_is_clean():
-    result = subprocess.run(["shellcheck", str(SCRIPT)], capture_output=True, text=True)
+def test_shellcheck_strict_posix_is_clean():
+    # Required, never skipped: the dev dependency group pins shellcheck-py.
+    assert shutil.which("shellcheck"), "shellcheck missing; run `uv sync`"
+    result = subprocess.run(
+        ["shellcheck", "--shell=sh", "--enable=all", "--severity=style", str(SCRIPT)],
+        capture_output=True,
+        text=True,
+    )
     assert result.returncode == 0, result.stdout
+
+
+def test_shfmt_posix_is_clean():
+    # Required, never skipped: the dev dependency group pins shfmt-py.
+    assert shutil.which("shfmt"), "shfmt missing; run `uv sync`"
+    result = subprocess.run(
+        ["shfmt", "-ln", "posix", "-i", "2", "-ci", "-d", str(SCRIPT)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_script_is_posix_sh():
+    assert SCRIPT.read_text().splitlines()[0] == "#!/bin/sh"
+
+
+def test_gh_reauthentication_hint_is_not_passed_on(trash):
+    # gh's real missing-scope text (cli/cli api/client.go generateScopesSuggestion).
+    hint = (
+        'HTTP 403: Must have admin rights to Repository. This API operation needs the "delete_repo"'
+        " scope. To request it, run:  gh auth refresh -h github.com -s delete_repo"
+    )
+    _clone(trash.base)
+    result, calls = trash(NAME, fixture=_fixture(delete_error=hint))
+    assert result.returncode == 1
+    assert 'needs the "delete_repo" scope.' in result.stderr
+    assert "auth" not in result.stderr.replace("Must have admin", "")
+    assert "To request it" not in result.stderr
+    assert calls[-1] == ["repo", "delete", f"me/{NAME}", "--yes"]  # attempted, then stopped
+    assert (trash.base / NAME).exists()  # the clone is kept when the repo delete fails
