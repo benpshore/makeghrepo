@@ -341,7 +341,9 @@ def main(
             f"Local project is intact at {dest}; re-run to retry."
         ) from exc
     push = None if pushed else lambda: gitops.push_main(dest)
-    failed = github.configure_all(repo, private=private, push=push, log=typer.echo)
+    failed = github.configure_all(
+        repo, private=private, push=push, log=typer.echo, new_repo=not on_github
+    )
     typer.echo(f"\nhttps://github.com/{repo}\ncd {dest}")
     if failed:
         typer.echo(f"{len(failed)} step(s) failed. Fix, then re-run: makeghrepo {name}")

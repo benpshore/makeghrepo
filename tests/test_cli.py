@@ -18,7 +18,7 @@ runner = CliRunner()
 @pytest.fixture
 def gh(tmp_path, monkeypatch):
     """Fake GitHub: records calls; repos in `existing` already exist."""
-    state = {"calls": [], "existing": set(), "failed": []}
+    state = {"calls": [], "existing": set(), "failed": [], "new_repo": []}
     monkeypatch.setenv("MAKEGHREPO_DIR", str(tmp_path))
     monkeypatch.setattr(github, "current_user", lambda: "me")
     monkeypatch.setattr(github, "repo_exists", lambda r: r in state["existing"])
@@ -26,8 +26,9 @@ def gh(tmp_path, monkeypatch):
     monkeypatch.setattr(github, "create_repo", lambda *a: state["calls"].append(("create", *a)))
     monkeypatch.setattr(gitops, "remote_has_main", lambda _: False)
 
-    def configure_all(repo, *, private, push, log):
+    def configure_all(repo, *, private, push, log, new_repo):
         state["calls"].append(("configure", repo, private, push is not None))
+        state["new_repo"].append(new_repo)
         return state["failed"]
 
     monkeypatch.setattr(github, "configure_all", configure_all)
@@ -162,6 +163,7 @@ def test_name_and_languages(tmp_path, gh):
     assert "pyproject.toml" in tracked and "src/main.cpp" in tracked
     assert gh["calls"][0][:3] == ("create", "me/my-repo", tmp_path / "my-repo")
     assert gh["calls"][1] == ("configure", "me/my-repo", False, True)
+    assert gh["new_repo"] == [True]  # a fresh repo gets every merge method
 
 
 def test_no_args_random_name_any_language(tmp_path, gh):
@@ -355,6 +357,7 @@ def test_rerun_resumes_without_rescaffolding(tmp_path, gh):
     assert "resuming" in result.output
     # repo exists on GitHub: no create, just re-apply settings (push since main isn't there)
     assert [c[0] for c in gh["calls"]] == ["configure"]
+    assert gh["new_repo"][-1] is False  # a rerun never widens merge methods
     assert gitcli.out(tmp_path / "again", "rev-list", "--count", "HEAD") == "1"
 
 

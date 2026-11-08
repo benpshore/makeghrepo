@@ -1036,7 +1036,7 @@ let package = Package(
 )
 
 ### END
-### FILE README.md exec=0 bytes=1381 encoding=utf-8
+### FILE README.md exec=0 bytes=1384 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -1063,9 +1063,9 @@ bundle exec rubocop && bundle exec rake test
 sqlite3 -bail :memory: ".read sqlite/schema.sql"   # the app opens ${APP_DATA:-.}/app.db
 ```
 
-The owner (`someone`) may push their own work directly to `main` without a PR or passing CI. CI still runs after a push; releases retain their CI gates. Force-push, deletion, and merge commits remain blocked for everyone.
+The owner (`someone`) may push their own work directly to `main` without a PR or passing CI. CI still runs after a push; releases retain their CI gates. Force-push and deletion remain blocked for everyone.
 
-Other accounts must use a squash PR with passing, up-to-date `ci`. Agents must use PRs and CI even when authenticated as the owner (see `AGENTS.md`). GitHub checks the pushing account, so enforcing a human/agent boundary requires separate credentials.
+Other accounts must use a PR (merge, squash or rebase) with passing, up-to-date `ci`. Agents must use PRs and CI even when authenticated as the owner (see `AGENTS.md`). GitHub checks the pushing account, so enforcing a human/agent boundary requires separate credentials.
 
 ### END
 ### FILE Rakefile exec=0 bytes=189 encoding=utf-8

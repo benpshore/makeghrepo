@@ -456,7 +456,7 @@ npm run typecheck && npm run test:ts
 @AGENTS.md
 
 ### END
-### FILE README.md exec=0 bytes=620 encoding=utf-8
+### FILE README.md exec=0 bytes=623 encoding=utf-8
 # quiet-otter
 
 a test project
@@ -469,9 +469,9 @@ Run these before opening a PR. CI runs the same ones.
 npm run typecheck && npm run test:ts
 ```
 
-The owner (`someone`) may push their own work directly to `main` without a PR or passing CI. CI still runs after a push; releases retain their CI gates. Force-push, deletion, and merge commits remain blocked for everyone.
+The owner (`someone`) may push their own work directly to `main` without a PR or passing CI. CI still runs after a push; releases retain their CI gates. Force-push and deletion remain blocked for everyone.
 
-Other accounts must use a squash PR with passing, up-to-date `ci`. Agents must use PRs and CI even when authenticated as the owner (see `AGENTS.md`). GitHub checks the pushing account, so enforcing a human/agent boundary requires separate credentials.
+Other accounts must use a PR (merge, squash or rebase) with passing, up-to-date `ci`. Agents must use PRs and CI even when authenticated as the owner (see `AGENTS.md`). GitHub checks the pushing account, so enforcing a human/agent boundary requires separate credentials.
 
 ### END
 ### FILE SECURITY.md exec=0 bytes=213 encoding=utf-8

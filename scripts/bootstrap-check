@@ -95,6 +95,12 @@ def gh_fixture(args):
                 ],
                 check=True,
             )
+            # POST /user/repos defaults: every merge method allowed (REST docs).
+            state["settings"] = {
+                "allow_squash_merge": True,
+                "allow_merge_commit": True,
+                "allow_rebase_merge": True,
+            }
             record(state, "create", private=state["private"])
             return 0, ""
         if args[:2] == ["api", "graphql"]:
@@ -127,7 +133,8 @@ def gh_fixture(args):
             if state.get("failure") == "settings":
                 event["succeeded"] = False
                 return 1, "controlled settings failure"
-            state["settings"] = body
+            # PATCH updates only the fields sent, like GitHub.
+            state["settings"] = state.get("settings", {}) | body
         if path == prefix + "/actions/permissions":
             if state.get("failure") == "actions":
                 event["succeeded"] = False
@@ -174,7 +181,8 @@ def read_state(root):
 
 def check_policy(state, private):
     assert state["settings"]["allow_squash_merge"] is True
-    assert state["settings"]["allow_merge_commit"] is False
+    assert state["settings"]["allow_merge_commit"] is True
+    assert state["settings"]["allow_rebase_merge"] is True
     events = state["events"]
     push = next(i for i, e in enumerate(events) if e["kind"] == "push")
     if private:
@@ -210,7 +218,6 @@ def check_policy(state, private):
         assert {r["type"] for r in rules["protect-main"]["rules"]} == {
             "deletion",
             "non_fast_forward",
-            "required_linear_history",
         }
         gate = rules["require-pr-and-ci"]
         assert gate["bypass_actors"] == [

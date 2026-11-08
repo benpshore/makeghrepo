@@ -18,17 +18,14 @@
       },
       {
         "type": "non_fast_forward"
-      },
-      {
-        "type": "required_linear_history"
       }
     ]
   },
   "settings": {
     "has_wiki": false,
     "allow_squash_merge": true,
-    "allow_merge_commit": false,
-    "allow_rebase_merge": false,
+    "allow_merge_commit": true,
+    "allow_rebase_merge": true,
     "allow_auto_merge": true,
     "allow_update_branch": true,
     "delete_branch_on_merge": true,
@@ -72,7 +69,9 @@
           "require_last_push_approval": false,
           "required_review_thread_resolution": true,
           "allowed_merge_methods": [
-            "squash"
+            "merge",
+            "squash",
+            "rebase"
           ]
         }
       },

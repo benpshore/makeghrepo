@@ -4,8 +4,8 @@ Public personal repositories use two rulesets on the default branch:
 
 | Ruleset | Rules | Bypass |
 | --- | --- | --- |
-| `protect-main` | No deletion, force-push, or merge commits; any additional existing restrictions stay here | None |
-| `require-pr-and-ci` | Squash PR, resolved review threads, up-to-date passing GitHub Actions `ci`; zero required approvals | Exact repository owner: `User`, numeric owner ID, `always` |
+| `protect-main` | No deletion or force-push; any additional existing restrictions (such as linear history on older repos) stay here | None |
+| `require-pr-and-ci` | PR merged by merge commit, squash or rebase, resolved review threads, up-to-date passing GitHub Actions `ci`; zero required approvals | Exact repository owner: `User`, numeric owner ID, `always` |
 
 The owner can push their own work without opening a PR or waiting for CI. CI
 still runs on pushes and PRs. Existing release validation is unchanged; Python

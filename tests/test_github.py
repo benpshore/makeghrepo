@@ -65,17 +65,15 @@ def test_rulesets_keep_history_protected_and_only_exempt_owner_from_review():
     history = github.ruleset_body()
     review = github.review_ruleset_body(123)
     assert history["bypass_actors"] == []
-    assert {r["type"] for r in history["rules"]} == {
-        "deletion",
-        "non_fast_forward",
-        "required_linear_history",
-    }
+    # Merge commits are allowed: no required_linear_history on new repos (roadmap #9).
+    assert {r["type"] for r in history["rules"]} == {"deletion", "non_fast_forward"}
     assert review["bypass_actors"] == [
         {"actor_type": "User", "actor_id": 123, "bypass_mode": "always"}
     ]
     rules = {r["type"]: r["parameters"] for r in review["rules"]}
     assert set(rules) == {"pull_request", "required_status_checks"}
     assert rules["pull_request"]["required_approving_review_count"] == 0
+    assert rules["pull_request"]["allowed_merge_methods"] == ["merge", "squash", "rebase"]
     assert rules["required_status_checks"]["strict_required_status_checks_policy"] is True
     assert rules["required_status_checks"]["required_status_checks"] == [
         {"context": github.REQUIRED_CHECK, "integration_id": github.GITHUB_ACTIONS_APP_ID}
@@ -328,3 +326,54 @@ def test_repo_exists_distinguishes_missing_from_errors(monkeypatch):
     monkeypatch.setattr(github, "gh", offline)
     with pytest.raises(github.GhError):
         github.repo_exists("me/x")
+
+
+def test_new_repo_enables_every_merge_method_but_rerun_never_widens():
+    new = github.settings_body(private=False)
+    assert (new["allow_squash_merge"], new["allow_merge_commit"], new["allow_rebase_merge"]) == (
+        True,
+        True,
+        True,
+    )
+    for private in (False, True):
+        rerun = github.settings_body(private=private, new_repo=False)
+        assert "allow_merge_commit" not in rerun
+        assert "allow_rebase_merge" not in rerun
+
+
+@pytest.mark.parametrize("new_repo", [True, False])
+def test_configure_all_passes_new_repo_to_settings(calls, new_repo):
+    github.configure_all("me/r", private=True, project=False, log=lambda _: None, new_repo=new_repo)
+    (body,) = [b for a, b in calls if a[:4] == ("api", "-X", "PATCH", "repos/me/r")]
+    assert ("allow_merge_commit" in body) is new_repo
+
+
+def test_rerun_keeps_saved_squash_only_and_linear_history_rules(calls):
+    # A repo created before merge methods were widened keeps its stricter live rules.
+    conditions = github.ruleset_body()["conditions"]
+    legacy = {
+        **github.ruleset_body(),
+        "id": 1,
+        "rules": [*github.ruleset_body()["rules"], {"type": "required_linear_history"}],
+    }
+    gate = github.review_ruleset_body(123)
+    squash_only = [
+        {**r, "parameters": {**r["parameters"], "allowed_merge_methods": ["squash"]}}
+        if r["type"] == "pull_request"
+        else r
+        for r in gate["rules"]
+    ]
+    saved_gate = {**gate, "id": 2, "rules": squash_only}
+    assert legacy["conditions"] == saved_gate["conditions"] == conditions
+    calls.responses["rulesets/1"] = json.dumps(legacy)
+    calls.responses["rulesets/2"] = json.dumps(saved_gate)
+    calls.responses["rulesets?"] = json.dumps(
+        [{"name": github.RULESET_NAME, "id": 1}, {"name": github.REVIEW_RULESET_NAME, "id": 2}]
+    )
+    github.configure_ruleset("me/r")
+    puts = {a[3]: b for a, b in calls if a[:3] == ("api", "-X", "PUT")}
+    history = puts["repos/me/r/rulesets/1"]
+    review = puts["repos/me/r/rulesets/2"]
+    assert "required_linear_history" in {r["type"] for r in history["rules"]}
+    (pull_request,) = [r for r in review["rules"] if r["type"] == "pull_request"]
+    assert pull_request["parameters"]["allowed_merge_methods"] == ["squash"]
