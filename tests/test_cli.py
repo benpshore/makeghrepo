@@ -18,16 +18,32 @@ runner = CliRunner()
 @pytest.fixture
 def gh(tmp_path, monkeypatch):
     """Fake GitHub: records calls; repos in `existing` already exist."""
-    state = {"calls": [], "existing": set(), "failed": [], "new_repo": []}
+    state = {
+        "calls": [],
+        "existing": set(),
+        "failed": [],
+        "new_repo": [],
+        # Logins the fake GitHub knows besides the authenticated user "me".
+        "owner_types": {"acme": "Organization", "someone": "User"},
+    }
     monkeypatch.setenv("MAKEGHREPO_DIR", str(tmp_path))
+    monkeypatch.delenv("MAKEGHREPO_OWNER", raising=False)
     monkeypatch.setattr(github, "current_user", lambda: "me")
     monkeypatch.setattr(github, "repo_exists", lambda r: r in state["existing"])
     monkeypatch.setattr(github, "is_private", lambda r: False)
     monkeypatch.setattr(github, "create_repo", lambda *a: state["calls"].append(("create", *a)))
     monkeypatch.setattr(gitops, "remote_has_main", lambda _: False)
 
-    def configure_all(repo, *, private, push, log, new_repo):
-        state["calls"].append(("configure", repo, private, push is not None))
+    def owner_type(login):
+        state["calls"].append(("owner_type", login))
+        if login not in state["owner_types"]:
+            raise github.GhError(f"gh api users/{login}\nHTTP 404: Not Found")
+        return state["owner_types"][login]
+
+    monkeypatch.setattr(github, "owner_type", owner_type)
+
+    def configure_all(repo, *, private, push, log, org=False, new_repo=True):
+        state["calls"].append(("configure", repo, private, push is not None, org))
         state["new_repo"].append(new_repo)
         return state["failed"]
 
@@ -74,7 +90,15 @@ def forbid_effects(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     monkeypatch.setattr(socket, "create_connection", forbidden)
     monkeypatch.setattr(socket.socket, "connect", forbidden)
-    for name in ("api", "gh", "current_user", "repo_exists", "is_private", "create_repo"):
+    for name in (
+        "api",
+        "gh",
+        "current_user",
+        "owner_type",
+        "repo_exists",
+        "is_private",
+        "create_repo",
+    ):
         monkeypatch.setattr(github, name, forbidden)
     monkeypatch.setattr(github, "configure_all", forbidden)
     monkeypatch.setattr(scaffold, "render", forbidden)
@@ -138,7 +162,8 @@ def test_dry_run_reports_an_existing_destination(tmp_path, gh):
         (["9lives", "rust"], "must start with a letter"),
         (["project", "--lib"], "--lib only applies to python"),
         (["project", "--render", "preview"], "cannot be combined with --render"),
-        (["project", "--owner", "someone"], "require --render"),
+        (["project", "--author", "someone"], "require --render"),
+        (["project", "--owner", "../x"], "invalid GitHub owner"),
     ],
 )
 def test_dry_run_rejects_invalid_requests_without_effects(
@@ -162,7 +187,7 @@ def test_name_and_languages(tmp_path, gh):
     tracked = gitcli.out(repo, "ls-files")
     assert "pyproject.toml" in tracked and "src/main.cpp" in tracked
     assert gh["calls"][0][:3] == ("create", "me/my-repo", tmp_path / "my-repo")
-    assert gh["calls"][1] == ("configure", "me/my-repo", False, True)
+    assert gh["calls"][1] == ("configure", "me/my-repo", False, True, False)
     assert gh["new_repo"] == [True]  # a fresh repo gets every merge method
 
 
@@ -186,6 +211,78 @@ def test_private(tmp_path, gh):
     assert result.exit_code == 0, result.output
     assert gh["calls"][0][-1] is True
     assert not (tmp_path / "secret/.github/workflows/codeql.yml").exists()
+
+
+def test_dry_run_reports_requested_owner(tmp_path, gh, forbid_effects):
+    result = runner.invoke(app, ["thing", "--owner", "acme", "-n"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert "Owner requested: acme" in result.output
+    assert "the owner's existence and type" in result.output
+    assert gh["calls"] == []  # offline: the owner is not looked up
+
+
+@pytest.mark.parametrize("source", ["flag", "env"])
+def test_owner_organization_creates_the_repo_in_the_org(tmp_path, gh, monkeypatch, source):
+    args = ["thing", "python"]
+    if source == "flag":
+        args += ["--owner", "acme"]
+    else:
+        monkeypatch.setenv("MAKEGHREPO_OWNER", "acme")
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert gh["calls"][0] == ("owner_type", "acme")
+    assert gh["calls"][1][:2] == ("create", "acme/thing")
+    assert gh["calls"][2] == ("configure", "acme/thing", False, True, True)
+    repo = tmp_path / "thing"
+    assert gitops.read_marker(repo)["owner"] == "acme"
+    # The commit identity stays the authenticated user, never the organization.
+    assert gitcli.out(repo, "config", "user.email") == "me@users.noreply.github.com"
+    readme = (repo / "README.md").read_text()
+    agents = (repo / "AGENTS.md").read_text()
+    assert "`acme` organization repository grants no bypass" in readme
+    assert "without a PR or passing CI" not in readme
+    assert "no direct-push exception for anyone" in agents
+    assert "Only the human owner's own work" not in agents
+    assert "https://github.com/acme/thing" in result.output
+
+
+def test_owner_may_name_the_authenticated_user(tmp_path, gh):
+    result = runner.invoke(app, ["thing", "--owner", "me"])
+    assert result.exit_code == 0, result.output
+    assert gh["calls"][0][:2] == ("create", "me/thing")  # no owner lookup needed
+    assert gh["calls"][1] == ("configure", "me/thing", False, True, False)
+    assert "The owner (`me`) may push" in (tmp_path / "thing/README.md").read_text()
+
+
+@pytest.mark.parametrize(
+    ("owner", "message"),
+    [
+        ("someone", "another user's account"),
+        ("nobody", "HTTP 404"),
+        ("bad name", "invalid GitHub owner"),
+    ],
+)
+def test_owner_that_cannot_own_the_repo_stops_before_any_effect(tmp_path, gh, owner, message):
+    result = runner.invoke(app, ["thing", "--owner", owner])
+    assert result.exit_code == 1, result.output
+    assert message in result.output
+    assert not any(call[0] in ("create", "configure") for call in gh["calls"])
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_resume_keeps_the_recorded_organization_owner(tmp_path, gh):
+    assert runner.invoke(app, ["thing", "--owner", "acme"]).exit_code == 0
+    gh["existing"].add("acme/thing")
+    gh["calls"].clear()
+    result = runner.invoke(app, ["thing", "--owner", "acme"])
+    assert result.exit_code == 0, result.output
+    assert gh["calls"] == [("owner_type", "acme"), ("configure", "acme/thing", False, True, True)]
+    gh["calls"].clear()
+    # Without the owner the same folder resolves to a personal repo: refuse, don't republish.
+    result = runner.invoke(app, ["thing"])
+    assert result.exit_code == 1, result.output
+    assert "recorded owner/name does not match me/thing" in result.output
+    assert gh["calls"] == []
 
 
 @pytest.mark.parametrize("private", [False, True])
@@ -560,7 +657,7 @@ def test_resume_private_intent_accepts_private_remote_without_flag(tmp_path, gh,
     monkeypatch.setattr(github, "is_private", lambda _: True)
     result = runner.invoke(app, ["hush"])
     assert result.exit_code == 0, result.output
-    assert gh["calls"] == [("configure", "me/hush", True, True)]
+    assert gh["calls"] == [("configure", "me/hush", True, True, False)]
 
 
 def test_rust_refuses_a_name_starting_with_a_digit(tmp_path, gh):

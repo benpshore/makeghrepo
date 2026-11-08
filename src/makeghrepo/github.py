@@ -45,6 +45,14 @@ def current_user() -> str:
     return gh("api", "user", "--jq", ".login").strip()
 
 
+def owner_type(login: str) -> str:
+    """``"User"`` or ``"Organization"`` for an existing login; GhError if there is none."""
+    kind = api("GET", f"users/{login}").get("type")
+    if kind not in ("User", "Organization"):
+        raise GhError(f"{login!r} is neither a GitHub user nor an organization")
+    return str(kind)
+
+
 def repo_exists(full_name: str) -> bool:
     try:
         gh("repo", "view", full_name, "--json", "name")
@@ -81,12 +89,23 @@ def ruleset_body() -> dict[str, Any]:
     }
 
 
-def review_ruleset_body(owner_id: int) -> dict[str, Any]:
-    """Only the personal repository owner may push without a PR or passing CI."""
+def review_ruleset_body(owner_id: int | None) -> dict[str, Any]:
+    """PR plus passing ``ci`` for everyone except a personal repository's owner.
+
+    ``owner_id`` is the verified numeric ID of a personal owner, or ``None`` for an
+    organization repository, where nobody bypasses the gate. The personal exception
+    exists because one account cannot separate the human from their agents;
+    an organization can (member accounts, a GitHub App), so it needs no exception.
+    """
+    bypass: list[dict[str, Any]] = (
+        []
+        if owner_id is None
+        else [{"actor_type": "User", "actor_id": owner_id, "bypass_mode": "always"}]
+    )
     return {
         **ruleset_body(),
         "name": REVIEW_RULESET_NAME,
-        "bypass_actors": [{"actor_type": "User", "actor_id": owner_id, "bypass_mode": "always"}],
+        "bypass_actors": bypass,
         "rules": [
             {
                 "type": "pull_request",
@@ -118,12 +137,15 @@ def configure_ruleset(repo: str) -> None:
     # Use GitHub's repository owner, never the caller or commit author identity.
     owner = api("GET", f"repos/{repo}")["owner"]
     owner_id = owner.get("id")
-    if (
+    login_matches = owner.get("login", "").lower() == repo.split("/")[0].lower()
+    if owner.get("type") == "Organization" and login_matches:
+        owner_id = None  # organization repository: the PR/CI gate has no bypass actor
+    elif (
         owner.get("type") != "User"
         or not isinstance(owner_id, int)
         or isinstance(owner_id, bool)
         or not 0 < owner_id < 2**64
-        or owner.get("login", "").lower() != repo.split("/")[0].lower()
+        or not login_matches
     ):
         raise GhError("owner push bypass requires a personal repository with a verified owner ID")
 
@@ -192,7 +214,7 @@ def configure_ruleset(repo: str) -> None:
 
 FIND_PROJECT_QUERY = """
 query($owner: String!, $title: String!) {
-  user(login: $owner) {
+  %s(login: $owner) {
     projectsV2(first: 100, query: $title) {
       nodes { number title }
     }
@@ -201,16 +223,18 @@ query($owner: String!, $title: String!) {
 """
 
 
-def _find_project_by_title(owner: str, title: str) -> int:
+def _find_project_by_title(owner: str, title: str, *, org: bool = False) -> int:
     """GraphQL text search: cheap, but a substring match, and capped at one page.
 
     If the page comes back full (100) with no exact title match, an existing
     project could be sitting on a second page — fall back to the old full
     scan rather than risk creating a duplicate board.
     """
-    listing = gh("api", "graphql", "-f", f"query={FIND_PROJECT_QUERY}", "-f", f"owner={owner}",
+    kind = "organization" if org else "user"  # GraphQL has no owner-agnostic lookup
+    query = FIND_PROJECT_QUERY % kind
+    listing = gh("api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}",
                  "-f", f"title={title}")  # fmt: skip
-    nodes = json.loads(listing)["data"]["user"]["projectsV2"]["nodes"]
+    nodes = json.loads(listing)["data"][kind]["projectsV2"]["nodes"]
     number = next((p["number"] for p in nodes if p["title"] == title), 0)
     if number or len(nodes) < 100:
         return number
@@ -219,10 +243,10 @@ def _find_project_by_title(owner: str, title: str) -> int:
     return next((p["number"] for p in json.loads(full)["projects"] if p["title"] == title), 0)
 
 
-def configure_project(repo: str) -> None:
+def configure_project(repo: str, *, org: bool = False) -> None:
     """Link the repo to a same-named project, creating one if it doesn't exist."""
     owner, title = repo.split("/")
-    number = _find_project_by_title(owner, title)
+    number = _find_project_by_title(owner, title, org=org)
     if not number:
         created = gh("project", "create", "--owner", owner, "--title", title, "--format", "json")
         number = json.loads(created)["number"]
@@ -248,7 +272,6 @@ def settings_body(private: bool, new_repo: bool = True) -> dict[str, Any]:
     """
     body: dict[str, Any] = {
         "has_wiki": False,
-        "allow_squash_merge": True,
         # Requested either way, but confirmed live (GET after PATCH) that this
         # silently stays false on a Free-plan private repo — there's no
         # ruleset/required-check there for auto-merge to wait on, so GitHub
@@ -261,7 +284,7 @@ def settings_body(private: bool, new_repo: bool = True) -> dict[str, Any]:
         "squash_merge_commit_message": "PR_BODY",
     }
     if new_repo:
-        body |= {"allow_merge_commit": True, "allow_rebase_merge": True}
+        body |= {"allow_squash_merge": True, "allow_merge_commit": True, "allow_rebase_merge": True}
     if not private:  # free on public repos; private needs Advanced Security
         body["security_and_analysis"] = {
             "secret_scanning": {"status": "enabled"},
@@ -277,9 +300,13 @@ def configure_all(
     project: bool = True,
     push: Callable[[], object] | None = None,
     log: Callable[[str], None] = print,
+    org: bool = False,
     new_repo: bool = True,
 ) -> list[str]:
     """Apply every setting; return the names of failed steps (the rest still run).
+
+    ``org`` says the owner is an organization: the project board lookup differs,
+    and ``configure_ruleset`` installs the PR/CI gate without a bypass actor.
 
     Repo settings settle before the push. Independent steps then run concurrently;
     the ruleset starts as soon as the push succeeds, without waiting for Project
@@ -340,7 +367,7 @@ def configure_all(
          lambda: api("PUT", f"repos/{repo}/subscription", {"subscribed": False, "ignored": True})),
     ]  # fmt: skip
     if project:
-        fanout.append(("project board", lambda: configure_project(repo)))
+        fanout.append(("project board", lambda: configure_project(repo, org=org)))
     push_blocked = bool(push) and (
         not actions_disabled or (not private and settings_err is not None)
     )

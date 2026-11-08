@@ -80,8 +80,13 @@ def test_rulesets_keep_history_protected_and_only_exempt_owner_from_review():
     ]
 
 
-def _graphql_projects(*nodes: dict) -> str:
-    return json.dumps({"data": {"user": {"projectsV2": {"nodes": list(nodes)}}}})
+def test_organization_review_ruleset_has_no_bypass_actor(github_defaults):
+    personal = github_defaults["review_ruleset"]
+    assert github.review_ruleset_body(None) == {**personal, "bypass_actors": []}
+
+
+def _graphql_projects(*nodes: dict, kind: str = "user") -> str:
+    return json.dumps({"data": {kind: {"projectsV2": {"nodes": list(nodes)}}}})
 
 
 def test_project_reuses_existing_board(calls):
@@ -127,6 +132,34 @@ def test_project_created_when_missing(calls):
     assert [a[1] for a, _ in calls] == ["graphql", "create", "link"]
 
 
+def test_organization_project_is_looked_up_on_the_organization(calls):
+    calls.responses["graphql"] = _graphql_projects({"number": 5, "title": "r"}, kind="organization")
+    github.configure_project("acme/r", org=True)
+    (query_args, _), (link_args, _) = calls
+    assert "organization(login: $owner)" in " ".join(query_args)
+    assert "user(login" not in " ".join(query_args)
+    assert "owner=acme" in query_args
+    assert link_args[:3] == ("project", "link", "5")
+    assert link_args[link_args.index("--owner") + 1] == "acme"
+
+
+def test_personal_project_is_looked_up_on_the_user(calls):
+    calls.responses["graphql"] = _graphql_projects({"number": 5, "title": "r"})
+    github.configure_project("me/r")
+    (query_args, _), _ = calls
+    assert "user(login: $owner)" in " ".join(query_args)
+
+
+def test_owner_type_accepts_users_and_organizations_only(calls):
+    calls.responses["users/acme"] = '{"login": "acme", "type": "Organization"}'
+    calls.responses["users/me"] = '{"login": "me", "type": "User"}'
+    calls.responses["users/odd"] = '{"login": "odd", "type": "Enterprise"}'
+    assert github.owner_type("acme") == "Organization"
+    assert github.owner_type("me") == "User"
+    with pytest.raises(github.GhError, match="neither"):
+        github.owner_type("odd")
+
+
 def _paths(calls):
     return [a[3] if a[0] == "api" else " ".join(a[:2]) for a, _ in calls]
 
@@ -155,12 +188,29 @@ def test_public_settles_settings_before_fanout_before_ruleset(calls):
     assert mute == {"subscribed": False, "ignored": True}
 
 
+def test_organization_configure_all_uses_org_lookups_and_bypass_free_gate(calls):
+    calls.responses.update({
+        "rulesets?": "[]",
+        "graphql": _graphql_projects({"number": 1, "title": "r"}, kind="organization"),
+        "repos/acme/r": '{"owner": {"type": "Organization", "login": "acme", "id": 77}}',
+    })  # fmt: skip
+    failed = github.configure_all(
+        "acme/r", private=False, push=lambda: None, log=lambda _: None, org=True
+    )
+    assert failed == []
+    query = next(" ".join(a) for a, _ in calls if a[1] == "graphql")
+    assert "organization(login: $owner)" in query
+    posted = [b for a, b in calls if a[:3] == ("api", "-X", "POST") and a[3].endswith("/rulesets")]
+    assert {b["name"] for b in posted} == {github.RULESET_NAME, github.REVIEW_RULESET_NAME}
+    assert all(b["bypass_actors"] == [] for b in posted)
+
+
 def test_ruleset_does_not_wait_for_slow_project(calls, monkeypatch):
     project_started = threading.Event()
     project_finished = threading.Event()
     ruleset_started = threading.Event()
 
-    def slow_project(_):
+    def slow_project(_, **kwargs):
         project_started.set()
         ruleset_started.wait(0.5)
         project_finished.set()
@@ -180,7 +230,7 @@ def test_ruleset_does_not_wait_for_slow_project(calls, monkeypatch):
 def test_push_failure_skips_ruleset_even_with_slow_project(calls, monkeypatch):
     project_started = threading.Event()
 
-    def slow_project(_):
+    def slow_project(_, **kwargs):
         project_started.set()
         time.sleep(0.1)
 
@@ -337,6 +387,7 @@ def test_new_repo_enables_every_merge_method_but_rerun_never_widens():
     )
     for private in (False, True):
         rerun = github.settings_body(private=private, new_repo=False)
+        assert "allow_squash_merge" not in rerun
         assert "allow_merge_commit" not in rerun
         assert "allow_rebase_merge" not in rerun
 
@@ -377,3 +428,12 @@ def test_rerun_keeps_saved_squash_only_and_linear_history_rules(calls):
     assert "required_linear_history" in {r["type"] for r in history["rules"]}
     (pull_request,) = [r for r in review["rules"] if r["type"] == "pull_request"]
     assert pull_request["parameters"]["allowed_merge_methods"] == ["squash"]
+
+
+@pytest.mark.parametrize("owner_id", [123, None])
+def test_new_repo_merge_methods_preserve_owner_gate(owner_id):
+    body = github.review_ruleset_body(owner_id)
+    rules = {rule["type"]: rule["parameters"] for rule in body["rules"]}
+    assert rules["pull_request"]["allowed_merge_methods"] == list(github.MERGE_METHODS)
+    assert rules["required_status_checks"]["strict_required_status_checks_policy"] is True
+    assert bool(body["bypass_actors"]) is (owner_id is not None)
