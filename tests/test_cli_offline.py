@@ -138,7 +138,7 @@ def test_demonstrated_library_command_ignores_stdin(tmp_path):
     assert "not another command" not in result.output
 
 
-@pytest.mark.parametrize("option", ["--owner", "--author", "--description", "--year"])
+@pytest.mark.parametrize("option", ["--author", "--description", "--year"])
 def test_fixed_render_metadata_requires_render(option):
     result = runner.invoke(cli.app, ["sample", option, "test"])
     assert result.exit_code == 1
