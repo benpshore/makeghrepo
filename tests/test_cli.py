@@ -218,11 +218,55 @@ def test_dry_run_reports_requested_owner(tmp_path, gh, forbid_effects):
     assert gh["calls"] == []  # offline: the owner is not looked up
 
 
-@pytest.mark.parametrize("source", ["flag", "env"])
+@pytest.mark.parametrize(
+    ("environment_owner", "args", "expected_owner"),
+    [
+        ("acme", [], "acme"),
+        ("someone", ["--owner", "acme"], "acme"),
+        ("bad name", ["--owner", "me"], "me"),
+        ("", [], "the authenticated user (looked up at creation)"),
+        (None, [], "the authenticated user (looked up at creation)"),
+    ],
+)
+def test_dry_run_resolves_owner_like_creation_without_effects(
+    tmp_path, gh, monkeypatch, forbid_effects, environment_owner, args, expected_owner
+):
+    if environment_owner is not None:
+        monkeypatch.setenv("MAKEGHREPO_OWNER", environment_owner)
+    result = runner.invoke(app, ["thing", *args, "-n"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert f"Owner requested: {expected_owner}" in result.output
+    assert list(tmp_path.iterdir()) == []
+    assert gh["calls"] == []
+
+
+def test_dry_run_rejects_invalid_environment_owner_without_effects(
+    tmp_path, gh, monkeypatch, forbid_effects
+):
+    monkeypatch.setenv("MAKEGHREPO_OWNER", "bad name")
+    result = runner.invoke(app, ["thing", "-n"], catch_exceptions=False)
+    assert result.exit_code == 1, result.output
+    assert "invalid GitHub owner" in result.output
+    assert list(tmp_path.iterdir()) == []
+    assert gh["calls"] == []
+
+
+def test_render_owner_stays_independent_of_creation_environment(tmp_path, gh, monkeypatch):
+    monkeypatch.setenv("MAKEGHREPO_OWNER", "bad name")
+    dest = tmp_path / "preview"
+    result = runner.invoke(app, ["thing", "--render", str(dest)], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert "The owner (`someone`) may push" in (dest / "README.md").read_text()
+    assert gh["calls"] == []
+
+
+@pytest.mark.parametrize("source", ["flag", "env", "flag-over-env"])
 def test_owner_organization_creates_the_repo_in_the_org(tmp_path, gh, monkeypatch, source):
     args = ["thing", "python"]
-    if source == "flag":
+    if source != "env":
         args += ["--owner", "acme"]
+        if source == "flag-over-env":
+            monkeypatch.setenv("MAKEGHREPO_OWNER", "someone")
     else:
         monkeypatch.setenv("MAKEGHREPO_OWNER", "acme")
     result = runner.invoke(app, args)

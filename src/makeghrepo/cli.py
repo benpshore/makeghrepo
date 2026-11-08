@@ -169,6 +169,10 @@ def main(
         raise fail(str(exc)) from exc
     if lib and "python" not in langs:
         raise fail("--lib only applies to python; add `python` to the language list")
+    # Creation and its offline plan must select the same requested owner. Keep
+    # --render independent of the host's creation default for repeatable previews.
+    if render is None:
+        owner = owner or os.environ.get("MAKEGHREPO_OWNER") or None
     if dry_run:
         _dry_run(
             raw_name,
@@ -219,7 +223,7 @@ def main(
         # The commit identity is always the authenticated user; the repository
         # owner may instead be an organization that user can create repos in.
         user = names.validate_owner(github.current_user())
-        owner = names.validate_owner(owner or os.environ.get("MAKEGHREPO_OWNER") or user)
+        owner = names.validate_owner(owner or user)
         org = False
         if owner.lower() != user.lower():
             if github.owner_type(owner) != "Organization":

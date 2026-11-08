@@ -78,7 +78,11 @@ New projects have **no license by default**, whether public or private: no `LICE
 Projects go in `~/code/GitHub/<name>`. Set `MAKEGHREPO_DIR` to use another folder.
 
 `--owner LOGIN` (or `MAKEGHREPO_OWNER`) creates the repository in an organization
-instead of your account. makeghrepo checks the login with the authenticated `gh`
+instead of your account. An explicit nonempty `--owner` takes precedence over
+`MAKEGHREPO_OWNER`; when neither is set, the authenticated user owns the repo.
+`--dry-run` reports that same requested owner without looking it up. Offline
+`--render` previews ignore `MAKEGHREPO_OWNER` and use their own `--owner` value.
+makeghrepo checks the login with the authenticated `gh`
 token first: your own login behaves as if the flag were absent, another user's
 account is refused, and an organization is accepted. Whether that organization lets
 you create a repo of the requested visibility is GitHub's decision at creation time;
