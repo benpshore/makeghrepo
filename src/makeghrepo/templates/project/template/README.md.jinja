@@ -7,7 +7,7 @@
 Run these before opening a PR. CI runs the same ones.
 
 ```sh
-[% include '_checks.jinja' %]
+[% include ['_checks.jinja', 'src/makeghrepo/templates/project/_checks.jinja'] %]
 ```
 
 [% if not private %]
@@ -17,3 +17,26 @@ Other accounts must use a squash PR with passing, up-to-date `ci`. Agents must u
 [% else %]
 GitHub Actions is disabled and no ruleset is installed for this private repo on GitHub Free. Run checks locally. Agents still work on branches and open PRs (see `AGENTS.md`).
 [% endif %]
+
+## Local patch versions
+
+Install mise, then run `mise run bump:patch:preview` to inspect the next patch tag.
+`mise run bump:patch` requires a clean working tree and creates an annotated local
+`vMAJOR.MINOR.PATCH` tag. It does not commit, push, enable Actions, or publish a
+release. An existing stable tag on HEAD is reused, so retries do not bump twice.
+Follow this project's existing review/release policy before publishing anything.
+
+## Template updates
+
+`.copier-answers.yml` records public inputs and a pinned template source/revision.
+Keep it in Git. On a clean update branch, inspect a template change first:
+
+```sh
+uvx --from copier==9.19.1 copier update --vcs-ref <reviewed-tag-or-commit> \
+  --pretend --overwrite --skip-tasks
+```
+
+Then run the same command without `--pretend`, review all changes/conflicts, and
+run the project checks before opening a PR. Do not add `--trust`. Preserve local
+edits; a successful render alone is not proof that an update or release works.
+Template updates retain the existing stack; changing stacks needs fresh planning.

@@ -199,3 +199,19 @@ To add a language or component, add only files it owns:
 - Its project files under `templates/project/template/`, behind `[% if '<id>' in languages %]` names.
 
 Then regenerate the golden snapshots, and review the diff: every new token gets its own snapshot automatically.
+
+## Template state and local patch tags
+
+`makeghrepo` renders the packaged Copier/Jinja template, fails on undefined
+variables, and records portable `.copier-answers.yml` state. The repository-root
+`copier.yml` exposes the same template for reviewed Copier updates. Installed
+stable wheels pin their release tag; clean development wheels pin the commit
+encoded in their build metadata; source checkouts pin their source commit.
+Dirty/unidentified wheel metadata is refused instead of claiming a released base.
+Uncommitted template edits are previews, not a published update base. Use a
+released version or a published reviewed commit before sharing daughter answers.
+
+`mise run bump:patch:preview` shows the next patch tag without effects.
+`mise run bump:patch` creates an annotated **local-only** patch tag on a clean
+commit; it never commits, pushes, or publishes. Neither command changes the
+existing automatic minor-release policy. Follow normal PR/release procedures.

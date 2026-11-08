@@ -62,7 +62,8 @@ def test_version_exits_before_validating_workflow_arguments(monkeypatch):
 
 
 @pytest.mark.parametrize("combo", ["base", "python-lib", "all-private"])
-def test_offline_cli_matches_shared_golden_output(tmp_path, combo):
+def test_offline_cli_matches_shared_golden_output(tmp_path, combo, monkeypatch):
+    monkeypatch.setattr(scaffold, "template_revision", lambda: "v0.0.0")
     dest = tmp_path / "output"
     data = golden_snapshots.COMBOS[combo]
     args = [*data["languages"], "--render", str(dest)]

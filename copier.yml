@@ -1,0 +1,4 @@
+# Public Copier entrypoint; the installed CLI uses the same packaged template.
+!include src/makeghrepo/templates/project/copier.yml
+---
+_subdirectory: src/makeghrepo/templates/project/template

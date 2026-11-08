@@ -34,6 +34,7 @@ def files_of(root: Path) -> set[str]:
 
 
 BASE = {
+    ".copier-answers.yml", "mise.toml", ".makeghrepo/bump_version.py",
     ".gitignore", ".editorconfig", "README.md", "AGENTS.md", "CLAUDE.md", "SECURITY.md",
     ".github/dependabot.yml", ".github/pull_request_template.md", ".github/workflows/ci.yml",
     ".github/workflows/release.yml", ".github/workflows/codeql.yml",

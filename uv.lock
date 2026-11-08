@@ -149,7 +149,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "copier", specifier = ">=9.18.2" },
+    { name = "copier", specifier = ">=9.19.1,<10" },
     { name = "gitpython", specifier = ">=3.1.62" },
     { name = "typer", specifier = ">=0.27.2" },
 ]

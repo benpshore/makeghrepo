@@ -9,6 +9,7 @@ _envops:
   variable_end_string: "]]"
   comment_start_string: "[#"
   comment_end_string: "#]"
+  undefined: jinja2.StrictUndefined
   keep_trailing_newline: true
   trim_blocks: true
   lstrip_blocks: true
@@ -68,9 +69,10 @@ rb: {type: bool, when: false, default: "[[ 'ruby' in languages ]]"}
 sqlite: {type: bool, when: false, default: "[[ 'sqlite' in languages ]]"}
 
 # Registry-derived data: makeghrepo computes these from src/makeghrepo/langs/*.toml
-# (registry.derived) and passes them in. They are never asked.
-ci_jobs: {type: yaml, when: false, default: "[]"}
-dependabot_ecosystems: {type: yaml, when: false, default: "[github-actions]"}
-codeql_entries: {type: yaml, when: false, default: "[]"}
-npm_scripts: {type: yaml, when: false, default: "{}"}
-npm_dev: {type: yaml, when: false, default: "{}"}
+# (registry.derived) and passes them in. Persist these public values so Copier
+# updates retain the selected stack without running Python template hooks.
+ci_jobs: {type: yaml, default: "[]"}
+dependabot_ecosystems: {type: yaml, default: "[github-actions]"}
+codeql_entries: {type: yaml, default: "[]"}
+npm_scripts: {type: yaml, default: "{}"}
+npm_dev: {type: yaml, default: "{}"}

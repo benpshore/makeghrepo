@@ -8,7 +8,8 @@ flag = "sh"
 groups = []
 marker = "scripts/hello.sh"
 checks = [
-  ["shellcheck", "scripts/hello.sh"],
+  ["shellcheck", "-s", "sh", "scripts/hello.sh"],
+  ["shfmt", "-ln", "posix", "-d", "scripts/hello.sh"],
 ]
 setup_len = 0
 required_tool = false

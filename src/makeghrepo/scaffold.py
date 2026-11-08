@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from importlib.metadata import version
 from importlib.resources import as_file, files
 from pathlib import Path
 
@@ -112,9 +115,64 @@ def language(word: str) -> str | None:
     return word if word in LANGUAGES else ALIASES.get(word)
 
 
-def render(dest: Path, data: dict[str, object]) -> None:
+TEMPLATE_SOURCE = "https://github.com/benpshore/makeghrepo.git"
+
+
+def template_revision() -> str:
+    """Pin released wheels to their tag and source checkouts to their commit."""
+    source_root = Path(__file__).resolve().parents[2]
+    marker = source_root / ".git"
+    if marker.exists():
+        # Offline render must work even when Git is absent from PATH. Read the
+        # checkout's HEAD/ref only; never inspect config or credential channels.
+        git_dir = marker if marker.is_dir() else source_root / marker.read_text().strip()[8:]
+        git_dir = git_dir.resolve()
+        head = (git_dir / "HEAD").read_text().strip()
+        if re.fullmatch(r"[a-f0-9]{40}", head):
+            return head
+        if head.startswith("ref: "):
+            ref = head[5:]
+            common_file = git_dir / "commondir"
+            common = (
+                (git_dir / common_file.read_text().strip()).resolve()
+                if common_file.exists()
+                else git_dir
+            )
+            loose = common / ref
+            if loose.is_file():
+                candidate = loose.read_text().strip()
+                if re.fullmatch(r"[a-f0-9]{40}", candidate):
+                    return candidate
+            packed = common / "packed-refs"
+            if packed.is_file():
+                for line in packed.read_text().splitlines():
+                    fields = line.split()
+                    if (
+                        len(fields) == 2
+                        and fields[1] == ref
+                        and re.fullmatch(r"[a-f0-9]{40}", fields[0])
+                    ):
+                        return fields[0]
+    return _revision_from_version(version("makeghrepo"))
+
+
+def _revision_from_version(installed: str) -> str:
+    """Resolve clean wheel metadata; never label a dirty build as a release."""
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", installed):
+        return f"v{installed}"
+    development = re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+(?:\.post[0-9]+)?\.dev[0-9]+\+g?([a-f0-9]{7,40})",
+        installed,
+    )
+    if development:
+        return development[1]
+    raise RuntimeError("dirty or unversioned wheels need an explicit template revision")
+
+
+def render(dest: Path, data: dict[str, object], *, template_ref: str | None = None) -> None:
     if dest.exists() and any(dest.iterdir()):
         raise FileExistsError(f"{dest} already exists and is not empty")
+    revision = template_ref or template_revision()
     chosen = list(data.get("languages") or [])
     with as_file(files("makeghrepo") / "templates" / "project") as src:
         copier.run_copy(
@@ -130,6 +188,15 @@ def render(dest: Path, data: dict[str, object]) -> None:
             quiet=True,
             overwrite=False,
         )
+    # Copier's packaged source is a machine-local installation path, not a
+    # portable upstream. Keep standard Copier state but pin the public Git source.
+    answers_path = dest / ".copier-answers.yml"
+    answers = json.loads(answers_path.read_text())
+    answers["_src_path"] = TEMPLATE_SOURCE
+    answers["_commit"] = revision
+    answers_path.write_text(
+        json.dumps(answers, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    )
 
 
 def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> None:

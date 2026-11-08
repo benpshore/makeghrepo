@@ -6,4 +6,6 @@
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: git ls-files -z '*.sh' | xargs -0 shellcheck
+      - run: sudo apt-get update && sudo apt-get install -y shfmt
+      - run: git ls-files -z '*.sh' | xargs -0 shellcheck -s sh
+      - run: git ls-files -z '*.sh' | xargs -0 shfmt -ln posix -d

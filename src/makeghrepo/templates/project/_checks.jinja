@@ -1,5 +1,5 @@
 [% for job in ci_jobs %]
-[% include '_checks/' ~ job ~ '.jinja' %]
+[% include ['_checks/' ~ job ~ '.jinja', 'src/makeghrepo/templates/project/_checks/' ~ job ~ '.jinja'] %]
 [% endfor %]
 [% if not languages %]
 # no language chosen yet: add your toolchain's checks here and to .github/workflows/ci.yml

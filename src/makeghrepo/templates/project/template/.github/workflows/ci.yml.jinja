@@ -28,7 +28,7 @@ jobs:
           bad=$(git ls-files | grep -Ei '(^|/)(\.DS_Store|\.env(\..+)?|[^/]+\.(db|sqlite3?|duckdb|pem|key|p12|pfx))$' | grep -v '\.env\.example$' || true)
           if [ -n "$bad" ]; then echo "::error::remove from git: $bad"; exit 1; fi
 [% for job in ci_jobs %]
-[% include '_ci/' ~ job ~ '.jinja' %]
+[% include ['_ci/' ~ job ~ '.jinja', 'src/makeghrepo/templates/project/_ci/' ~ job ~ '.jinja'] %]
 [% endfor %]
 
   # The single required check in the branch ruleset. It passes only if every job above passed.

@@ -14,8 +14,11 @@
 [% if py and not private %]
 - Every merge to `main` is released automatically (next minor version, wheel and sdist attached).
 [% endif %]
+- Shell scripts must use strict POSIX `sh`, validated with ShellCheck sh mode and shfmt POSIX mode.
+- `mise run bump:patch:preview` is read-only; `mise run bump:patch` creates only a local tag from a clean commit. Neither pushes or publishes.
+- Keep `.copier-answers.yml` tracked. Update templates only on a clean branch and review the diff; never enable untrusted template hooks.
 - Before committing, run:
 
 ```sh
-[% include '_checks.jinja' %]
+[% include ['_checks.jinja', 'src/makeghrepo/templates/project/_checks.jinja'] %]
 ```

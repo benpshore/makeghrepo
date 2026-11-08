@@ -1,0 +1,11 @@
+# Task-scoped tools only; no shell activation or global configuration changes.
+[tools]
+uv = "0.13.7"
+
+[tasks."bump:patch"]
+description = "Create a local patch tag from a clean commit; never push or publish"
+run = "uv run --no-project --python 3.14 python .makeghrepo/bump_version.py"
+
+[tasks."bump:patch:preview"]
+description = "Preview the next patch tag without changes"
+run = "uv run --no-project --python 3.14 python .makeghrepo/bump_version.py --dry-run"

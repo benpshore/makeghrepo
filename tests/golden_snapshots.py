@@ -84,7 +84,7 @@ def golden_path(name: str) -> Path:
 
 def render_combo(name: str, dest: Path) -> Path:
     """Render COMBOS[name] (over DATA) into dest, which must not exist yet; return dest."""
-    scaffold.render(dest, {**DATA, **COMBOS[name]})
+    scaffold.render(dest, {**DATA, **COMBOS[name]}, template_ref="v0.0.0")
     return dest
 
 
