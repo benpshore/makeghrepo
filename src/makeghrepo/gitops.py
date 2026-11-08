@@ -11,7 +11,7 @@ MARKER = "makeghrepo.json"  # lives inside .git, so it is never committed or pus
 
 
 class GitError(RuntimeError):
-    """A ``git`` invocation failed, could not start, or timed out.
+    """A ``git`` invocation failed or could not start.
 
     ``returncode`` is git's exit status, or None when git never ran (not installed).
     """
