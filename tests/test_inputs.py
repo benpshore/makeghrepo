@@ -29,7 +29,7 @@ class InputGrammar(unittest.TestCase):
             ["sample", "*"],
             ["sample", "python\n"],
             ["sample", "gh"],
-            ["sample", "auth"],
+            ["sample", "list"],
         ):
             with self.subTest(words=words), self.assertRaises(ValueError):
                 inputs.parse_words(words)

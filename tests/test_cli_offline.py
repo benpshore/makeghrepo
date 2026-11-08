@@ -128,7 +128,7 @@ def test_demonstrated_library_command_ignores_stdin(tmp_path):
     result = runner.invoke(
         cli.app,
         ["python", "--lib", "sqlite", "api", "--render", str(dest)],
-        input="gh auth token\nnot another command\n",
+        input="echo injected\nnot another command\n",
     )
     assert result.exit_code == 0, result.output
     project = tomllib.loads((dest / "pyproject.toml").read_text())["project"]
