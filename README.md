@@ -34,6 +34,7 @@ makeghrepo quiet-otter python       # one language
 makeghrepo quiet-otter rust docker  # several
 makeghrepo swift                    # first word is a language, so the name is random
 makeghrepo quiet-otter --private
+makeghrepo quiet-otter python --owner my-org  # create it in an organization you belong to
 makeghrepo quiet-otter python --license MIT # explicitly opt in to an MIT license
 makeghrepo quiet-otter python --lib # library layout, no console script (like `uv init --lib`)
 makeghrepo --version
@@ -76,6 +77,16 @@ New projects have **no license by default**, whether public or private: no `LICE
 
 Projects go in `~/code/GitHub/<name>`. Set `MAKEGHREPO_DIR` to use another folder.
 
+`--owner LOGIN` (or `MAKEGHREPO_OWNER`) creates the repository in an organization
+instead of your account. makeghrepo checks the login with the authenticated `gh`
+token first: your own login behaves as if the flag were absent, another user's
+account is refused, and an organization is accepted. Whether that organization lets
+you create a repo of the requested visibility is GitHub's decision at creation time;
+a refusal there stops the run before anything is pushed. The commit identity stays
+yours. Resuming an organization project needs the same `--owner`; the resume marker
+records it and a mismatch is refused. Organization repositories get the PR/CI gate
+**without** an owner bypass — see [owner pushes](docs/owner-pushes.md#organizations).
+
 No git identity or GitHub auth setup needed beyond the token described under Install: makeghrepo falls back to a `users.noreply.github.com` commit identity if none is configured, and never touches your global git config.
 
 Local checks run third-party code: npm packages, pinned `npx`/`uvx` tools, and the new project's own tests. They run with credential *channels* removed from the environment: no `GH_*`/`GITHUB_*` variables, no keyring session, no ssh agent. That is not isolation: a check can still read files under your home directory, including `gh`'s stored token (#113 tracks an OS-level sandbox). Until then, treat a generated project's checks like any code you run by hand. npm installs use `--ignore-scripts`. Checks that can't work on this machine are skipped and left to CI, which runs them on GitHub:
@@ -101,6 +112,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
    - public repos: secret scanning, push protection, private vulnerability reporting
    - **pushes `main`**, after public push protection is on or private Actions are disabled
    - public personal repos: `protect-main` blocks force-push, deletion, and merge commits for everyone. A separate `require-pr-and-ci` ruleset requires a squash PR (0 approvals) and up-to-date passing `ci` from GitHub Actions, with a bypass for the exact repository owner. The owner's own pushes need neither a PR nor passing CI; agents still use PRs and CI. See [owner pushes and migration](docs/owner-pushes.md) for the credential boundary and existing-repo setup.
+   - public organization repos (`--owner`): the same two rulesets, but `require-pr-and-ci` has no bypass actor at all, so owners, members and agents all merge through a squash PR with passing `ci`. An organization can give agents their own credentials (a GitHub App or member account), which is the boundary the personal bypass cannot enforce.
    - labels `epic` and `task`, and a Project board linked to the repo
    - notifications set to **Ignore**, and no CODEOWNERS file, so nothing pings you
 

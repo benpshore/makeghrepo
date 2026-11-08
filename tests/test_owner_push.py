@@ -104,9 +104,35 @@ class OwnerPushTests(unittest.TestCase):
                 assert api.state[42] == legacy
                 assert len(api.writes) == failure
 
+    def test_organization_repository_gets_the_gate_without_any_bypass(self):
+        for mode in ("new", "legacy"):
+            with self.subTest(mode=mode):
+                existing = {} if mode == "new" else {42: self.legacy()}
+                api = RulesetAPI(existing, owner={"type": "Organization", "login": "me", "id": 9})
+                with patch.object(github, "api", api):
+                    github.configure_ruleset("me/r")
+                review, history = (c[2] for c in api.writes)
+                assert review["name"] == "require-pr-and-ci"
+                assert review["bypass_actors"] == []
+                assert review["rules"] == self.review["rules"]
+                assert history == self.history
+                assert not any(c[2]["bypass_actors"] for c in api.writes)
+
+    def test_organization_repository_with_a_personal_bypass_is_refused(self):
+        # A personal repository transferred into an organization still carries the
+        # owner's User bypass; narrowing it silently would be a live policy change.
+        api = RulesetAPI({43: self.review}, owner={"type": "Organization", "login": "me", "id": 9})
+        with (
+            patch.object(github, "api", api),
+            self.assertRaisesRegex(github.GhError, "customized ruleset"),
+        ):
+            github.configure_ruleset("me/r")
+        assert not api.writes
+
     def test_unverified_owner_never_grants_bypass(self):
         owners = [
-            {"type": "Organization", "login": "me", "id": 123},
+            {"type": "Organization", "login": "not-me", "id": 123},
+            {"type": "Enterprise", "login": "me", "id": 123},
             {"type": "User", "login": "someone-else", "id": 123},
             {"type": "User", "login": "me"},
             {"type": "User", "login": "me", "id": True},
