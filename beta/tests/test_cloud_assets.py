@@ -21,6 +21,9 @@ from makeghrepo_beta.cloud_cli import main
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# The slug is runtime data resolved from the immutable repository ID; tests use the current one.
+SLUG = "Shorewood-Analytics/makeghrepo"
+
 
 def zip_bytes(payload):
     stream = io.BytesIO()
@@ -96,8 +99,8 @@ def fixture(plan):
         "conclusion": "success",
         "event": "push",
         "head_branch": "main",
-        "repository": {"id": 34, "full_name": contract.REPOSITORY},
-        "head_repository": {"id": 34, "full_name": contract.REPOSITORY},
+        "repository": {"id": contract.REPOSITORY_ID, "full_name": SLUG},
+        "head_repository": {"id": contract.REPOSITORY_ID, "full_name": SLUG},
     }
     artifact = {
         "id": 56,
@@ -109,18 +112,30 @@ def fixture(plan):
         "workflow_run": {
             "id": 12,
             "head_sha": plan.source_sha,
-            "repository_id": 34,
-            "head_repository_id": 34,
+            "repository_id": contract.REPOSITORY_ID,
+            "head_repository_id": contract.REPOSITORY_ID,
         },
     }
     return payload, archive, run, artifact
 
 
 class API:
-    def __init__(self, run, artifact, archive):
-        prefix = f"repos/{contract.REPOSITORY}/actions"
+    def __init__(self, run, artifact, archive, slug=SLUG, repository=None):
+        prefix = f"repos/{slug}/actions"
         self.run_url = f"{prefix}/runs/12"
+        owner, name = slug.split("/")
+        self.repository = (
+            repository
+            if repository is not None
+            else {
+                "id": contract.REPOSITORY_ID,
+                "full_name": slug,
+                "name": name,
+                "owner": {"login": owner},
+            }
+        )
         self.responses = {
+            f"repositories/{contract.REPOSITORY_ID}": contract.canonical(self.repository),
             self.run_url: contract.canonical(run),
             self.run_url + "/artifacts?per_page=100": contract.canonical(
                 {
@@ -213,7 +228,7 @@ class CloudAssetsTests(unittest.TestCase):
             json.loads((self.dest / "identity.json").read_text()), self.plan.identity()
         )
         self.assertEqual((self.dest / contract.WHEEL).read_bytes(), self.payload[contract.WHEEL][0])
-        self.assertEqual(len(self.api.calls), 10)
+        self.assertEqual(len(self.api.calls), 12)  # one repository resolution per consume
 
     def test_existing_work_or_different_plan_is_preserved(self):
         client.consume(self.plan, 12, self.dest, self.api)
@@ -244,14 +259,89 @@ class CloudAssetsTests(unittest.TestCase):
             ("run_attempt", True),
             ("head_branch", "feature"),
             ("head_repository", {"id": 99, "full_name": "other/repo"}),
+            # A fork of this repository: same slug shape, different ID.
+            ("head_repository", {"id": 99, "full_name": "someone/makeghrepo"}),
+            # The run belongs to a repository that reused the slug after a transfer.
+            ("repository", {"id": contract.REPOSITORY_ID + 1, "full_name": SLUG}),
+            # Same ID but a slug that differs from the resolved one mid-operation.
+            (
+                "repository",
+                {"id": contract.REPOSITORY_ID, "full_name": "Shorewood-Analytics/renamed"},
+            ),
+            ("repository", {"id": contract.REPOSITORY_ID, "full_name": "../../evil"}),
+            ("repository", {"id": str(contract.REPOSITORY_ID), "full_name": SLUG}),
+            ("repository", {"full_name": SLUG}),
         ]
         for key, value in variants:
             run = {**self.run, key: value}
             api = API(run, self.artifact, self.archive)
-            with self.subTest(key=key), self.assertRaises(ValueError):
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 client.consume(self.plan, 12, self.dest, api)
-            self.assertEqual(len(api.calls), 1)
+            self.assertEqual(len(api.calls), 2)  # resolution + one run read, nothing downloaded
             self.assertFalse(self.dest.exists())
+
+    def test_repository_is_resolved_by_id_and_a_rename_keeps_working(self):
+        # Transferred and renamed: the ID answers with the new slug and everything follows it.
+        renamed = "New-Owner/renamed-repo"
+        run = {
+            **self.run,
+            "repository": {"id": contract.REPOSITORY_ID, "full_name": renamed},
+            "head_repository": {"id": contract.REPOSITORY_ID, "full_name": renamed},
+        }
+        api = API(run, self.artifact, self.archive, slug=renamed)
+        self.assertEqual(client.consume(self.plan, 12, self.dest, api), "verified and installed")
+        self.assertEqual(api.calls[0], f"repositories/{contract.REPOSITORY_ID}")
+        self.assertTrue(all(call.startswith(f"repos/{renamed}/") for call in api.calls[1:]))
+        self.assertNotIn("benpshore", "".join(api.calls))
+
+    def test_resolution_mismatch_is_refused_before_any_run_or_credentialed_slug_read(self):
+        for repository in [
+            {
+                "id": contract.REPOSITORY_ID + 1,
+                "full_name": SLUG,
+                "name": "makeghrepo",
+                "owner": {"login": "Shorewood-Analytics"},
+            },
+            {
+                "id": contract.REPOSITORY_ID,
+                "full_name": "../x",
+                "name": "x",
+                "owner": {"login": ".."},
+            },
+            {
+                "id": contract.REPOSITORY_ID,
+                "full_name": SLUG,
+                "name": "other",
+                "owner": {"login": "Shorewood-Analytics"},
+            },
+            {"id": contract.REPOSITORY_ID, "full_name": SLUG, "name": "makeghrepo"},
+            {"full_name": SLUG},
+            [],
+        ]:
+            api = API(self.run, self.artifact, self.archive, repository=repository)
+            with self.subTest(repository=repository), self.assertRaises(ValueError):
+                client.consume(self.plan, 12, self.dest, api)
+            self.assertEqual(api.calls, [f"repositories/{contract.REPOSITORY_ID}"])
+            self.assertFalse(self.dest.exists())
+
+    def test_asset_provenance_is_bound_to_repository_id_commit_and_workflow(self):
+        source = self.plan.asset()["source"]
+        self.assertEqual(
+            source,
+            {
+                "repository_id": contract.REPOSITORY_ID,
+                "commit": self.plan.source_sha,
+                "workflow": contract.WORKFLOW,
+            },
+        )
+        self.assertNotIn("repository", source)  # no slug in the asset key
+        other = contract.CloudPlan("c" * 40, self.plan.owner, self.plan.name)
+        self.assertNotEqual(self.plan.asset_key, other.asset_key)
+        baseline = self.plan.asset_key
+        with patch.object(contract, "REPOSITORY_ID", contract.REPOSITORY_ID + 1):
+            self.assertNotEqual(
+                baseline, self.plan.asset_key
+            )  # a different repository is a different asset
 
     def test_missing_expired_duplicate_or_wrong_attempt_artifact_fails(self):
         listing = {"total_count": 1, "artifacts": [self.artifact]}

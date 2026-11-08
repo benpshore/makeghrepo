@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Merge queue (organization-owned repository): the queued merge commit is
+  # tested before it reaches main. Every job here holds a read-only token, so
+  # the queue never runs project code with write permissions; snapshot and
+  # release publication stay on push/dispatch only.
+  merge_group:
   workflow_dispatch:
 
 permissions:

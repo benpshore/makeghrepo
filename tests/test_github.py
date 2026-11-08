@@ -437,3 +437,55 @@ def test_new_repo_merge_methods_preserve_owner_gate(owner_id):
     assert rules["pull_request"]["allowed_merge_methods"] == list(github.MERGE_METHODS)
     assert rules["required_status_checks"]["strict_required_status_checks_policy"] is True
     assert bool(body["bypass_actors"]) is (owner_id is not None)
+
+
+def test_organization_bootstrap_pushes_main_before_any_bypass_free_ruleset(calls):
+    """Bootstrap boundary for organization repositories (the #177 trap).
+
+    An organization ruleset is installed without a bypass actor (#192), so a
+    ruleset that exists before the first push would strand an empty repository:
+    nobody could push main through a PR-and-CI gate on a repository with no
+    main. The push therefore completes first and every ruleset POST follows it;
+    a failed first push installs no ruleset at all.
+    """
+    calls.responses.update({
+        "rulesets?": "[]",
+        "graphql": _graphql_projects({"number": 1, "title": "r"}, kind="organization"),
+        "repos/acme/r": '{"owner": {"type": "Organization", "login": "acme", "id": 77}}',
+    })  # fmt: skip
+    order: list[str] = []
+    sentinel = ("push",)
+
+    def push():
+        order.append("push")
+        calls.append((sentinel, None))
+
+    failed = github.configure_all("acme/r", private=False, push=push, log=lambda _: None, org=True)
+    assert failed == [] and order == ["push"]
+    push_index = next(i for i, (a, _) in enumerate(calls) if a is sentinel)
+    ruleset_posts = [
+        i
+        for i, (a, _) in enumerate(calls)
+        if a[:3] == ("api", "-X", "POST") and a[3].endswith("/rulesets")
+    ]
+    assert len(ruleset_posts) == 2 and all(push_index < i for i in ruleset_posts)
+    posted = [b for a, b in calls if a[:3] == ("api", "-X", "POST") and a[3].endswith("/rulesets")]
+    assert all(b["bypass_actors"] == [] for b in posted)
+
+    # A rejected first push leaves the organization repository without a gate it
+    # could never satisfy; the retry path (push=None) installs it once main exists.
+    calls.clear()
+    calls.responses.update({
+        "rulesets?": "[]",
+        "graphql": _graphql_projects({"number": 1, "title": "r"}, kind="organization"),
+        "repos/acme/r": '{"owner": {"type": "Organization", "login": "acme", "id": 77}}',
+    })  # fmt: skip
+
+    def rejected():
+        raise RuntimeError("rejected")
+
+    failed = github.configure_all(
+        "acme/r", private=False, push=rejected, log=lambda _: None, org=True
+    )
+    assert failed == ["push main"]
+    assert not any("rulesets" in p for p in _paths(calls))

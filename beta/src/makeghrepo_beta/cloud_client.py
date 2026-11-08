@@ -10,7 +10,7 @@ from pathlib import Path
 from makeghrepo_beta.cloud_contract import (
     MAX_BYTES,
     MAX_JSON,
-    REPOSITORY,
+    REPOSITORY_ID,
     CloudPlan,
     canonical,
     decode,
@@ -18,6 +18,7 @@ from makeghrepo_beta.cloud_contract import (
     prepare_fetch,
     require,
     validate_artifact,
+    validate_repository,
     validate_run,
     verify_download,
 )
@@ -126,16 +127,35 @@ def install(plan: CloudPlan, payload: dict, artifact: dict, run: dict, destinati
     return "verified and installed"
 
 
+def resolve_repository(api: GhAPI) -> str:
+    """Resolve the current slug of the source repository from its immutable ID.
+
+    ``GET /repositories/{id}`` answers for the ID regardless of transfers or
+    renames, so no request depends on an old slug's redirect. The answer is
+    cross-checked (id, owner/name consistency, slug shape) before the slug is
+    placed in any further endpoint.
+    """
+    data = decode(api.get(f"repositories/{REPOSITORY_ID}"))
+    slug = validate_repository(data)
+    owner = data.get("owner")
+    require(
+        type(owner) is dict and f"{owner.get('login')}/{data.get('name')}" == slug,
+        "repository metadata is inconsistent",
+    )
+    return slug
+
+
 def consume(plan: CloudPlan, run_id: int, destination: Path, api: GhAPI | None = None) -> str:
     # Reconstruct even direct Python callers' values before any remote read.
     plan = CloudPlan.parse(canonical(plan.document()))
     request = prepare_fetch(plan, run_id, destination)
     destination = Path(request["destination"])
     api = api or GhAPI()
-    prefix = f"repos/{REPOSITORY}/actions"
+    slug = resolve_repository(api)
+    prefix = f"repos/{slug}/actions"
     run_endpoint = f"{prefix}/runs/{run_id}"
     run = decode(api.get(run_endpoint))
-    attempt = validate_run(plan, run, run_id)
+    attempt = validate_run(plan, run, run_id, slug)
     listing = decode(api.get(f"{run_endpoint}/artifacts?per_page=100"))
     artifact = validate_artifact(plan, run, listing)
     artifact_endpoint = f"{prefix}/artifacts/{artifact['id']}"
@@ -145,7 +165,9 @@ def consume(plan: CloudPlan, run_id: int, destination: Path, api: GhAPI | None =
     # PR177's completion/readback ordering: requests succeeding is not evidence
     # of current effective state. A rerun or artifact replacement blocks install.
     observed_run = decode(api.get(run_endpoint))
-    require(validate_run(plan, observed_run, run_id) == attempt, "run attempt changed; re-plan")
+    require(
+        validate_run(plan, observed_run, run_id, slug) == attempt, "run attempt changed; re-plan"
+    )
     observed_artifact = decode(api.get(artifact_endpoint))
     validate_artifact(plan, observed_run, {"total_count": 1, "artifacts": [observed_artifact]})
     for field in ("id", "digest", "size_in_bytes", "name"):

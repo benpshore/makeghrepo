@@ -30,7 +30,11 @@ from makeghrepo import names
 from makeghrepo_beta import seedlock
 from makeghrepo_beta.plan import directory_state
 
-REPOSITORY = "benpshore/makeghrepo"
+# The source repository is identified by its immutable numeric ID, which
+# survives transfers and renames. The slug (owner/name) is runtime data: it is
+# validated for shape and cross-checked against this ID wherever it is read.
+REPOSITORY_ID = 1386536822
+SLUG_PATTERN = re.compile(r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}/[A-Za-z0-9._-]{1,100}$")
 WORKFLOW = ".github/workflows/ci.yml"
 PACKAGE = "makeghrepo-seed"
 WHEEL = "dist/makeghrepo_seed-0.0.0-py3-none-any.whl"
@@ -57,6 +61,30 @@ ZIP_CHUNK = 64 * 1024
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def validate_slug(slug: object) -> str:
+    """Return ``owner/name`` when it is a well-formed repository slug."""
+    require(
+        isinstance(slug, str) and bool(SLUG_PATTERN.match(slug)) and ".." not in slug,
+        "invalid repository slug",
+    )
+    return slug
+
+
+def validate_repository(repo: object, slug: str | None = None) -> str:
+    """Return the slug of a repository object that is *this* repository.
+
+    The numeric ``id`` must equal ``REPOSITORY_ID``; a repository that reused the
+    old name, or a fork, has another ID and is refused. When ``slug`` is given,
+    the object's ``full_name`` must also equal it, so one consumer never mixes
+    two slugs for the same ID within one operation.
+    """
+    require(type(repo) is dict, "missing repository metadata")
+    require(integer(repo.get("id"), "repository id") == REPOSITORY_ID, "untrusted repository")
+    full_name = validate_slug(repo.get("full_name"))
+    require(slug is None or full_name == slug, "repository slug changed during the operation")
+    return full_name
 
 
 def canonical(value: object) -> bytes:
@@ -122,7 +150,11 @@ class CloudPlan:
 
     def asset(self) -> dict:
         return {
-            "source": {"repository": REPOSITORY, "commit": self.source_sha, "workflow": WORKFLOW},
+            "source": {
+                "repository_id": REPOSITORY_ID,
+                "commit": self.source_sha,
+                "workflow": WORKFLOW,
+            },
             "profile": deepcopy(PROFILE),
             "seed_sha256": seed_digest(),
         }
@@ -198,18 +230,17 @@ def prepare_fetch(plan: CloudPlan, run_id: int, destination: Path) -> dict:
     }
 
 
-def validate_run(plan: CloudPlan, run: dict, run_id: int) -> int:
+def validate_run(plan: CloudPlan, run: dict, run_id: int, slug: str | None = None) -> int:
     require(type(run) is dict, "missing run metadata")
     require(integer(run.get("id"), "run id") == run_id, "run id mismatch")
     require(run.get("head_sha") == plan.source_sha, "run source mismatch")
     require(run.get("path") == WORKFLOW, "unexpected workflow")
     require(run.get("status") == "completed", "workflow has not completed; retry this run")
     require(run.get("conclusion") == "success", "workflow did not pass all gates")
-    for field in ("repository", "head_repository"):
-        repo = run.get(field)
-        require(type(repo) is dict and repo.get("full_name") == REPOSITORY, "untrusted repository")
-        integer(repo.get("id"), "repository id")
-    require(run["repository"]["id"] == run["head_repository"]["id"], "fork run refused")
+    # Both the run's repository and the head repository must be this repository
+    # by ID: a fork, or a repository that reused the slug, is refused.
+    slug = validate_repository(run.get("repository"), slug)
+    validate_repository(run.get("head_repository"), slug)
     require(
         run.get("event") == "workflow_dispatch"
         or (run.get("event") == "push" and run.get("head_branch") == "main"),

@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Required-check coverage for queued merges; the analysis token only
+  # uploads results (security-events: write), no project code gains write.
+  merge_group:
   schedule:
     - cron: "27 6 * * 1"
 

@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/benpshore/makeghrepo"
+Repository = "https://github.com/Shorewood-Analytics/makeghrepo"
 
 [project.scripts]
 makeghrepo = "makeghrepo:main"

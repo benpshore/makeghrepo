@@ -18,7 +18,7 @@ from makeghrepo_beta.cloud_contract import (
     CHECKS,
     PACKAGE,
     PROFILE,
-    REPOSITORY,
+    REPOSITORY_ID,
     WHEEL,
     WORKFLOW,
     CloudPlan,
@@ -30,6 +30,7 @@ from makeghrepo_beta.cloud_contract import (
     require,
     sha256,
     validate_bundle,
+    validate_slug,
 )
 
 BUILD_REQUIREMENTS = tuple(PROFILE["build_requirements"])
@@ -235,9 +236,14 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     require(os.environ.get("GITHUB_ACTIONS") == "true", "prebuilding is restricted to Actions CI")
-    require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY, "unexpected builder repository")
+    # Trusted execution context: the runner's own repository ID, then its slug.
     require(
-        os.environ.get("GITHUB_WORKFLOW_REF", "").startswith(f"{REPOSITORY}/{WORKFLOW}@"),
+        os.environ.get("GITHUB_REPOSITORY_ID") == str(REPOSITORY_ID),
+        "unexpected builder repository",
+    )
+    slug = validate_slug(os.environ.get("GITHUB_REPOSITORY"))
+    require(
+        os.environ.get("GITHUB_WORKFLOW_REF", "").startswith(f"{slug}/{WORKFLOW}@"),
         "unexpected builder workflow",
     )
     plan = CloudPlan(os.environ["GITHUB_SHA"], "makeghrepo-assets", PACKAGE)

@@ -13,7 +13,7 @@ target, current evidence and remaining scope.
 ## Install
 
 ```sh
-uv tool install git+https://github.com/benpshore/makeghrepo
+uv tool install git+https://github.com/Shorewood-Analytics/makeghrepo
 ```
 
 makeghrepo uses the token `gh` already has: a classic PAT with `repo`, `workflow`

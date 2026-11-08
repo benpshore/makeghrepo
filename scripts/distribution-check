@@ -27,7 +27,10 @@ from contextlib import contextmanager
 from email.parser import BytesParser
 from pathlib import Path
 
-REPOSITORY = "benpshore/makeghrepo"
+# The source repository is identified by its immutable numeric ID; the slug is
+# resolved from it at run time and validated before any credentialed command.
+REPOSITORY_ID = 1386536822
+SLUG_PATTERN = re.compile(r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}/[A-Za-z0-9._-]{1,100}$")
 BASELINE_TAG = "v0.33.0"
 CANDIDATE_VERSION = "0.34.0"
 TARGETS = {
@@ -67,6 +70,49 @@ def run(command, *, env=None, cwd=None, timeout=900) -> str:
             f"{command[0]} exited {result.returncode}:\n{(result.stdout + result.stderr)[-8000:]}"
         )
     return result.stdout.strip()
+
+
+def resolve_repository(runner=None) -> str:
+    """Resolve the current ``owner/name`` of the source repository from its ID.
+
+    ``gh api repositories/{id}`` answers for the ID after transfers and renames
+    without relying on an old slug's redirect. The answer must carry the same
+    ID, a well-formed slug, and an owner/name pair that spells that slug.
+    """
+    runner = runner or run
+    data = json.loads(
+        runner(["gh", "api", "--hostname", "github.com", f"repositories/{REPOSITORY_ID}"])
+    )
+    require(isinstance(data, dict) and data.get("id") == REPOSITORY_ID, "untrusted repository")
+    slug = data.get("full_name")
+    require(
+        isinstance(slug, str) and SLUG_PATTERN.fullmatch(slug) is not None and ".." not in slug,
+        "invalid repository slug",
+    )
+    owner = data.get("owner")
+    require(
+        isinstance(owner, dict) and f"{owner.get('login')}/{data.get('name')}" == slug,
+        "repository metadata is inconsistent",
+    )
+    return slug
+
+
+def release_download_command(slug: str, tag: str, downloads: Path, pattern: str) -> list[str]:
+    require(
+        SLUG_PATTERN.fullmatch(slug) is not None and ".." not in slug, "invalid repository slug"
+    )
+    return [
+        "gh",
+        "release",
+        "download",
+        tag,
+        "--repo",
+        slug,
+        "--dir",
+        str(downloads),
+        "--pattern",
+        pattern,
+    ]
 
 
 @contextmanager
@@ -342,26 +388,15 @@ def release_check(tag: str, target: str, root: Path, evidence: dict, env: dict) 
         "--release expects a stable vMAJOR.MINOR.PATCH tag",
     )
     version = tag[1:]
-    evidence.update(version=version, release=tag, repository=REPOSITORY)
     downloads = root / "downloads"
     downloads.mkdir()
     wheel = downloads / f"makeghrepo-{version}-py3-none-any.whl"
+    with stage(evidence, "resolve the source repository by ID"):
+        slug = resolve_repository()
+        evidence.update(version=version, release=tag, repository_id=REPOSITORY_ID, repository=slug)
     with stage(evidence, "download and verify published assets"):
-        # Only this read-only download keeps the caller's GitHub credentials.
-        run(
-            [
-                "gh",
-                "release",
-                "download",
-                tag,
-                "--repo",
-                REPOSITORY,
-                "--dir",
-                downloads,
-                "--pattern",
-                wheel.name,
-            ]
-        )
+        # Only these read-only GitHub calls keep the caller's credentials.
+        run(release_download_command(slug, tag, downloads, wheel.name))
         require(wheel_version(wheel) == version, "published wheel version does not match its tag")
         evidence["artifacts"] = {wheel.name: sha256(wheel)}
     with stage(evidence, "clean published wheel install"):
