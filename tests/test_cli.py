@@ -5,7 +5,7 @@ import socket
 import subprocess
 from pathlib import Path
 
-import git
+import gitcli
 import pytest
 from typer.testing import CliRunner
 
@@ -154,10 +154,11 @@ def test_dry_run_rejects_invalid_requests_without_effects(
 def test_name_and_languages(tmp_path, gh):
     result = runner.invoke(app, ["My Repo", "python", "c++"])
     assert result.exit_code == 0, result.output
-    repo = git.Repo(tmp_path / "my-repo")
-    assert [c.message.strip() for c in repo.iter_commits()] == ["setup"]
-    assert repo.active_branch.name == "main" and not repo.is_dirty(untracked_files=True)
-    tracked = repo.git.ls_files()
+    repo = tmp_path / "my-repo"
+    assert gitcli.out(repo, "log", "--format=%s").splitlines() == ["setup"]
+    assert gitcli.out(repo, "branch", "--show-current") == "main"
+    assert gitcli.out(repo, "status", "--porcelain") == ""
+    tracked = gitcli.out(repo, "ls-files")
     assert "pyproject.toml" in tracked and "src/main.cpp" in tracked
     assert gh["calls"][0][:3] == ("create", "me/my-repo", tmp_path / "my-repo")
     assert gh["calls"][1] == ("configure", "me/my-repo", False, True)
@@ -354,7 +355,7 @@ def test_rerun_resumes_without_rescaffolding(tmp_path, gh):
     assert "resuming" in result.output
     # repo exists on GitHub: no create, just re-apply settings (push since main isn't there)
     assert [c[0] for c in gh["calls"]] == ["configure"]
-    assert len(list(git.Repo(tmp_path / "again").iter_commits())) == 1
+    assert gitcli.out(tmp_path / "again", "rev-list", "--count", "HEAD") == "1"
 
 
 def test_existing_non_git_dir_is_refused(tmp_path, gh):
@@ -389,7 +390,7 @@ def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):
     monkeypatch.setattr(scaffold, "smoke_test", lambda *a: None)  # user fixed it
     result = runner.invoke(app, ["fixme", "python"])
     assert result.exit_code == 0, result.output
-    assert [c.message.strip() for c in git.Repo(tmp_path / "fixme").iter_commits()] == ["setup"]
+    assert gitcli.out(tmp_path / "fixme", "log", "--format=%s").splitlines() == ["setup"]
     assert gh["calls"][0][0] == "create"
 
 
@@ -475,13 +476,13 @@ def test_create_writes_the_resume_marker(tmp_path, gh):
     assert marker["name"] == "marked" and marker["owner"] == "me"
     assert marker["private"] is True and marker["languages"] == ["python"]
     assert marker["lib"] is False and str(marker["created_by"]).startswith("makeghrepo ")
-    assert "makeghrepo.json" not in git.Repo(tmp_path / "marked").git.ls_files()
+    assert "makeghrepo.json" not in gitcli.out(tmp_path / "marked", "ls-files")
 
 
 def test_unrelated_git_repo_is_refused(tmp_path, gh):
     foreign = tmp_path / "foreign"
     foreign.mkdir()
-    git.Repo.init(foreign)
+    gitcli.init(foreign)
     (foreign / "secrets.txt").write_text("not for github")
     result = runner.invoke(app, ["foreign"])
     assert result.exit_code == 1
@@ -579,14 +580,14 @@ def test_resume_lookup_failure_never_pushes_or_configures(tmp_path, gh, monkeypa
     dest = tmp_path / "again"
     (dest / "later.txt").write_text("local work that must not be published")
     gitops.commit_all(dest, "later local work")
-    before = git.Repo(dest).head.commit.hexsha
+    before = gitcli.out(dest, "rev-parse", "HEAD")
 
     def unreachable(_):
-        raise git.GitCommandError("git ls-remote", 128, stderr="temporary connection failure")
+        raise gitops.GitError(("ls-remote",), 128, "temporary connection failure")
 
     monkeypatch.setattr(gitops, "remote_has_main", unreachable)
     result = runner.invoke(app, ["again"])
     assert result.exit_code == 1
     assert "Could not check remote main; refusing to push" in result.output
     assert gh["calls"] == []
-    assert git.Repo(dest).head.commit.hexsha == before
+    assert gitcli.out(dest, "rev-parse", "HEAD") == before

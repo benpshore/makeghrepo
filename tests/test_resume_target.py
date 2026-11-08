@@ -1,4 +1,4 @@
-import git
+import gitcli
 import pytest
 from typer.testing import CliRunner
 
@@ -13,8 +13,7 @@ def test_resume_refuses_a_different_target(tmp_path, monkeypatch, changed):
     gitops.write_marker(dest, {
         "schema": 1, "owner": "me", "name": "sample", "private": True, "languages": [],
     })  # fmt: skip
-    repo = git.Repo(dest)
-    repo.create_remote("origin", "https://github.com/me/sample.git")
+    gitcli.git(dest, "remote", "add", "origin", "https://github.com/me/sample.git")
     owner = "me"
     name = "sample"
     if changed == "owner":
@@ -23,9 +22,9 @@ def test_resume_refuses_a_different_target(tmp_path, monkeypatch, changed):
         name = "renamed"
         dest.rename(tmp_path / name)
     elif changed == "origin":
-        repo.git.remote("set-url", "origin", "https://github.com/other/public.git")
+        gitcli.git(dest, "remote", "set-url", "origin", "https://github.com/other/public.git")
     else:
-        repo.git.config("remote.origin.pushurl", "https://github.com/other/public.git")
+        gitcli.git(dest, "config", "remote.origin.pushurl", "https://github.com/other/public.git")
 
     monkeypatch.setenv("MAKEGHREPO_DIR", str(tmp_path))
     monkeypatch.setattr(github, "current_user", lambda: owner)
@@ -55,8 +54,7 @@ def test_resume_refuses_a_different_target(tmp_path, monkeypatch, changed):
     ],
 )
 def test_matching_origin_is_accepted(tmp_path, url):
-    repo = git.Repo.init(tmp_path)
-    repo.create_remote("origin", url)
+    gitcli.init_with_origin(tmp_path, url)
     gitops.validate_origin(tmp_path, "me/sample")
 
 
@@ -67,12 +65,20 @@ def test_absent_origin_after_failed_create_is_allowed(tmp_path):
 
 @pytest.mark.parametrize("override", ["pushurl", "insteadOf", "pushInsteadOf"])
 def test_effective_push_destination_is_checked(tmp_path, override):
-    repo = git.Repo.init(tmp_path)
-    repo.create_remote("origin", "https://github.com/me/sample.git")
+    gitcli.init_with_origin(tmp_path, "https://github.com/me/sample.git")
     if override == "pushurl":
-        repo.git.config("--add", "remote.origin.pushurl", "git@github.com:me/sample.git")
-        repo.git.config("--add", "remote.origin.pushurl", "git@github.com:other/public.git")
+        gitcli.git(
+            tmp_path, "config", "--add", "remote.origin.pushurl", "git@github.com:me/sample.git"
+        )
+        gitcli.git(
+            tmp_path, "config", "--add", "remote.origin.pushurl", "git@github.com:other/public.git"
+        )
     else:
-        repo.git.config(f"url.https://github.com/other/.{override}", "https://github.com/me/")
+        gitcli.git(
+            tmp_path,
+            "config",
+            f"url.https://github.com/other/.{override}",
+            "https://github.com/me/",
+        )
     with pytest.raises(RuntimeError, match="origin does not match"):
         gitops.validate_origin(tmp_path, "me/sample")
