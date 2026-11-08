@@ -347,7 +347,7 @@ def release_check(tag: str, target: str, root: Path, evidence: dict, env: dict) 
     downloads.mkdir()
     wheel = downloads / f"makeghrepo-{version}-py3-none-any.whl"
     with stage(evidence, "download and verify published assets"):
-        # Only this read-only download retains the caller's gh authentication.
+        # Only this read-only download keeps the caller's GitHub credentials.
         run(
             [
                 "gh",

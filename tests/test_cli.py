@@ -312,10 +312,10 @@ def test_invalid_input_stops_before_auth_or_render(tmp_path, monkeypatch, args):
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("operation", ["auth", "render"])
+@pytest.mark.parametrize("operation", ["identity", "render"])
 def test_invalid_input_guard_detects_forbidden_calls(tmp_path, gh, monkeypatch, operation):
     def broken_dispatch(words):
-        if operation == "auth":
+        if operation == "identity":
             github.current_user()
         else:
             scaffold.render(tmp_path, {})

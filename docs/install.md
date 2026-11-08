@@ -1,8 +1,8 @@
 # Install and update
 
 Install the Python/Copier distribution with uv. The native Rust binary is parked
-(see below). It needs Git and an authenticated GitHub CLI (`gh auth login`)
-for repository creation. Offline rendering needs no GitHub authentication. Selected
+(see below). It needs Git and a GitHub CLI with a classic PAT (scopes in the
+README) for repository creation. Offline rendering needs no GitHub authentication. Selected
 language checks can additionally require their own toolchains.
 
 ## Python / Copier
