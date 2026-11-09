@@ -10,7 +10,7 @@ language checks can additionally require their own toolchains.
 Install the existing Git route with [uv](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```sh
-uv tool install --python 3.14 git+https://github.com/benpshore/makeghrepo
+uv tool install --python 3.14 git+https://github.com/Shorewood-Analytics/makeghrepo
 makeghrepo --version
 makeghrepo --help
 ```
@@ -52,7 +52,7 @@ suffix in the table. No Rust compiler is needed to install it.
   version=v0.51.0  # last release with native binaries; the Rust port is parked (#150)
   download_dir=$(mktemp -d)
   trap 'rm -rf "$download_dir"' EXIT
-  gh release download "$version" --repo benpshore/makeghrepo \
+  gh release download "$version" --repo Shorewood-Analytics/makeghrepo \
     --pattern "makeghrepo-$target" --pattern "makeghrepo-$target.sha256" \
     --dir "$download_dir"
   cd "$download_dir"

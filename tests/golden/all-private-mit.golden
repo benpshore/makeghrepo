@@ -207,7 +207,7 @@ Closes #
 <!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
 
 ### END
-### FILE .github/workflows/ci.yml exec=0 bytes=7107 encoding=utf-8
+### FILE .github/workflows/ci.yml exec=0 bytes=7347 encoding=utf-8
 name: CI
 
 on:
@@ -245,9 +245,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          enable-cache: true
+      - name: Install uv
+        run: |
+          pipx install uv
+          pipx environment --value PIPX_BIN_DIR >> "$GITHUB_PATH"
       - run: uv sync --locked
       - run: uv run ruff format --check
       - run: uv run ruff check --output-format=github
@@ -354,7 +355,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Install uv
+        run: |
+          pipx install uv
+          pipx environment --value PIPX_BIN_DIR >> "$GITHUB_PATH"
       - run: uvx sqlfluff lint sql db
 
   docker:
@@ -409,10 +413,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
-        with:
-          ruby-version: "3.4"
-          bundler-cache: true
+      - name: Ruby 3.4 from the runner tool cache
+        run: |
+          bin="$(printf '%s\n' "$RUNNER_TOOL_CACHE"/Ruby/3.4.*/*/bin | sort -V | tail -1)"
+          test -x "$bin/bundle" || { echo "::error::no Ruby 3.4 with bundler under $RUNNER_TOOL_CACHE/Ruby"; exit 1; }
+          echo "$bin" >> "$GITHUB_PATH"
+      - run: bundle install
       - run: bundle exec rubocop
       - run: bundle exec rake test
 
@@ -436,7 +442,7 @@ jobs:
       - run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = false
 
 ### END
-### FILE .github/workflows/release.yml exec=0 bytes=2899 encoding=utf-8
+### FILE .github/workflows/release.yml exec=0 bytes=3134 encoding=utf-8
 name: Release
 
 # Publish: push a tag, e.g. `git tag v0.1.1 && git push --tags`.
@@ -458,7 +464,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Install uv
+        run: |
+          pipx install uv
+          pipx environment --value PIPX_BIN_DIR >> "$GITHUB_PATH"
       - name: Tag matches computed project version
         run: test "$(uvx uv-dynamic-versioning)" = "${GITHUB_REF_NAME#v}"
       - run: uv sync --locked
@@ -482,10 +491,12 @@ jobs:
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o "dist/quiet-otter-linux-$arch" .
           done
           (cd dist && sha256sum -- * > SHA256SUMS)
-      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
-        with:
-          ruby-version: "3.4"
-          bundler-cache: true
+      - name: Ruby 3.4 from the runner tool cache
+        run: |
+          bin="$(printf '%s\n' "$RUNNER_TOOL_CACHE"/Ruby/3.4.*/*/bin | sort -V | tail -1)"
+          test -x "$bin/bundle" || { echo "::error::no Ruby 3.4 with bundler under $RUNNER_TOOL_CACHE/Ruby"; exit 1; }
+          echo "$bin" >> "$GITHUB_PATH"
+      - run: bundle install
       - run: bundle exec rake test
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

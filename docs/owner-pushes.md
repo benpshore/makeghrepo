@@ -4,8 +4,8 @@ Public personal repositories use two rulesets on the default branch:
 
 | Ruleset | Rules | Bypass |
 | --- | --- | --- |
-| `protect-main` | No deletion, force-push, or merge commits; any additional existing restrictions stay here | None |
-| `require-pr-and-ci` | Squash PR, resolved review threads, up-to-date passing GitHub Actions `ci`; zero required approvals | Exact repository owner: `User`, numeric owner ID, `always` |
+| `protect-main` | No deletion or force-push; any additional existing restrictions (such as linear history on older repos) stay here | None |
+| `require-pr-and-ci` | PR merged by merge commit, squash or rebase, resolved review threads, up-to-date passing GitHub Actions `ci`; zero required approvals | Exact repository owner: `User`, numeric owner ID, `always` |
 
 The owner can push their own work without opening a PR or waiting for CI. CI
 still runs on pushes and PRs. Existing release validation is unchanged; Python
@@ -22,7 +22,8 @@ GitHub supports individual `User` bypass actors on repository rulesets; see its
 [announcement](https://github.blog/changelog/2026-05-07-repository-rulesets-user-bypass-and-branch-renaming/)
 and [REST schema](https://docs.github.com/en/rest/repos/rules#create-a-repository-ruleset).
 makeghrepo resolves the personal owner's ID from repository metadata. It refuses
-an organization or unverified owner rather than exempting all administrators.
+an unverified owner rather than exempting all administrators; organizations use
+the bypass-free policy below.
 Private repositories retain the existing GitHub Free behavior: no rulesets,
 Actions disabled, and local checks only.
 
@@ -61,6 +62,15 @@ This implements the owner/organization resolution and bypass-free organization
 policy parts of roadmap items 19, 22 and 29. Still open from those items: a
 pre-flight capability check for organization repository creation and visibility,
 and owner/visibility-organized daughter directories.
+
+## Choosing a merge method
+
+New repositories permit merge commits, squash and rebase. Squash is the recommended
+team default: one reviewed change becomes one mainline commit that can be reverted
+as a unit, while the PR preserves the detailed review and branch history. Choose a
+merge commit when preserving a series of meaningful commits matters, or rebase
+when each commit is independently useful. This recommendation does not silently
+change an existing repository's selected merge methods or linear-history rule.
 
 ## Existing repositories
 

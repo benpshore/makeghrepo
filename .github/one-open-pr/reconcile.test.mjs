@@ -4,20 +4,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  MIGRATION_CUTOFF, REPOSITORY, chooseRetained, githubAPI, listOpen,
-  main, reconcile, retryRead, stableSnapshot, taskNumber, validatePolicy,
+  MIGRATION_CUTOFF, REPOSITORY_ID, chooseRetained, githubAPI, listOpen, main, reconcile,
+  repositoryIdentity, retryRead, stableSnapshot, taskNumber, validatePolicy, validateSlug,
 } from "./reconcile.mjs";
 
 const noSleep = async () => {};
+// The slug is runtime context; only the numeric repository ID is fixed.
+const SLUG = "Shorewood-Analytics/makeghrepo";
+const identity = { id: REPOSITORY_ID, slug: SLUG };
+const repo = (overrides = {}) => ({ id: REPOSITORY_ID, full_name: SLUG, ...overrides });
 const execution = { defaultBranch: "main", headSHA: "d".repeat(40) };
 const policy = (overrides = {}) => ({
-  schema: 1, repository: REPOSITORY, mode: "enforce", migration_cutoff: 178,
+  schema: 2, repository_id: REPOSITORY_ID, mode: "enforce", migration_cutoff: 178,
   retained_pr: 178, task_issue: 123, ...overrides,
 });
 const pull = (number, overrides = {}) => ({
   number, state: "open", body: "Closes #123", draft: false,
   user: { login: "someone", type: "User" },
-  base: { repo: { full_name: REPOSITORY } }, head: { sha: "a".repeat(40) },
+  base: { repo: repo() }, head: { sha: "a".repeat(40) },
   created_at: new Date(Date.UTC(2026, 9, 1, 0, 0, number)).toISOString(),
   updated_at: "2026-10-15T00:00:00Z", ...overrides,
 });
@@ -29,7 +33,7 @@ class FakeAPI {
     this.calls = [];
     this.closed = [];
     this.issue = { number: 123, state: "open", labels: [{ name: "task" }] };
-    this.repository = { full_name: REPOSITORY, default_branch: "main" };
+    this.repository = repo({ default_branch: "main" });
     this.defaultHead = execution.headSHA;
     this.livePolicy = policy();
     this.beforeRead = () => {};
@@ -70,7 +74,7 @@ class FakeAPI {
   }
 }
 
-const run = (api, overrides = {}) => reconcile({ api, policy: policy(), execution, apply: true, sleep: noSleep, ...overrides });
+const run = (api, overrides = {}) => reconcile({ api, policy: policy(), execution, identity, apply: true, sleep: noSleep, ...overrides });
 
 test("reviewed policy starts disabled with an immutable cutoff and retained PR178", async () => {
   const checkedIn = JSON.parse(await readFile(new URL("./policy.json", import.meta.url)));
@@ -80,8 +84,62 @@ test("reviewed policy starts disabled with an immutable cutoff and retained PR17
   assert.equal(checkedIn.task_issue, null);
   assert.equal(MIGRATION_CUTOFF, 178);
   for (const changed of [policy({ migration_cutoff: 177 }), policy({ migration_cutoff: 179 }),
-    policy({ repository: "other/repo" }), policy({ task_issue: null }), policy({ retained_pr: true }),
+    policy({ repository_id: REPOSITORY_ID + 1 }), policy({ repository_id: String(REPOSITORY_ID) }),
+    policy({ schema: 1 }), policy({ task_issue: null }), policy({ retained_pr: true }),
     { ...policy(), extra: true }]) assert.throws(() => validatePolicy(changed));
+  // The pre-transfer schema named a slug; it is not accepted after the move.
+  const { repository_id, ...legacy } = policy({ schema: 1 });
+  assert.throws(() => validatePolicy({ ...legacy, repository: "benpshore/makeghrepo" }), /Invalid policy fields/);
+});
+
+test("repository identity is the immutable ID: renames and transfers work, reused slugs and forks fail closed", async () => {
+  const env = { GITHUB_REPOSITORY: "New-Owner/renamed-repo", GITHUB_REPOSITORY_ID: String(REPOSITORY_ID) };
+  const moved = { id: REPOSITORY_ID, full_name: "New-Owner/renamed-repo" };
+  assert.deepEqual(repositoryIdentity(env, { repository: moved }), { id: REPOSITORY_ID, slug: "New-Owner/renamed-repo" });
+  // Same slug, different ID: a repository that reused the old name is not this repository.
+  assert.throws(() => repositoryIdentity({ GITHUB_REPOSITORY: SLUG, GITHUB_REPOSITORY_ID: "1" }, { repository: repo({ id: 1 }) }),
+    /only in this repository/);
+  assert.throws(() => repositoryIdentity({ GITHUB_REPOSITORY: SLUG }, { repository: repo() }), /only in this repository/);
+  // The event payload must agree with the trusted execution context, by ID and by slug.
+  assert.throws(() => repositoryIdentity(env, { repository: { ...moved, id: REPOSITORY_ID + 1 } }), /Event repository/);
+  assert.throws(() => repositoryIdentity(env, { repository: { ...moved, full_name: SLUG } }), /Event repository/);
+  assert.throws(() => repositoryIdentity(env, {}), /Event repository/);
+  for (const bad of ["", "owner", "a/b/c", "../settings", "owner/..", "-owner/repo", `${"a".repeat(40)}/repo`,
+    `owner/${"r".repeat(101)}`, "owner/repo?x=1", "owner/repo#frag", "owner/re po", "owner//repo", 42, null, undefined]) {
+    assert.throws(() => validateSlug(bad), /Invalid repository slug/);
+    assert.throws(() => repositoryIdentity({ GITHUB_REPOSITORY: bad, GITHUB_REPOSITORY_ID: String(REPOSITORY_ID) }, { repository: repo() }));
+  }
+  assert.equal(validateSlug("a/b"), "a/b");
+  assert.equal(validateSlug("Shorewood-Analytics/make.gh_repo-2"), "Shorewood-Analytics/make.gh_repo-2");
+
+  // Transferred and renamed, same ID: the guard keeps working end to end.
+  const renamed = { id: REPOSITORY_ID, slug: "Shorewood-Analytics/renamed" };
+  const base = { repo: { id: REPOSITORY_ID, full_name: renamed.slug } };
+  const moved_api = new FakeAPI([pull(178, { base }), pull(200, { base })]);
+  moved_api.repository = { id: REPOSITORY_ID, full_name: renamed.slug, default_branch: "main" };
+  assert.deepEqual((await run(moved_api, { identity: renamed })).remaining, [178]);
+  assert.deepEqual(moved_api.closed, [200]);
+
+  // Reused slug with a different live ID, forks, and mismatched PR base repositories never close anything.
+  for (const change of [
+    (api) => { api.repository.id = REPOSITORY_ID + 1; },
+    (api) => { api.repository = { ...api.repository, id: 77, fork: true }; },
+    (api) => { api.pulls[1].base.repo = { id: REPOSITORY_ID + 1, full_name: SLUG }; },
+    (api) => { api.pulls[1].base.repo = { id: REPOSITORY_ID, full_name: "someone-else/makeghrepo" }; },
+    (api) => { api.pulls[1].base.repo = { id: 5, full_name: "someone-else/makeghrepo", fork: true }; },
+    (api) => { delete api.pulls[0].base.repo.id; },
+  ]) {
+    const api = new FakeAPI([pull(178), pull(200)]);
+    change(api);
+    await assert.rejects(run(api), /repository|identity/i);
+    assert.deepEqual(api.closed, []);
+  }
+  // A caller cannot route the reconciler at some other repository ID or an unvalidated slug.
+  for (const wrong of [undefined, { id: REPOSITORY_ID + 1, slug: SLUG }, { id: REPOSITORY_ID, slug: "../x" }, { slug: SLUG }]) {
+    const api = new FakeAPI([pull(178), pull(200)]);
+    await assert.rejects(run(api, { identity: wrong }));
+    assert.deepEqual(api.closed, []);
+  }
 });
 
 test("PR178 wins deterministically over older backlog and newer bot drafts", async () => {
@@ -127,6 +185,7 @@ test("live policy changes, default branch changes and missing execution provenan
     (api) => { api.livePolicy.task_issue = 124; },
     (api) => { api.repository.default_branch = "new-default"; },
     (api) => { api.repository.full_name = "other/repo"; },
+    (api) => { api.repository.id = REPOSITORY_ID + 1; },
     (api) => { api.getDefaultHead = async () => ({ ref: "refs/tags/main", object: { type: "commit", sha: execution.headSHA } }); },
   ]) {
     const api = new FakeAPI([pull(178), pull(200)]);
@@ -217,7 +276,7 @@ test("partial pagination errors cannot close any PR", async () => {
 test("duplicate pages and unstable snapshots fail before mutations", async () => {
   const duplicate = new FakeAPI([]);
   duplicate.listPage = async () => ({ items: [pull(178)], hasNext: true });
-  await assert.rejects(listOpen(duplicate, noSleep), /duplicate/);
+  await assert.rejects(listOpen(duplicate, identity, noSleep), /duplicate/);
   const changing = new FakeAPI([]);
   let count = 0;
   changing.listPage = async () => ({ items: [pull(200 + count++)], hasNext: false });
@@ -229,7 +288,7 @@ test("an inventory that stabilizes is recovered within the bounded read retries"
   const api = new FakeAPI([pull(178)]);
   let count = 0;
   api.listPage = async () => ({ items: count++ ? [pull(178), pull(200)] : [pull(178)], hasNext: false });
-  assert.deepEqual((await stableSnapshot(api, noSleep)).map((pr) => pr.number), [178, 200]);
+  assert.deepEqual((await stableSnapshot(api, identity, noSleep)).map((pr) => pr.number), [178, 200]);
 });
 
 test("transient read errors back off; permission errors and retry exhaustion fail closed", async () => {
@@ -435,7 +494,7 @@ test("missing, conflicting, closed and non-task ticket bindings prevent mutation
 
 test("HTTP adapter has only fixed repository reads and a close-only PATCH", async () => {
   const calls = [];
-  const api = githubAPI("SYNTHETIC_TEST_TOKEN", async (url, options) => {
+  const api = githubAPI("SYNTHETIC_TEST_TOKEN", SLUG, async (url, options) => {
     calls.push({ url, options });
     return new Response(JSON.stringify([]), { headers: { link: '<https://untrusted.invalid/>; rel="next"' } });
   });
@@ -444,16 +503,22 @@ test("HTTP adapter has only fixed repository reads and a close-only PATCH", asyn
   await api.getPull(178);
   await api.getIssue(123);
   await api.closePull(200);
-  assert.ok(calls.every(({ url, options }) => url.startsWith(`https://api.github.com/repos/${REPOSITORY}/`) && options.redirect === "error"));
+  assert.ok(calls.every(({ url, options }) => url.startsWith(`https://api.github.com/repos/${SLUG}/`) && options.redirect === "error"));
   assert.equal(calls.at(-1).options.method, "PATCH");
   assert.deepEqual(JSON.parse(calls.at(-1).options.body), { state: "closed" });
   await assert.rejects(api.getPull("../settings"));
+  // The slug is validated before it can reach a credentialed URL: no transport call is made.
+  let transportCalls = 0;
+  for (const bad of ["../settings", "api.github.com/repos/x", "owner/repo/../../other", "owner", undefined]) {
+    assert.throws(() => githubAPI("SYNTHETIC_TEST_TOKEN", bad, async () => { transportCalls++; }), /Invalid repository slug/);
+  }
+  assert.equal(transportCalls, 0);
 });
 
 test("HTTP live authorization reads an exact default ref and commit-pinned policy as data", async () => {
   const calls = [];
   const content = Buffer.from(JSON.stringify(policy()));
-  const api = githubAPI("SYNTHETIC_TEST_TOKEN", async (url, options) => {
+  const api = githubAPI("SYNTHETIC_TEST_TOKEN", SLUG, async (url, options) => {
     calls.push({ url, options });
     const data = url.includes("/contents/") ? {
       type: "file", encoding: "base64", size: content.length, content: content.toString("base64"),
@@ -465,9 +530,9 @@ test("HTTP live authorization reads an exact default ref and commit-pinned polic
   await api.getDefaultHead("release/main");
   assert.deepEqual(await api.getPolicy(execution.headSHA), policy());
   assert.deepEqual(calls.map(({ url }) => url), [
-    `https://api.github.com/repos/${REPOSITORY}`,
-    `https://api.github.com/repos/${REPOSITORY}/git/ref/heads/release%2Fmain`,
-    `https://api.github.com/repos/${REPOSITORY}/contents/.github/one-open-pr/policy.json?ref=${execution.headSHA}`,
+    `https://api.github.com/repos/${SLUG}`,
+    `https://api.github.com/repos/${SLUG}/git/ref/heads/release%2Fmain`,
+    `https://api.github.com/repos/${SLUG}/contents/.github/one-open-pr/policy.json?ref=${execution.headSHA}`,
   ]);
   assert.ok(calls.every(({ options }) => options.method === "GET" && options.redirect === "error"));
   await assert.rejects(api.getPolicy("main"), /exact commit/);
@@ -480,7 +545,7 @@ test("malformed and oversized live policy files fail closed", async () => {
   const valid = { type: "file", encoding: "base64", size: content.length, content: content.toString("base64") };
   for (const change of [{ type: "symlink" }, { encoding: "none" }, { size: 16385 },
     { content: "x".repeat(32769) }, { size: content.length - 1 }, { size: 1, content: "ew==" }]) {
-    const api = githubAPI("SYNTHETIC_TEST_TOKEN", async () => new Response(JSON.stringify({ ...valid, ...change })));
+    const api = githubAPI("SYNTHETIC_TEST_TOKEN", SLUG, async () => new Response(JSON.stringify({ ...valid, ...change })));
     await assert.rejects(api.getPolicy(execution.headSHA));
   }
 });
@@ -493,6 +558,9 @@ test("workflow trust, concurrency, bot recovery and disabled rollout are explici
   assert.match(workflow, /group: one-open-pr-\$\{\{ github.repository_id \}\}/);
   assert.match(workflow, /cancel-in-progress: false\n\s+queue: max/);
   assert.match(workflow, /github.ref == format\('refs\/heads\/\{0\}', github.event.repository.default_branch\)/);
+  // Identity by immutable ID, never by a slug that a transfer or rename changes.
+  assert.match(workflow, /github\.repository_id == '1386536822'/);
+  assert.doesNotMatch(workflow, /github\.repository ==/);
   assert.match(workflow, /ref: \$\{\{ github.sha \}\}/);
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /schedule:[\s\S]*cron: "17 \* \* \* \*"/);
@@ -508,17 +576,30 @@ test("workflow trust, concurrency, bot recovery and disabled rollout are explici
   }
 });
 
-test("entrypoint refuses local or unrelated repository execution", async () => {
+test("entrypoint refuses local, unrelated or same-slug/different-ID repository execution", async () => {
   await assert.rejects(main({}), /only in this repository/);
   await assert.rejects(main({ GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "other/repo" }), /only in this repository/);
+  await assert.rejects(main({ GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: SLUG }), /only in this repository/);
+  await assert.rejects(main({ GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: SLUG, GITHUB_REPOSITORY_ID: "4242" }), /only in this repository/);
+  await assert.rejects(main({ GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "../x", GITHUB_REPOSITORY_ID: String(REPOSITORY_ID) }),
+    /only in this repository/);
+});
+
+test("entrypoint rejects an event whose repository ID differs from the execution context", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "one-pr-event-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, "event.json");
+  await writeFile(path, JSON.stringify({ repository: repo({ id: REPOSITORY_ID + 1, default_branch: "main" }) }));
+  await assert.rejects(main({ GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: SLUG, GITHUB_REPOSITORY_ID: String(REPOSITORY_ID),
+    GITHUB_EVENT_PATH: path, GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/main" }), /Event repository/);
 });
 
 test("entrypoint rejects non-default manual refs before token or API use", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "one-pr-event-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const path = join(root, "event.json");
-  await writeFile(path, JSON.stringify({ repository: { full_name: REPOSITORY, default_branch: "main" } }));
-  await assert.rejects(main({ GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: REPOSITORY,
+  await writeFile(path, JSON.stringify({ repository: repo({ default_branch: "main" }) }));
+  await assert.rejects(main({ GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: SLUG, GITHUB_REPOSITORY_ID: String(REPOSITORY_ID),
     GITHUB_EVENT_PATH: path, GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/untrusted" }), /trusted default-branch ref/);
 });
 
@@ -526,10 +607,14 @@ test("entrypoint rejects alternate PR bases and ordinary PR events before API us
   const root = await mkdtemp(join(tmpdir(), "one-pr-event-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const path = join(root, "event.json");
-  await writeFile(path, JSON.stringify({ repository: { full_name: REPOSITORY, default_branch: "main" },
-    pull_request: { base: { ref: "untrusted", repo: { full_name: REPOSITORY } } } }));
-  const env = { GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: REPOSITORY, GITHUB_EVENT_PATH: path,
+  await writeFile(path, JSON.stringify({ repository: repo({ default_branch: "main" }),
+    pull_request: { base: { ref: "untrusted", repo: repo() } } }));
+  const env = { GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: SLUG, GITHUB_REPOSITORY_ID: String(REPOSITORY_ID), GITHUB_EVENT_PATH: path,
     GITHUB_EVENT_NAME: "pull_request_target", GITHUB_REF: "refs/heads/main" };
   await assert.rejects(main(env), /Unexpected PR base/);
   await assert.rejects(main({ ...env, GITHUB_EVENT_NAME: "pull_request" }), /Unsupported guard event/);
+  // A PR whose base is a fork or a same-named different repository is refused before any API use.
+  await writeFile(path, JSON.stringify({ repository: repo({ default_branch: "main" }),
+    pull_request: { base: { ref: "main", repo: { id: REPOSITORY_ID + 1, full_name: SLUG, fork: true } } } }));
+  await assert.rejects(main(env), /Unexpected PR base/);
 });

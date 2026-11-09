@@ -18,6 +18,8 @@ REVIEW_RULESET_NAME = "require-pr-and-ci"
 REQUIRED_CHECK = "ci"  # must match the job name in templates/*/.github/workflows/ci.yml
 GITHUB_ACTIONS_APP_ID = 15368  # only GitHub Actions may satisfy the required check
 LABELS = {"epic": "3E4B9E", "task": "C5DEF5"}
+# Every GitHub merge method; the PR's author or merger picks one (roadmap #9).
+MERGE_METHODS = ("merge", "squash", "rebase")
 
 
 class GhError(RuntimeError):
@@ -83,13 +85,12 @@ def ruleset_body() -> dict[str, Any]:
         "rules": [
             {"type": "deletion"},
             {"type": "non_fast_forward"},
-            {"type": "required_linear_history"},
         ],
     }
 
 
 def review_ruleset_body(owner_id: int | None) -> dict[str, Any]:
-    """Squash PR plus passing ``ci`` for everyone except a personal repository's owner.
+    """PR plus passing ``ci`` for everyone except a personal repository's owner.
 
     ``owner_id`` is the verified numeric ID of a personal owner, or ``None`` for an
     organization repository, where nobody bypasses the gate. The personal exception
@@ -114,7 +115,7 @@ def review_ruleset_body(owner_id: int | None) -> dict[str, Any]:
                     "require_code_owner_review": False,
                     "require_last_push_approval": False,
                     "required_review_thread_resolution": True,
-                    "allowed_merge_methods": ["squash"],
+                    "allowed_merge_methods": list(MERGE_METHODS),
                 },
             },
             {
@@ -263,12 +264,14 @@ def disable_actions(repo: str) -> None:
     api("PUT", f"repos/{repo}/actions/permissions", {"enabled": False})
 
 
-def settings_body(private: bool) -> dict[str, Any]:
+def settings_body(private: bool, new_repo: bool = True) -> dict[str, Any]:
+    """Settings for the repo. A new repo enables every merge method.
+
+    A rerun on a repo that already existed sends no merge-method flags, so a live
+    repo set up squash-only is never silently widened (roadmap #9).
+    """
     body: dict[str, Any] = {
         "has_wiki": False,
-        "allow_squash_merge": True,
-        "allow_merge_commit": False,
-        "allow_rebase_merge": False,
         # Requested either way, but confirmed live (GET after PATCH) that this
         # silently stays false on a Free-plan private repo — there's no
         # ruleset/required-check there for auto-merge to wait on, so GitHub
@@ -280,6 +283,8 @@ def settings_body(private: bool) -> dict[str, Any]:
         "squash_merge_commit_title": "PR_TITLE",
         "squash_merge_commit_message": "PR_BODY",
     }
+    if new_repo:
+        body |= {"allow_squash_merge": True, "allow_merge_commit": True, "allow_rebase_merge": True}
     if not private:  # free on public repos; private needs Advanced Security
         body["security_and_analysis"] = {
             "secret_scanning": {"status": "enabled"},
@@ -296,6 +301,7 @@ def configure_all(
     push: Callable[[], object] | None = None,
     log: Callable[[str], None] = print,
     org: bool = False,
+    new_repo: bool = True,
 ) -> list[str]:
     """Apply every setting; return the names of failed steps (the rest still run).
 
@@ -332,7 +338,7 @@ def configure_all(
         # gate — the local smoke test is the only gate left for these repos.
         log("  - private repo: skipping ruleset, secret scanning, vuln reporting (need paid plan)")
 
-    settings_err = run(lambda: api("PATCH", f"repos/{repo}", settings_body(private)))
+    settings_err = run(lambda: api("PATCH", f"repos/{repo}", settings_body(private, new_repo)))
     report("repo settings", settings_err)
     actions_disabled = True  # only meaningful, and only checked below, when private
     if private:

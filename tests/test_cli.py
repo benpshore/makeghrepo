@@ -22,6 +22,7 @@ def gh(tmp_path, monkeypatch):
         "calls": [],
         "existing": set(),
         "failed": [],
+        "new_repo": [],
         # Logins the fake GitHub knows besides the authenticated user "me".
         "owner_types": {"acme": "Organization", "someone": "User"},
     }
@@ -41,8 +42,9 @@ def gh(tmp_path, monkeypatch):
 
     monkeypatch.setattr(github, "owner_type", owner_type)
 
-    def configure_all(repo, *, private, push, log, org=False):
+    def configure_all(repo, *, private, push, log, org=False, new_repo=True):
         state["calls"].append(("configure", repo, private, push is not None, org))
+        state["new_repo"].append(new_repo)
         return state["failed"]
 
     monkeypatch.setattr(github, "configure_all", configure_all)
@@ -186,6 +188,7 @@ def test_name_and_languages(tmp_path, gh):
     assert "pyproject.toml" in tracked and "src/main.cpp" in tracked
     assert gh["calls"][0][:3] == ("create", "me/my-repo", tmp_path / "my-repo")
     assert gh["calls"][1] == ("configure", "me/my-repo", False, True, False)
+    assert gh["new_repo"] == [True]  # a fresh repo gets every merge method
 
 
 def test_no_args_random_name_any_language(tmp_path, gh):
@@ -451,6 +454,7 @@ def test_rerun_resumes_without_rescaffolding(tmp_path, gh):
     assert "resuming" in result.output
     # repo exists on GitHub: no create, just re-apply settings (push since main isn't there)
     assert [c[0] for c in gh["calls"]] == ["configure"]
+    assert gh["new_repo"][-1] is False  # a rerun never widens merge methods
     assert gitcli.out(tmp_path / "again", "rev-list", "--count", "HEAD") == "1"
 
 

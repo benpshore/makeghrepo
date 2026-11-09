@@ -13,7 +13,7 @@ target, current evidence and remaining scope.
 ## Install
 
 ```sh
-uv tool install git+https://github.com/benpshore/makeghrepo
+uv tool install git+https://github.com/Shorewood-Analytics/makeghrepo
 ```
 
 makeghrepo uses the token `gh` already has: a classic PAT with `repo`, `workflow`
@@ -107,12 +107,12 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). A failed check stops this invocation before its GitHub creation/push steps. The recovery message identifies the target and earlier lookup result; it does not establish whether an earlier attempt published anything. See [effect accounting and recovery](docs/recovery.md).
 3. Runs `git init -b main`, `git add --all`, `git commit -m setup`.
 4. Creates the GitHub repo empty, then configures it:
-   - squash-merge only (explicitly enabled; merge commits and rebase merges disabled), auto-merge and branch updates on, delete branches after merge, wiki off
+   - new repos allow every merge method (merge commit, squash, rebase), auto-merge and branch updates on, delete branches after merge, wiki off. Re-running on an existing repo never widens its merge methods or drops its saved linear-history/squash-only rules (roadmap #9)
    - Dependabot alerts and security fixes
    - public repos: secret scanning, push protection, private vulnerability reporting
    - **pushes `main`**, after public push protection is on or private Actions are disabled
-   - public personal repos: `protect-main` blocks force-push, deletion, and merge commits for everyone. A separate `require-pr-and-ci` ruleset requires a squash PR (0 approvals) and up-to-date passing `ci` from GitHub Actions, with a bypass for the exact repository owner. The owner's own pushes need neither a PR nor passing CI; agents still use PRs and CI. See [owner pushes and migration](docs/owner-pushes.md) for the credential boundary and existing-repo setup.
-   - public organization repos (`--owner`): the same two rulesets, but `require-pr-and-ci` has no bypass actor at all, so owners, members and agents all merge through a squash PR with passing `ci`. An organization can give agents their own credentials (a GitHub App or member account), which is the boundary the personal bypass cannot enforce.
+   - public personal repos: `protect-main` blocks force-push and deletion for everyone. A separate `require-pr-and-ci` ruleset requires a PR merged by any method (0 approvals) and up-to-date passing `ci` from GitHub Actions, with a bypass for the exact repository owner. The owner's own pushes need neither a PR nor passing CI; agents still use PRs and CI. See [owner pushes and migration](docs/owner-pushes.md) for the credential boundary and existing-repo setup.
+   - public organization repos (`--owner`): the same two rulesets, but `require-pr-and-ci` has no bypass actor at all, so owners, members and agents all merge through a PR with passing `ci`. An organization can give agents their own credentials (a GitHub App or member account), which is the boundary the personal bypass cannot enforce.
    - labels `epic` and `task`, and a Project board linked to the repo
    - notifications set to **Ignore**, and no CODEOWNERS file, so nothing pings you
 

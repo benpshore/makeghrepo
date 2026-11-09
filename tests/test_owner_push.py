@@ -49,9 +49,12 @@ class OwnerPushTests(unittest.TestCase):
         self.review = self.defaults["review_ruleset"]
 
     def legacy(self):
+        # A pre-split repo: one ruleset holding history rules (including the
+        # linear-history rule older repos were created with) and the PR/CI gate.
+        linear = [{"type": "required_linear_history"}]
         return {
             **copy.deepcopy(self.history),
-            "rules": copy.deepcopy(self.history["rules"] + self.review["rules"]),
+            "rules": copy.deepcopy(self.history["rules"] + linear + self.review["rules"]),
         }
 
     def test_owner_only_bypass_survives_reruns(self):
@@ -62,12 +65,16 @@ class OwnerPushTests(unittest.TestCase):
                     existing[42] = self.history if mode == "split" else self.legacy()
                 if mode in ("split", "partial"):
                     existing[43] = self.review
+                # A legacy repo keeps its saved linear-history rule (roadmap #9).
+                history = copy.deepcopy(self.history)
+                if mode in ("legacy", "partial"):
+                    history["rules"].append({"type": "required_linear_history"})
                 api = RulesetAPI(existing)
                 with patch.object(github, "api", api):
                     for _ in range(2):
                         api.calls.clear()
                         github.configure_ruleset("me/r")
-                        assert [c[2] for c in api.writes] == [self.review, self.history]
+                        assert [c[2] for c in api.writes] == [self.review, history]
                         assert {v["name"] for v in api.state.values()} == {
                             "another-rule",
                             "protect-main",
@@ -115,7 +122,10 @@ class OwnerPushTests(unittest.TestCase):
                 assert review["name"] == "require-pr-and-ci"
                 assert review["bypass_actors"] == []
                 assert review["rules"] == self.review["rules"]
-                assert history == self.history
+                expected_history = copy.deepcopy(self.history)
+                if mode == "legacy":
+                    expected_history["rules"].append({"type": "required_linear_history"})
+                assert history == expected_history
                 assert not any(c[2]["bypass_actors"] for c in api.writes)
 
     def test_organization_repository_with_a_personal_bypass_is_refused(self):

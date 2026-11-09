@@ -88,3 +88,61 @@ def test_distribution_is_required_and_cannot_cancel_its_caller():
     # literal prefix prevents PR cancellation from cancelling the parent run.
     assert distribution["concurrency"]["group"].startswith("distribution-")
     assert distribution["concurrency"]["group"] != ci["concurrency"]["group"]
+
+
+def _repository(**overrides):
+    data = {
+        "id": CHECK["REPOSITORY_ID"],
+        "full_name": "Shorewood-Analytics/makeghrepo",
+        "name": "makeghrepo",
+        "owner": {"login": "Shorewood-Analytics"},
+    }
+    data.update(overrides)
+    return data
+
+
+def test_repository_is_resolved_from_its_immutable_id_not_a_slug():
+    calls = []
+
+    def runner(command):
+        calls.append(command)
+        return json.dumps(
+            _repository(full_name="New-Owner/renamed", name="renamed", owner={"login": "New-Owner"})
+        )
+
+    assert CHECK["resolve_repository"](runner) == "New-Owner/renamed"
+    assert calls == [
+        ["gh", "api", "--hostname", "github.com", f"repositories/{CHECK['REPOSITORY_ID']}"]
+    ]
+    assert "benpshore" not in json.dumps(calls)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"id": CHECK["REPOSITORY_ID"] + 1},  # a repository that reused the slug
+        {"id": str(CHECK["REPOSITORY_ID"])},
+        {"full_name": "../../evil", "name": "evil", "owner": {"login": "../.."}},
+        {
+            "full_name": "Shorewood-Analytics/makeghrepo",
+            "name": "other",
+        },  # owner/name disagree with the slug
+        {"owner": None},
+        {"full_name": None},
+    ],
+)
+def test_resolution_mismatches_fail_closed(overrides):
+    with pytest.raises(RuntimeError):
+        CHECK["resolve_repository"](lambda command: json.dumps(_repository(**overrides)))
+    with pytest.raises((RuntimeError, ValueError)):
+        CHECK["resolve_repository"](lambda command: "[]")
+
+
+def test_release_download_uses_the_resolved_slug_only(tmp_path):
+    command = CHECK["release_download_command"](
+        "New-Owner/renamed", "v1.2.3", tmp_path, "makeghrepo-1.2.3-py3-none-any.whl"
+    )
+    assert command[:6] == ["gh", "release", "download", "v1.2.3", "--repo", "New-Owner/renamed"]
+    for bad in ["../x", "owner", "a/b/c", "owner/re po"]:
+        with pytest.raises(RuntimeError):
+            CHECK["release_download_command"](bad, "v1.2.3", tmp_path, "x")

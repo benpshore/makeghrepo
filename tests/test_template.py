@@ -85,7 +85,8 @@ def test_owner_push_docs_keep_agents_on_prs(tmp_path, private):
         assert "`ci` check must pass for agent-authored work" in agents
         assert "owner (`someone`)" in readme
         assert "without a PR or passing CI" in readme
-        assert "Force-push, deletion, and merge commits remain blocked for everyone" in readme
+        assert "Force-push and deletion remain blocked for everyone" in readme
+        assert "merge, squash or rebase" in readme
 
 
 @pytest.mark.parametrize(
