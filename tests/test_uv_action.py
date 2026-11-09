@@ -107,12 +107,29 @@ def test_pre_existing_wrong_uv_is_replaced_not_kept(tmp_path):
     assert uv_version(pipx_bin) == stale
 
 
+# pipx picks its backend: `uv` when a uv is already on PATH (as in CI, where this very action puts
+# one there before the tests run), else `pip`. uv ignores PIP_* variables, so the failure is
+# injected for both: an unreachable index, no cache, no retries. Offline and fast either way.
+UNREACHABLE = "http://127.0.0.1:9/simple"
+NO_INDEX = {
+    "PIP_INDEX_URL": UNREACHABLE,
+    "PIP_RETRIES": "0",
+    "UV_DEFAULT_INDEX": UNREACHABLE,
+    "UV_INDEX_URL": UNREACHABLE,
+    "UV_NO_CACHE": "1",
+    "UV_HTTP_RETRIES": "0",
+}
+
+
 @pipx_available
-def test_install_failure_stops_the_step_before_anything_reaches_path(tmp_path):
-    # an unreachable index makes pip fail fast and offline
+@pytest.mark.parametrize("backend", ["pip", "uv"])
+def test_install_failure_stops_the_step_before_anything_reaches_path(tmp_path, backend):
+    if backend == "uv" and shutil.which("uv") is None:
+        pytest.skip("pipx's uv backend needs a uv on PATH")
+    # older pipx has no backend choice and ignores the variable: it installs with pip
     proc, github_path, pipx_bin = run_step(
-        tmp_path, PINNED, PIP_INDEX_URL="http://127.0.0.1:9/simple", PIP_RETRIES="0"
+        tmp_path, PINNED, PIPX_DEFAULT_BACKEND=backend, **NO_INDEX
     )
-    assert proc.returncode != 0
+    assert proc.returncode != 0, proc.stdout + proc.stderr
     assert github_path == ""
     assert not (pipx_bin / "uv").exists()
