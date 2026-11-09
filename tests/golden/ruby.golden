@@ -129,7 +129,7 @@ Closes #
 <!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
 
 ### END
-### FILE .github/workflows/ci.yml exec=0 bytes=1719 encoding=utf-8
+### FILE .github/workflows/ci.yml exec=0 bytes=1906 encoding=utf-8
 name: CI
 
 on:
@@ -167,10 +167,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
-        with:
-          ruby-version: "3.4"
-          bundler-cache: true
+      - name: Ruby 3.4 from the runner tool cache
+        run: |
+          bin="$(printf '%s\n' "$RUNNER_TOOL_CACHE"/Ruby/3.4.*/*/bin | sort -V | tail -1)"
+          test -x "$bin/bundle" || { echo "::error::no Ruby 3.4 with bundler under $RUNNER_TOOL_CACHE/Ruby"; exit 1; }
+          echo "$bin" >> "$GITHUB_PATH"
+      - run: bundle install
       - run: bundle exec rubocop
       - run: bundle exec rake test
 
@@ -226,7 +228,7 @@ jobs:
           category: "/language:${{ matrix.language }}"
 
 ### END
-### FILE .github/workflows/release.yml exec=0 bytes=947 encoding=utf-8
+### FILE .github/workflows/release.yml exec=0 bytes=1134 encoding=utf-8
 name: Release
 
 # Publish: push a tag, e.g. `git tag v0.1.1 && git push --tags`.
@@ -248,10 +250,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
-        with:
-          ruby-version: "3.4"
-          bundler-cache: true
+      - name: Ruby 3.4 from the runner tool cache
+        run: |
+          bin="$(printf '%s\n' "$RUNNER_TOOL_CACHE"/Ruby/3.4.*/*/bin | sort -V | tail -1)"
+          test -x "$bin/bundle" || { echo "::error::no Ruby 3.4 with bundler under $RUNNER_TOOL_CACHE/Ruby"; exit 1; }
+          echo "$bin" >> "$GITHUB_PATH"
+      - run: bundle install
       - run: bundle exec rake test
 
   publish:

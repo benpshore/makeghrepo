@@ -124,7 +124,7 @@ Closes #
 <!-- Anything reviewers (human or AI) should know: risks, follow-ups, screenshots. -->
 
 ### END
-### FILE .github/workflows/ci.yml exec=0 bytes=2611 encoding=utf-8
+### FILE .github/workflows/ci.yml exec=0 bytes=2659 encoding=utf-8
 name: CI
 
 on:
@@ -187,7 +187,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Install uv
+        run: |
+          pipx install uv
+          pipx environment --value PIPX_BIN_DIR >> "$GITHUB_PATH"
       - run: uvx sqlfluff lint sql db
 
   shell:

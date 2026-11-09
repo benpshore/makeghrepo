@@ -1,0 +1,30 @@
+name: Pinned uv
+description: >-
+  Install one exact uv with the runner image's pipx and, optionally, one exact CPython
+  with uv itself. Plain steps only: this organization allows only GitHub-created and
+  organization-owned actions, so astral-sh/setup-uv cannot run here. Nothing is cached
+  between runs.
+inputs:
+  version:
+    description: uv version to install (exact; the same pin as the beta cloud-build contract)
+    required: false
+    default: "0.12.23"
+  python-version:
+    description: exact CPython for uv to install now; empty installs none (uv fetches .python-version on demand)
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Install uv ${{ inputs.version }} with pipx
+      shell: bash
+      env:
+        UV_VERSION: ${{ inputs.version }}
+        PYTHON_VERSION: ${{ inputs.python-version }}
+      run: |
+        set -euo pipefail
+        pipx install "uv==$UV_VERSION"
+        bin="$(pipx environment --value PIPX_BIN_DIR)"
+        echo "$bin" >> "$GITHUB_PATH"
+        test "$("$bin/uv" --version | cut -d' ' -f2)" = "$UV_VERSION"
+        if [ -n "$PYTHON_VERSION" ]; then "$bin/uv" python install "$PYTHON_VERSION"; fi
