@@ -23,8 +23,10 @@ runs:
         PYTHON_VERSION: ${{ inputs.python-version }}
       run: |
         set -euo pipefail
-        pipx install "uv==$UV_VERSION"
+        # --force: a uv that pipx already has (any version) is replaced, never silently kept.
+        pipx install --force "uv==$UV_VERSION"
         bin="$(pipx environment --value PIPX_BIN_DIR)"
-        echo "$bin" >> "$GITHUB_PATH"
+        # Assert the pin before anything reaches PATH: a wrong version fails the step with no side effect.
         test "$("$bin/uv" --version | cut -d' ' -f2)" = "$UV_VERSION"
+        echo "$bin" >> "$GITHUB_PATH"
         if [ -n "$PYTHON_VERSION" ]; then "$bin/uv" python install "$PYTHON_VERSION"; fi
