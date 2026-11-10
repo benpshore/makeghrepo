@@ -39,7 +39,8 @@ BEFORE = {
         "docker": (("hadolint", "Dockerfile"),),
         "sqlite": (("sqlite3", "-bail", ":memory:", ".read sqlite/schema.sql"),),
         "shell": (("shellcheck", "scripts/hello.sh"),),
-        "go": (("go", "vet", "./..."), ("go", "test", "./..."), ("go", "build", "./...")),
+        "go": (("go", "vet", "./..."), ("go", "test", "./..."),
+               ("go", "build", "-o", "{devnull}", "./...")),
         "ts": (("npm", "install", "--no-fund", "--ignore-scripts"), ("npm", "run", "typecheck"),
                ("npm", "run", "test:ts")),
         "ruby": (("bundle", "install"),
@@ -150,3 +151,20 @@ def test_every_registry_flag_and_group_is_a_copier_flag():
     wanted = {lang.flag for lang in scaffold.LANGS.values()}
     wanted |= {group for lang in scaffold.LANGS.values() for group in lang.groups}
     assert wanted <= declared, sorted(wanted - declared)
+
+
+def test_optional_preparation_preserves_sequential_checks(tmp_path):
+    langs_dir = _copy_langs(tmp_path)
+    (langs_dir / "example.toml").write_text(EXAMPLE)
+    langs = registry.load(langs_dir)
+    assert langs["example"].prepare == ()
+    assert langs["rust"].prepare == (("cargo", "generate-lockfile"),)
+    assert langs["rust"].setup_len == 0
+    assert langs["rust"].lockfile == "Cargo.lock"
+
+
+def test_lockfile_preparation_requires_a_target(tmp_path):
+    langs_dir = _copy_langs(tmp_path)
+    (langs_dir / "example.toml").write_text(EXAMPLE + 'prepare = [["example-tool", "lock"]]\n')
+    with pytest.raises(ValueError, match="prepare requires a lockfile"):
+        registry.load(langs_dir)

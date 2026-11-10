@@ -146,6 +146,17 @@ def bootstrap_head(path: Path) -> str:
     if branch.returncode or branch.stdout.strip() != "refs/heads/main":
         raise RuntimeError("bootstrap publication requires main to be checked out")
     head = _git("rev-parse", "--verify", "refs/heads/main^{commit}", cwd=path).stdout.strip()
+    # Git status trusts these index flags and can otherwise hide modified check
+    # inputs. Do not silently change the user's flags to make the snapshot pass.
+    indexed = _git("ls-files", "--cached", "--stage", "-v", "-z", cwd=path).stdout
+    entries = [entry.split(" ", 2) for entry in indexed.split("\0") if entry]
+    if any(tag == "S" or tag.islower() for tag, _, _ in entries):
+        raise RuntimeError(
+            "bootstrap publication requires tracked files without assume-unchanged "
+            "or skip-worktree flags"
+        )
+    if any(mode == "160000" for _, mode, _ in entries):
+        raise RuntimeError("bootstrap snapshot validation does not support Git submodules")
     if _git(
         "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none", cwd=path
     ).stdout:

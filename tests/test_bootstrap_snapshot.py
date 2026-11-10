@@ -1,5 +1,8 @@
 """Publication safety with real local Git and no GitHub or network effects."""
 
+import subprocess
+from collections import Counter
+
 import gitcli
 import pytest
 from typer.testing import CliRunner
@@ -55,6 +58,35 @@ def test_local_drift_blocks_publication(local_remote, change):
     assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0
 
 
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+@pytest.mark.parametrize("modified", [False, True])
+def test_index_trust_flags_block_snapshot_and_publication(local_remote, flag, modified):
+    dest, remote = local_remote
+    selected = gitops.bootstrap_head(dest)
+    gitcli.git(dest, "update-index", flag, "first.txt")
+    if modified:
+        (dest / "first.txt").write_text("changed despite clean status")
+    assert gitcli.out(dest, "status", "--porcelain") == ""
+    with pytest.raises(RuntimeError, match="assume-unchanged or skip-worktree"):
+        gitops.bootstrap_head(dest)
+    with pytest.raises(RuntimeError, match="assume-unchanged or skip-worktree"):
+        gitops.push_main(dest, selected)
+    assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0
+
+
+def test_submodule_gitlink_blocks_snapshot_and_publication(local_remote):
+    dest, remote = local_remote
+    original = gitops.bootstrap_head(dest)
+    gitcli.git(dest, "update-index", "--add", "--cacheinfo", f"160000,{original},nested")
+    gitcli.git(dest, "commit", "-m", "add a gitlink")
+    selected = gitcli.out(dest, "rev-parse", "HEAD")
+    with pytest.raises(RuntimeError, match="does not support Git submodules"):
+        gitops.bootstrap_head(dest)
+    with pytest.raises(RuntimeError, match="does not support Git submodules"):
+        gitops.push_main(dest, selected)
+    assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0
+
+
 def test_late_commit_after_local_check_cannot_replace_frozen_push_source(local_remote, monkeypatch):
     dest, remote = local_remote
     sha = gitops.bootstrap_head(dest)
@@ -95,6 +127,8 @@ def bootstrap(tmp_path, monkeypatch):
     remote = tmp_path / "remote.git"
     gitcli.init(remote, "--bare")
     state = {"created": False, "failed": False, "smoke": [], "configured": 0, "before_push": None}
+    state["real_smoke_test"] = scaffold.smoke_test
+    state["real_render"] = scaffold.render
     dest = tmp_path / "r"
     monkeypatch.setenv("MAKEGHREPO_DIR", str(tmp_path))
     monkeypatch.delenv("MAKEGHREPO_OWNER", raising=False)
@@ -113,7 +147,9 @@ def bootstrap(tmp_path, monkeypatch):
         if state.get("after_create"):
             state["after_create"]()
 
-    def smoke(path, *_):
+    def smoke(path, *_, before_validation=None):
+        if before_validation is not None:
+            before_validation()
         state["smoke"].append(gitcli.git(path, "rev-parse", "HEAD", check=False).stdout.strip())
         if state.get("smoke_mutation"):
             state["smoke_mutation"]()
@@ -314,3 +350,272 @@ def test_push_lost_ack_reports_observed_effect_and_never_replays(local_remote, m
     assert len(pushes) == 1
     assert gitops.remote_has_main(dest)
     assert gitcli.out(remote, "rev-parse", "main") == sha
+
+
+@pytest.mark.parametrize("change", ["dirty", "staged", "untracked", "branch", "ref"])
+def test_initial_post_check_edit_is_never_published(bootstrap, change):
+    state, dest, remote = bootstrap
+
+    def mutate():
+        if change in {"dirty", "staged"}:
+            (dest / "source.txt").write_text("unchecked")
+            if change == "staged":
+                gitcli.git(dest, "add", "source.txt")
+        elif change == "untracked":
+            (dest / "unchecked.txt").write_text("unchecked")
+        elif change == "branch":
+            gitcli.git(dest, "checkout", "-b", "unchecked")
+        else:
+            # A new commit with the same tree is still a different selected ref.
+            tree = gitcli.out(dest, "rev-parse", "HEAD^{tree}")
+            sha = gitcli.out(dest, "commit-tree", tree, "-p", "HEAD", "-m", "unchecked")
+            gitcli.git(dest, "update-ref", "refs/heads/main", sha)
+
+    state["smoke_mutation"] = mutate
+    result = runner.invoke(app, ["r"])
+    assert result.exit_code == 1, result.output
+    assert not state["created"]
+    assert state["configured"] == 0
+    assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0
+
+
+def test_initial_validation_failure_retains_commit_and_rechecks_it_on_resume(bootstrap):
+    state, dest, remote = bootstrap
+
+    def fail():
+        raise RuntimeError("controlled validation failure")
+
+    state["smoke_mutation"] = fail
+    result = runner.invoke(app, ["r"])
+    assert result.exit_code == 1, result.output
+    assert "before its GitHub creation/push steps" in result.output
+    assert not state["created"] and state["configured"] == 0
+    assert gitops.read_marker(dest) is not None
+    selected = gitops.bootstrap_head(dest)
+    assert state["smoke"] == [selected]
+    state["smoke_mutation"] = None
+    result = runner.invoke(app, ["r"])
+    assert result.exit_code == 0, result.output
+    assert state["smoke"] == [selected, selected]
+    assert gitcli.out(remote, "rev-parse", "main") == selected
+    assert gitcli.out(dest, "rev-list", "--count", "HEAD") == "1"
+
+
+@pytest.mark.parametrize("stage", [False, True])
+def test_initial_hook_change_blocks_checks_and_publication(bootstrap, monkeypatch, stage):
+    state, dest, remote = bootstrap
+    original = gitops.init
+
+    def install_hook(path):
+        original(path)
+        hook = path / ".git/hooks/pre-commit"
+        hook.write_text(
+            "#!/bin/sh\nprintf 'unchecked\\n' > source.txt\n"
+            + ("git add source.txt\n" if stage else "")
+        )
+        hook.chmod(0o755)
+
+    monkeypatch.setattr(gitops, "init", install_hook)
+    result = runner.invoke(app, ["r"])
+    assert result.exit_code == 1, result.output
+    assert not state["smoke"]  # snapshot checks stop even before validation begins
+    assert not state["created"] and state["configured"] == 0
+    assert gitops.has_commits(dest) and gitops.read_marker(dest) is not None
+    assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0
+
+
+def test_inert_tools_real_git_snapshot_generated_locks_and_validate_once(bootstrap, monkeypatch):
+    state, dest, remote = bootstrap
+    monkeypatch.setattr(scaffold, "smoke_test", state["real_smoke_test"])
+    monkeypatch.setattr(scaffold.shutil, "which", lambda _: "/bin/fake")
+    monkeypatch.delenv("MAKEGHREPO_SKIP_LOCAL_CHECKS", raising=False)
+    real_run = subprocess.run
+    calls = []
+    checked_heads = []
+    locks = {
+        "uv": ("uv.lock", "python lock"),
+        "npm": ("package-lock.json", "npm lock"),
+        "cargo": ("Cargo.lock", "cargo lock"),
+        "bundle": ("Gemfile.lock", "ruby lock"),
+    }
+    languages = ["python", "rust", "js", "css", "ruby", "c", "cpp"]
+    setup = {
+        cmd
+        for lang in languages
+        for cmd in (
+            *scaffold.LANGS[lang].prepare,
+            *scaffold.CHECKS[lang][: scaffold.SETUP_LEN.get(lang, 0)],
+        )
+    }
+
+    def fake_tools(cmd, **kwargs):
+        if cmd[0] not in {"uv", "npm", "cargo", "bundle", "cmake", "ctest"}:
+            return real_run(cmd, **kwargs)
+        cmd = tuple(cmd)
+        calls.append(cmd)
+        if cmd in setup:
+            assert not gitops.has_commits(dest), "snapshot selected before setup completed"
+            name, contents = locks[cmd[0]]
+            (dest / name).write_text(contents)
+        else:
+            selected = gitops.bootstrap_head(dest)
+            checked_heads.append(selected)
+            for name, contents in locks.values():
+                assert gitcli.out(dest, "show", f"{selected}:{name}") == contents
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(scaffold.subprocess, "run", fake_tools)
+    result = runner.invoke(app, ["r", *languages])
+    assert result.exit_code == 0, result.output
+    expected = {
+        (cmd[0], cmd[1], "--no-sync", *cmd[2:]) if cmd[:2] == ("uv", "run") else cmd
+        for lang in languages
+        for cmd in (*scaffold.LANGS[lang].prepare, *scaffold.CHECKS[lang])
+    }
+    assert Counter(calls) == Counter(dict.fromkeys(expected, 1))
+    assert checked_heads and set(checked_heads) == {gitcli.out(remote, "rev-parse", "main")}
+    assert [cmd for cmd in calls if cmd[0] == "cargo"] == [
+        *scaffold.LANGS["rust"].prepare,
+        *scaffold.CHECKS["rust"],
+    ]
+    assert [cmd for cmd in calls if cmd[0] in {"cmake", "ctest"}] == list(scaffold.CHECKS["c"])
+
+
+@pytest.mark.parametrize("when", ["during-validation", "after-smoke-return"])
+def test_real_smoke_boundary_rejects_late_source_edit(bootstrap, monkeypatch, when):
+    state, dest, remote = bootstrap
+    real_smoke = state["real_smoke_test"]
+    real_run = subprocess.run
+    monkeypatch.setattr(scaffold.shutil, "which", lambda _: "/bin/fake")
+    monkeypatch.delenv("MAKEGHREPO_SKIP_LOCAL_CHECKS", raising=False)
+    checked = []
+
+    def fake_tool(cmd, **kwargs):
+        if cmd[0] != "shellcheck":
+            return real_run(cmd, **kwargs)
+        checked.append((dest / "source.txt").read_text())
+        if when == "during-validation":
+            (dest / "source.txt").write_text("unchecked")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def smoke_then_edit(*args, **kwargs):
+        real_smoke(*args, **kwargs)
+        if when == "after-smoke-return":
+            (dest / "source.txt").write_text("unchecked")
+
+    monkeypatch.setattr(scaffold.subprocess, "run", fake_tool)
+    monkeypatch.setattr(scaffold, "smoke_test", smoke_then_edit)
+    result = runner.invoke(app, ["r", "shell"])
+    assert result.exit_code == 1, result.output
+    assert checked == ["source"]
+    assert not state["created"] and state["configured"] == 0
+    assert gitcli.out(dest, "show", "HEAD:source.txt") == "source"
+    assert (dest / "source.txt").read_text() == "unchecked"
+    assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_real_smoke_rejects_index_flags_that_hide_changed_check_inputs(
+    bootstrap, monkeypatch, flag
+):
+    state, dest, remote = bootstrap
+    monkeypatch.setattr(scaffold, "smoke_test", state["real_smoke_test"])
+    monkeypatch.setattr(scaffold.shutil, "which", lambda _: "/bin/fake")
+    monkeypatch.delenv("MAKEGHREPO_SKIP_LOCAL_CHECKS", raising=False)
+    real_run = subprocess.run
+    checked = []
+
+    def fake_tool(cmd, **kwargs):
+        if cmd[0] != "shellcheck":
+            return real_run(cmd, **kwargs)
+        gitcli.git(dest, "update-index", flag, "source.txt")
+        (dest / "source.txt").write_text("changed check input")
+        checked.append((dest / "source.txt").read_text())
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(scaffold.subprocess, "run", fake_tool)
+    result = runner.invoke(app, ["r", "shell"])
+    assert result.exit_code == 1, result.output
+    assert "assume-unchanged or skip-worktree" in result.output
+    assert checked == ["changed check input"]
+    assert gitcli.out(dest, "status", "--porcelain") == ""
+    assert not state["created"] and state["configured"] == 0
+    assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0
+
+
+def test_real_validation_failure_rechecks_retained_snapshot_on_retry(bootstrap, monkeypatch):
+    state, dest, remote = bootstrap
+    monkeypatch.setattr(scaffold, "smoke_test", state["real_smoke_test"])
+    monkeypatch.setattr(scaffold.shutil, "which", lambda _: "/bin/fake")
+    monkeypatch.delenv("MAKEGHREPO_SKIP_LOCAL_CHECKS", raising=False)
+    real_run = subprocess.run
+    checked = []
+
+    def fake_tool(cmd, **kwargs):
+        if cmd[0] != "shellcheck":
+            return real_run(cmd, **kwargs)
+        checked.append(gitops.bootstrap_head(dest))
+        return subprocess.CompletedProcess(cmd, 1 if len(checked) == 1 else 0, "", "check failed")
+
+    monkeypatch.setattr(scaffold.subprocess, "run", fake_tool)
+    result = runner.invoke(app, ["r", "shell"])
+    assert result.exit_code == 1, result.output
+    assert "check failed" in result.output
+    assert not state["created"] and state["configured"] == 0
+    selected = gitops.bootstrap_head(dest)
+    assert gitops.read_marker(dest) is not None
+    result = runner.invoke(app, ["r"])
+    assert result.exit_code == 0, result.output
+    assert checked == [selected, selected]
+    assert gitcli.out(remote, "rev-parse", "main") == selected
+    assert gitcli.out(dest, "rev-list", "--count", "HEAD") == "1"
+
+
+@pytest.mark.parametrize(
+    ("language", "artifact"),
+    [
+        ("swift", ".build/debug/r"),
+        ("c", "build/r-c"),
+    ],
+)
+@pytest.mark.parametrize("output", ["ignored", "tracked", "untracked"])
+def test_generated_build_outputs_preserve_snapshot_or_block_publication(
+    bootstrap, monkeypatch, language, artifact, output
+):
+    """Real templates/Git and inert tools, not native build acceptance."""
+    state, dest, remote = bootstrap
+    monkeypatch.setattr(scaffold, "render", state["real_render"])
+    monkeypatch.setattr(scaffold, "smoke_test", state["real_smoke_test"])
+    monkeypatch.setattr(scaffold.shutil, "which", lambda _: "/bin/fake")
+    monkeypatch.delenv("MAKEGHREPO_SKIP_LOCAL_CHECKS", raising=False)
+    real_run = subprocess.run
+    calls = []
+
+    def fake_tools(cmd, **kwargs):
+        if cmd[0] not in {"swift", "cmake", "ctest", "go"}:
+            return real_run(cmd, **kwargs)
+        cmd = tuple(cmd)
+        calls.append(cmd)
+        if cmd == scaffold.CHECKS[language][-1]:
+            if output == "ignored":
+                target = dest / artifact
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("compiled output")
+            else:
+                (dest / ("README.md" if output == "tracked" else "unexpected.txt")).write_text(
+                    "unchecked output"
+                )
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(scaffold.subprocess, "run", fake_tools)
+    result = runner.invoke(app, ["r", language])
+    assert calls == list(scaffold.CHECKS[language])
+    if output == "ignored":
+        assert result.exit_code == 0, result.output
+        assert (dest / artifact).is_file()
+        assert gitcli.out(dest, "check-ignore", artifact) == artifact
+        assert gitops.bootstrap_head(dest) == gitcli.out(remote, "rev-parse", "main")
+    else:
+        assert result.exit_code == 1, result.output
+        assert not state["created"] and state["configured"] == 0
+        assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0

@@ -132,13 +132,23 @@ def render(dest: Path, data: dict[str, object]) -> None:
         )
 
 
-def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> None:
+def smoke_test(
+    dest: Path,
+    languages: list[str],
+    log: Callable[[str], None],
+    *,
+    before_validation: Callable[[], None] | None = None,
+) -> None:
     """Run each chosen language's lint/test/build locally. Raises on the first failure.
 
     A tool being installed doesn't mean it's cheap to run here: a constrained host
     (no cooling, a minimal CI runner) may have e.g. cargo installed but still want
     to skip compiling. Set ``MAKEGHREPO_SKIP_LOCAL_CHECKS`` to skip every check
     except the lockfile step CI and the Dockerfiles depend on (still required).
+
+    An optional ``before_validation`` callback runs once after setup and before
+    any lint/test/build unit, including when there are no checks to run. Bootstrap
+    uses it to select the committed snapshot that validation must leave unchanged.
 
     Setup (lockfile/install) commands run first and in order, since everything
     else assumes they finished. What's left runs concurrently, one worker per
@@ -163,13 +173,19 @@ def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> 
     # Probes (notably `docker info`) are checks too. When checks are skipped,
     # only required lockfile commands still run; no daemon probe is needed.
     for lang, reason in ({} if skip else unavailable(languages, env)).items():
-        for cmd in CHECKS.get(lang, ()):
+        for cmd in (*LANGS[lang].prepare, *CHECKS.get(lang, ())):
             blocked[cmd] = f"{lang} {reason}"
 
     seen: set[tuple[str, ...]] = set()
     setup: list[tuple[str, ...]] = []
     units: list[tuple[tuple[str, ...], ...]] = []  # each is one sequential unit to pool
     for lang in languages:
+        entry = LANGS[lang]
+        if entry.prepare and not (dest / entry.lockfile).exists():
+            for cmd in entry.prepare:
+                if cmd not in seen:
+                    setup.append(cmd)
+                    seen.add(cmd)
         cmds = CHECKS.get(lang, ())
         if lang == "sql" and "postgres" in languages:
             cmds = tuple((*c, "db") if c[1].startswith("sqlfluff") else c for c in cmds)
@@ -189,6 +205,7 @@ def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> 
                 units.append((cmd,))
 
     def run_cmd_for(cmd: tuple[str, ...]) -> tuple[str, ...]:
+        cmd = tuple(os.devnull if arg == "{devnull}" else arg for arg in cmd)
         # After the sequential setup phase, `uv run` no longer needs to check
         # (or wait on another concurrent check) whether the venv is in sync.
         return (cmd[0], cmd[1], "--no-sync", *cmd[2:]) if cmd[:2] == ("uv", "run") else cmd
@@ -227,6 +244,9 @@ def smoke_test(dest: Path, languages: list[str], log: Callable[[str], None]) -> 
             continue
         log("  $ " + " ".join(run_cmd_for(cmd)))
         execute(cmd)
+
+    if before_validation is not None:
+        before_validation()
 
     if not units:
         return

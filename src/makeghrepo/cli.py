@@ -96,9 +96,17 @@ def _dry_run(
     typer.echo(f"License requested: {(project_license or ProjectLicense.NONE).value}")
     typer.echo(f"Python library layout: {'yes' if lib else 'no'}")
     typer.echo(
-        "Plan: look up the GitHub account, render the project (or resume it), run local "
-        "checks, commit, preflight GitHub setup, create the repository, apply and read back "
-        "every required setting, then push main."
+        "Plan: look up the GitHub account and remote state, then render the project or "
+        "load its recorded resume. For a fresh or uncommitted project, run dependency "
+        "setup, commit a clean main snapshot, then run local validation. An unpublished "
+        "committed resume validates its existing clean snapshot again. Preflight GitHub "
+        "setup, create the remote if needed, apply and read back every required setting, "
+        "then publish the selected snapshot. A settings-only resume does not commit or "
+        "republish later work."
+    )
+    typer.echo(
+        "If validation fails, the local commit is retained. Review and commit intended "
+        "fixes before retrying."
     )
     typer.echo(
         "Unverified: GitHub identity/authentication, the owner's existence and type, "
@@ -322,16 +330,27 @@ def main(
 
     publication_head = None
     if not resume or not gitops.has_commits(dest):  # earlier check/commit failed
-        try:
-            scaffold.smoke_test(dest, langs, typer.echo)
+
+        def select_snapshot() -> None:
+            nonlocal publication_head
             publication_head = gitops.commit_all(dest, "setup")
+            gitops.require_bootstrap_head(dest, publication_head)
+
+        try:
+            # Setup must finish first so generated lockfiles enter the snapshot.
+            # Never stage again after checks: a late edit must not become tested
+            # merely because smoke_test returned successfully.
+            scaffold.smoke_test(dest, langs, typer.echo, before_validation=select_snapshot)
+            if publication_head is None:
+                raise RuntimeError("no selected bootstrap snapshot")
             gitops.require_bootstrap_head(dest, publication_head)
         except RuntimeError as exc:  # includes gitops.GitError
             raise fail(
                 f"{exc}\nThis invocation stopped before its GitHub creation/push steps.\n"
                 f"Earlier lookup {'found a repository' if on_github else 'found no repository'} "
                 f"at https://github.com/{repo}; this is not a publication history check.\n"
-                f"Local project retained at {dest}. Fix it, then re-run the same command."
+                f"Local project retained at {dest}. Fix it, commit any edits on main, "
+                "then re-run the same command."
             ) from exc
 
     try:

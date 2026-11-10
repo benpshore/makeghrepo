@@ -7,6 +7,8 @@ kind = "language"
 flag = "rs"
 groups = []
 marker = "Cargo.toml"
+# Resolve a missing lock without compiling or fetching every target's dependencies.
+prepare = [["cargo", "generate-lockfile"]]
 checks = [
   ["cargo", "fmt", "--check"],
   ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"],
@@ -23,7 +25,7 @@ host_os = []
 probe = []
 leading_letter = true
 apps = []
-lockfile = ""
+lockfile = "Cargo.lock"
 release = ""
 npm_scripts = {}
 npm_dev = {}

@@ -15,6 +15,11 @@ from makeghrepo.cli import app
 runner = CliRunner()
 
 
+def successful_checks(*args, before_validation=None):
+    if before_validation is not None:
+        before_validation()
+
+
 @pytest.fixture
 def gh(tmp_path, monkeypatch):
     """Fake GitHub: records calls; repos in `existing` already exist."""
@@ -49,7 +54,7 @@ def gh(tmp_path, monkeypatch):
         return state["failed"]
 
     monkeypatch.setattr(github, "configure_all", configure_all)
-    monkeypatch.setattr(scaffold, "smoke_test", lambda *a: None)  # covered in test_template
+    monkeypatch.setattr(scaffold, "smoke_test", successful_checks)  # covered in test_template
     return state
 
 
@@ -130,6 +135,14 @@ def test_dry_run_shows_plan_without_effects(tmp_path, gh, forbid_effects, dry_fl
     assert "Visibility requested: private" in result.output
     assert "License requested: MIT" in result.output
     assert "Python library layout: yes" in result.output
+    assert "run dependency setup, commit a clean main snapshot, then run local validation" in (
+        result.output
+    )
+    assert "An unpublished committed resume validates its existing clean snapshot again" in (
+        result.output
+    )
+    assert "A settings-only resume does not commit or republish later work" in result.output
+    assert "If validation fails, the local commit is retained" in result.output
     assert "no network requests were made" in result.output
     assert "Unverified:" in result.output
     assert list(tmp_path.iterdir()) == []
@@ -574,7 +587,7 @@ def test_postcreation_settings_failure_keeps_remote_for_retry(tmp_path, gh):
 
 
 def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):
-    def broken(*a):
+    def broken(*a, **kwargs):
         raise RuntimeError("ruff failed")
 
     monkeypatch.setattr(scaffold, "smoke_test", broken)
@@ -582,7 +595,7 @@ def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):
     assert result.exit_code == 1 and "re-run the same command" in result.output
     assert gh["calls"] == []  # nothing published
 
-    monkeypatch.setattr(scaffold, "smoke_test", lambda *a: None)  # user fixed it
+    monkeypatch.setattr(scaffold, "smoke_test", successful_checks)  # user fixed it
     result = runner.invoke(app, ["fixme", "python"])
     assert result.exit_code == 0, result.output
     assert gitcli.out(tmp_path / "fixme", "log", "--format=%s").splitlines() == ["setup"]
@@ -593,7 +606,7 @@ def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):
 def test_check_failure_reports_observed_effects_and_exact_target(
     tmp_path, gh, monkeypatch, remote_exists
 ):
-    def broken(*args):
+    def broken(*args, **kwargs):
         raise RuntimeError("native extension failed: missing ruby.h")
 
     monkeypatch.setattr(scaffold, "smoke_test", broken)
@@ -719,7 +732,7 @@ def test_private_flag_on_a_public_github_repo_is_refused(tmp_path, gh):
 def test_resume_uses_the_marker_languages(tmp_path, gh, monkeypatch):
     seen = []
 
-    def broken(dest, langs, log):
+    def broken(dest, langs, log, **kwargs):
         seen.append(list(langs))
         raise RuntimeError("check failed")
 

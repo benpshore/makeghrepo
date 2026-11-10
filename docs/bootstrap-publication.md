@@ -1,10 +1,9 @@
 # Python initial-publication gate
 
-**Incomplete draft, not a verified live bootstrap fix.** The repair has four
+**Incomplete draft, not a verified live bootstrap fix.** The repair has three
 remaining limits: strict no-bypass organization rules may block the initial push;
-fresh GitHub Actions-bound check setup has not been accepted by a live test; a
-concurrent edit during initial checks or before staging can enter the first commit
-untested; and uncertain Project creation can duplicate a board after a stale read.
+fresh GitHub Actions-bound check setup has not been accepted by a live test; and
+uncertain Project creation can duplicate a board after a stale read.
 No test result below resolves those limits or authorizes a protection bypass.
 
 The initial `main` push is a separate final operation. It is never submitted to
@@ -75,14 +74,44 @@ from being pushed by the bootstrap. Freshly created origins are checked too, inc
 all effective fetch/push URLs and Git rewrites, then checked again before publication.
 
 An unpublished committed resume must have clean checked-out `main`, including the
-index and untracked files. It reruns checks against a frozen commit and refuses any
-observed branch, ref or worktree drift. Fresh creation runs its checks once, commits
-the resulting staged tree and rejects commit hooks that substitute a different tree.
-This does not isolate the initial check/stage boundary: concurrent edits during
-checks or before staging can still enter the first commit untested. Thus the initial
-commit is a post-check snapshot, not an immutable tested-tree receipt.
-Existing language/tool skips remain in force; a frozen SHA is not proof skipped
-checks ran. Settings-only resumes do not rebuild or publish later local work.
+index and untracked files. Tracked files with `assume-unchanged` or `skip-worktree`
+index flags are refused because those flags can hide modified check inputs from
+Git status. Initial publication also rejects tracked Git submodules: the generated
+scaffold has none, and parent status cannot establish nested check-input integrity.
+It reruns checks against a frozen commit and refuses any
+observed branch, ref or worktree drift. Fresh creation completes setup first,
+including generated lockfiles, then commits and selects a clean `main` snapshot
+before running validation. It runs each lint/test/build command once and never
+stages again afterward. A failed commit callback prevents validation from starting;
+a commit hook that changes the staged tree or leaves worktree changes is refused.
+The same clean SHA is required after checks and before publication. Thus a later
+edit cannot be silently staged into the selected publication commit.
+
+Rust's registry preparation runs `cargo generate-lockfile` only when `Cargo.lock`
+is absent. This may resolve dependency metadata over the network, but does not
+compile or fetch all targets' dependencies. Existing lockfiles are not regenerated
+by this step. Normal Cargo checks can report or update a stale lock; any observed
+post-snapshot change then blocks publication. The fmt/clippy/test chain and shared
+CMake checks remain sequential. Go's single build uses the host's null device as
+its output target, retaining `./...` compilation for executable and library
+packages without leaving an untracked root executable. Other
+languages retain their existing setup and check scheduling. Missing Cargo or `MAKEGHREPO_SKIP_LOCAL_CHECKS` still skips its
+preparation and validation; required Python/npm/Ruby setup rules are unchanged.
+Offline rendering and dry-run perform none of this setup or validation.
+
+A validation failure can now retain an unvalidated local commit. A retry checks
+that commit again before any initial publication; review and commit any intended
+fixes on `main` first. These are before/after drift checks, not filesystem isolation:
+a change that is made and restored between observations can go undetected. Ignored
+files and external check inputs are not frozen by the Git commit. Existing tool
+skips remain in force; a selected SHA is not proof skipped checks ran. Settings-only
+resumes do not rebuild or publish later local work.
+
+Validation reads the working tree through Git's normal checkout and staging
+semantics. Line-ending conversion and configured clean/smudge filters can make
+those bytes differ from the stored commit blobs even when status is clean.
+This gate does not provide byte-identical or isolated validation of custom Git
+conversions; review those conversions separately.
 
 The initial push names that frozen SHA, not the mutable local branch. Git's empty
 expected-ref lease (`--force-with-lease=refs/heads/main:`) prevents updating any
@@ -106,6 +135,16 @@ barriers for delayed/failed writes and reads, discrepant settings, selection,
 preflight and partial retries. `tests/test_bootstrap_snapshot.py` uses actual local
 Git for frozen-commit publication, pre-push resume, dirty work, commit hooks,
 competing branch creation, destination redirects and uncertain post-push readback.
+It also wraps the real smoke orchestrator to inject edits during validation and
+after it returns. Inert tool responses, not actual Cargo/npm/Ruby builds, verify
+setup ordering, generated-lockfile inclusion and one execution per command.
+A disposable real Python render passes `uv lock --offline` before the snapshot
+and `uv lock --offline --check` afterward with identical lock bytes. This is
+metadata/lock evidence, not a full generated-project build. Cargo, Swift and a
+native Go toolchain are unavailable in the local repair environment. CI-only Go
+build cases cover a single executable, libraries, mixed packages, multiple
+executables and an invalid unimported library; they remain unverified until CI
+runs. No native Cargo, Swift or Go acceptance is claimed here.
 `tests/test_owner_push.py` covers partial migration and retained legacy protection.
 
 `scripts/bootstrap-check --python-executable PATH PATH` runs 17 installed-command
