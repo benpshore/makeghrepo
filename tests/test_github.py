@@ -9,7 +9,7 @@ from makeghrepo import github
 
 @pytest.fixture
 def github_defaults():
-    # The Rust tests read this same policy contract; it is not a rendered snapshot.
+    # A shared policy contract (the parked Rust port read it too); not a rendered snapshot.
     return json.loads((Path(__file__).parent / "fixtures/github_defaults.json").read_text())
 
 
@@ -73,7 +73,7 @@ def test_configured_rulesets_cover_main_and_nonmain_default(calls):
 def test_prepare_configuration_rejects_mismatched_account_before_creation(monkeypatch):
     monkeypatch.setattr(github, "api", lambda *_a, **_kw: {"login": "other", "id": 123})
 
-    with pytest.raises(github.GhError, match="verified matching personal account ID"):
+    with pytest.raises(github.GhError, match="verified matching owner ID"):
         github.prepare_configuration("me", private=False)
 
 
@@ -86,7 +86,7 @@ def test_configure_ruleset_rejects_owner_login_mismatch_without_plan(monkeypatch
 
     monkeypatch.setattr(github, "api", fake_api)
 
-    with pytest.raises(github.GhError, match="personal repository with a verified owner ID"):
+    with pytest.raises(github.GhError, match="repository with a verified owner ID"):
         github.configure_ruleset("me/r")
 
     assert calls == [("GET", "repos/me/r", None)]
@@ -131,8 +131,13 @@ def test_rulesets_keep_history_protected_and_only_exempt_owner_from_review():
     ]
 
 
-def _graphql_projects(*nodes: dict) -> str:
-    return json.dumps({"data": {"user": {"projectsV2": {"nodes": list(nodes)}}}})
+def test_organization_review_ruleset_has_no_bypass_actor(github_defaults):
+    personal = github_defaults["review_ruleset"]
+    assert github.review_ruleset_body(None) == {**personal, "bypass_actors": []}
+
+
+def _graphql_projects(*nodes: dict, kind: str = "user") -> str:
+    return json.dumps({"data": {kind: {"projectsV2": {"nodes": list(nodes)}}}})
 
 
 def test_project_reuses_existing_board(calls):
@@ -178,6 +183,34 @@ def test_project_created_when_missing(calls):
     assert [a[1] for a, _ in calls] == ["graphql", "create", "link"]
 
 
+def test_organization_project_is_looked_up_on_the_organization(calls):
+    calls.responses["graphql"] = _graphql_projects({"number": 5, "title": "r"}, kind="organization")
+    github.configure_project("acme/r", org=True)
+    (query_args, _), (link_args, _) = calls
+    assert "organization(login: $owner)" in " ".join(query_args)
+    assert "user(login" not in " ".join(query_args)
+    assert "owner=acme" in query_args
+    assert link_args[:3] == ("project", "link", "5")
+    assert link_args[link_args.index("--owner") + 1] == "acme"
+
+
+def test_personal_project_is_looked_up_on_the_user(calls):
+    calls.responses["graphql"] = _graphql_projects({"number": 5, "title": "r"})
+    github.configure_project("me/r")
+    (query_args, _), _ = calls
+    assert "user(login: $owner)" in " ".join(query_args)
+
+
+def test_owner_type_accepts_users_and_organizations_only(calls):
+    calls.responses["users/acme"] = '{"login": "acme", "type": "Organization"}'
+    calls.responses["users/me"] = '{"login": "me", "type": "User"}'
+    calls.responses["users/odd"] = '{"login": "odd", "type": "Enterprise"}'
+    assert github.owner_type("acme") == "Organization"
+    assert github.owner_type("me") == "User"
+    with pytest.raises(github.GhError, match="neither"):
+        github.owner_type("odd")
+
+
 def _paths(calls):
     return [a[3] if a[0] == "api" else " ".join(a[:2]) for a, _ in calls]
 
@@ -213,15 +246,28 @@ def test_public_settings_and_rulesets_precede_first_push(calls):
     assert mute == {"subscribed": False, "ignored": True}
 
 
+def test_organization_configure_all_uses_org_lookups_and_bypass_free_gate(calls):
+    calls.owner = {"type": "Organization", "login": "acme", "id": 77}
+    failed = github.configure_all(
+        "acme/r", private=False, push=lambda: None, log=lambda _: None, org=True
+    )
+    assert failed == []
+    query = next(" ".join(a) for a, _ in calls if a[1] == "graphql")
+    assert "organization(login: $owner)" in query
+    posted = [b for a, b in calls if a[:3] == ("api", "-X", "POST") and a[3].endswith("/rulesets")]
+    assert {b["name"] for b in posted} == {github.RULESET_NAME, github.REVIEW_RULESET_NAME}
+    assert all(b["bypass_actors"] == [] for b in posted)
+
+
 def test_ruleset_finishes_before_independent_project_setup(calls, monkeypatch):
     events = []
 
-    def slow_project(_):
+    def slow_project(_, **kwargs):
         events.append("project")
         return 1
 
     monkeypatch.setattr(github, "configure_project", slow_project)
-    monkeypatch.setattr(github, "verify_project", lambda *_: None)
+    monkeypatch.setattr(github, "verify_project", lambda *_, **kwargs: None)
     failed = github.configure_all(
         "me/r", private=False, push=lambda: events.append("push"), log=lambda _: None
     )
@@ -232,12 +278,12 @@ def test_ruleset_finishes_before_independent_project_setup(calls, monkeypatch):
 def test_rulesets_are_installed_even_if_initial_push_later_fails(calls, monkeypatch):
     project_started = threading.Event()
 
-    def slow_project(_):
+    def slow_project(_, **kwargs):
         project_started.set()
         return 1
 
     monkeypatch.setattr(github, "configure_project", slow_project)
-    monkeypatch.setattr(github, "verify_project", lambda *_: None)
+    monkeypatch.setattr(github, "verify_project", lambda *_, **kwargs: None)
     failed = github.configure_all(
         "me/r",
         private=False,

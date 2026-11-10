@@ -22,6 +22,11 @@ import tempfile
 import time
 from pathlib import Path
 
+if not __debug__:
+    raise SystemExit(
+        "bootstrap-check requires assertions enabled; remove -O/-OO and PYTHONOPTIMIZE"
+    )
+
 OWNER = "acceptance-owner"
 OWNER_ID = 42
 
@@ -220,7 +225,11 @@ def gh_fixture(args):
                 state[suffix] = body if body is not None else {"enabled": True}
             if method == "GET":
                 if suffix == "vulnerability-alerts":
-                    return (0, "") if suffix in state else (1, "404 disabled")
+                    return (
+                        (0, "HTTP/2.0 204 No Content\r\n\r\n")
+                        if suffix in state
+                        else (1, "404 disabled")
+                    )
                 value = state.get(suffix, {})
                 if suffix == "automated-security-fixes":
                     value = {**value, "paused": False}
@@ -409,9 +418,7 @@ def scenario(executable, private, failure, python_gate=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "executables", nargs="+", help="Installed Python and/or Rust executable paths"
-    )
+    parser.add_argument("executables", nargs="+", help="Installed makeghrepo executable paths")
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--python-executable",
@@ -468,7 +475,7 @@ def main():
                     include.remove("refs/heads/main")
         normalized.append(comparable)
     assert all(result == normalized[0] for result in normalized), (
-        "Python/Rust configuration results differ outside the documented implementation differences"
+        "installed configuration results differ"
     )
     if args.output:
         args.output.write_text(json.dumps(evidence, indent=2) + "\n")

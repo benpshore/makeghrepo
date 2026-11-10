@@ -10,10 +10,10 @@ from typing import Annotated
 
 import typer
 
-from makeghrepo import names, registry
+from makeghrepo import inputs, names
 
 app = typer.Typer(add_completion=True, context_settings={"help_option_names": ["-h", "--help"]})
-LANGS = registry.load()
+LANGS = inputs.LANGS
 
 
 class ProjectLicense(StrEnum):
@@ -50,74 +50,60 @@ def _project_name(raw: str, langs: list[str]) -> str:
     return name
 
 
-def _language(word: str) -> str | None:
-    """Resolve a registry language token without loading the template renderer."""
-    word = word.lower()
-    if word in LANGS:
-        return word
-    return next((lang.id for lang in LANGS.values() if word in lang.aliases), None)
-
-
 def _dry_run(
-    words: list[str],
+    raw_name: str | None,
+    langs: list[str],
     *,
     private: bool,
     lib: bool,
     project_license: ProjectLicense | None,
     render: Path | None,
     owner: str | None,
-    author: str | None,
-    description: str | None,
-    year: str | None,
+    render_only: tuple[str | None, ...],
 ) -> None:
-    """Show a local bootstrap plan without importing or invoking effectful code."""
+    """Print the bootstrap plan without writing files, running commands or using the network.
+
+    Offline by design (#154): the GitHub account, name availability and resume
+    state are reported as unverified instead of looked up.
+    """
     if render is not None:
         raise fail("--dry-run cannot be combined with --render; --render writes preview files")
-    if any(value is not None for value in (owner, author, description, year)):
-        raise fail("--owner, --author, --description and --year require --render")
-
-    raw_name = words.pop(0) if words and _language(words[0]) is None else None
-    langs: list[str] = []
-    for word in words:
-        lang = _language(word)
-        if lang is None:
-            raise fail(f"unknown language {word!r}. Choose from: {', '.join(LANGS)}")
-        if lang not in langs:
-            langs.append(lang)
-    if lib and "python" not in langs:
-        raise fail("--lib only applies to python; add `python` to the language list")
-
+    if any(value is not None for value in render_only):
+        raise fail("--author, --description and --year require --render")
+    if owner is not None:
+        try:
+            names.validate_owner(owner)
+        except ValueError as exc:
+            raise fail(str(exc)) from exc
     base_dir = Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")).expanduser().resolve()
-    try:
-        if raw_name is None:
-            name = names.unique_random_name(lambda candidate: (base_dir / candidate).exists())
-        else:
-            name = names.validate_name(names.normalize_name(raw_name))
-        _project_name(name, langs)
-    except (ValueError, RuntimeError, FileNotFoundError) as exc:
-        raise fail(str(exc)) from exc
-
-    dest = base_dir / name
-    exists = dest.exists()
+    if raw_name is None:
+        name, dest, exists = "random, chosen at creation", base_dir / "<random name>", False
+    else:
+        try:
+            name = _project_name(raw_name, langs)
+        except ValueError as exc:
+            raise fail(str(exc)) from exc
+        dest = base_dir / name
+        exists = dest.exists()
     typer.echo("Dry run only: no files or directories were written; no network requests were made.")
     typer.echo(f"Project: {name}")
     typer.echo(f"Languages: {', '.join(langs) or 'any language'}")
     typer.echo(f"Destination: {dest}")
-    typer.echo(f"Destination already exists: {'yes' if exists else 'no'}")
+    resume_note = "yes (a real run would try to resume it)" if exists else "no"
+    typer.echo(f"Destination already exists: {resume_note}")
     typer.echo(f"Visibility requested: {'private' if private else 'public'}")
+    typer.echo(f"Owner requested: {owner or 'the authenticated user (looked up at creation)'}")
     typer.echo(f"License requested: {(project_license or ProjectLicense.NONE).value}")
     typer.echo(f"Python library layout: {'yes' if lib else 'no'}")
     typer.echo(
-        "Plan: inspect resume state, render and check a new project if needed, "
-        "prepare GitHub settings,"
+        "Plan: look up the GitHub account, render the project (or resume it), run local "
+        "checks, commit, preflight GitHub setup, create the repository, apply and read back "
+        "every required setting, then push main."
     )
     typer.echo(
-        "then create or resume the repository, apply settings, and push main "
-        "after all required setup and effective-setting readbacks pass."
-    )
-    typer.echo(
-        "Unverified: GitHub identity/authentication, repository availability and remote state, "
-        "local resume metadata, and local tool availability."
+        "Unverified: GitHub identity/authentication, the owner's existence and type, "
+        "repository availability and remote state, local resume metadata, and local tool "
+        "availability."
     )
 
 
@@ -153,50 +139,53 @@ def main(
         typer.Option(
             "--dry-run",
             "-n",
-            help=(
-                "Show a plan without writing files or making network requests; "
-                "--render is separate."
-            ),
+            help="Show the plan; write nothing, run nothing, no network. Not --render.",
         ),
     ] = False,
     show_version: Annotated[
         bool,
         typer.Option("--version", callback=_show_version, is_eager=True, help="Show the version."),
     ] = False,
-    owner: Annotated[str | None, typer.Option("--owner", hidden=True)] = None,
+    owner: Annotated[
+        str | None,
+        typer.Option(
+            "--owner",
+            metavar="LOGIN",
+            help="Account or organization that owns the new repo (default: you, or "
+            "$MAKEGHREPO_OWNER). With --render: the owner name in the preview.",
+        ),
+    ] = None,
     author: Annotated[str | None, typer.Option("--author", hidden=True)] = None,
     description: Annotated[str | None, typer.Option("--description", hidden=True)] = None,
     year: Annotated[str | None, typer.Option("--year", hidden=True)] = None,
 ) -> None:
+    try:
+        raw_name, langs = inputs.parse_words(list(words or []))
+        # Reject invalid names before any authenticated gh operation. Normalization
+        # is retained for compatibility; it never selects a different action. Apply
+        # language-specific restrictions later: a resume uses its recorded languages.
+        if raw_name is not None:
+            names.validate_name(names.normalize_name(raw_name))
+    except ValueError as exc:
+        raise fail(str(exc)) from exc
+    if lib and "python" not in langs:
+        raise fail("--lib only applies to python; add `python` to the language list")
     if dry_run:
         _dry_run(
-            list(words or []),
+            raw_name,
+            langs,
             private=private,
             lib=lib,
             project_license=project_license,
             render=render,
             owner=owner,
-            author=author,
-            description=description,
-            year=year,
+            render_only=(author, description, year),
         )
         return
 
-    # Copier imports its platform probe machinery; keep help/version independent
-    # of that renderer and every external command as well as GitPython.
+    # Only validated positional actions reach the renderer. Copier remains the
+    # rendering implementation; parsing/help/version need none of its probes.
     from makeghrepo import scaffold
-
-    words = list(words or [])
-    # A leading non-language word is the name; otherwise pick a random one.
-    raw_name = words.pop(0) if words and scaffold.language(words[0]) is None else None
-    langs: list[str] = []
-    for word in words:
-        lang = scaffold.language(word)
-        if lang is None:
-            raise fail(f"unknown language {word!r}. Choose from: {', '.join(scaffold.LANGUAGES)}")
-        langs += [lang] if lang not in langs else []
-    if lib and "python" not in langs:
-        raise fail("--lib only applies to python; add `python` to the language list")
 
     if render is not None:
         try:
@@ -208,6 +197,7 @@ def main(
                 "description": description if description is not None else "a test project",
                 "author_name": author if author is not None else "Test User",
                 "github_owner": offline_owner,
+                "github_org": False,  # offline: no lookup, so previews show the personal text
                 "year": year if year is not None else "2026",
                 "private": private,
                 "py_lib": lib,
@@ -218,18 +208,27 @@ def main(
             raise fail(str(exc)) from exc
         typer.echo(f"rendered {render}")
         return
-    if any(value is not None for value in (owner, author, description, year)):
-        raise fail("--owner, --author, --description and --year require --render")
+    if any(value is not None for value in (author, description, year)):
+        raise fail("--author, --description and --year require --render")
 
-    # GitPython probes git when imported. Help, version and offline rendering
-    # must also work on a machine without git or GitHub credentials.
-    import git
-
+    # Help, version and offline rendering must work on a machine without git or
+    # GitHub credentials, so these are imported only once a real run starts.
     from makeghrepo import github, gitops
 
     base_dir = Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")).expanduser().resolve()
     try:
-        owner = names.validate_owner(github.current_user())
+        # The commit identity is always the authenticated user; the repository
+        # owner may instead be an organization that user can create repos in.
+        user = names.validate_owner(github.current_user())
+        owner = names.validate_owner(owner or os.environ.get("MAKEGHREPO_OWNER") or user)
+        org = False
+        if owner.lower() != user.lower():
+            if github.owner_type(owner) != "Organization":
+                raise ValueError(
+                    f"--owner {owner} is another user's account; only your own account "
+                    "or an organization can own the new repository"
+                )
+            org = True
         if raw_name:
             name = names.validate_name(names.normalize_name(raw_name))
         else:
@@ -262,7 +261,7 @@ def main(
             )
         try:
             gitops.validate_origin(dest, repo)
-        except (RuntimeError, git.GitCommandError) as exc:
+        except RuntimeError as exc:  # includes gitops.GitError
             raise fail(str(exc)) from exc
         if private and not marker.get("private"):
             raise fail(f"{repo} was created public; re-run without --private or pick another name")
@@ -277,6 +276,8 @@ def main(
                 "a resume never changes licensing. Re-run without --license"
             )
         recorded = [str(lang) for lang in marker.get("languages") or []]
+        if any(lang not in LANGS for lang in recorded):
+            raise fail(f"{dest} has an unknown recorded language; review its resume marker")
         if langs and langs != recorded:
             typer.echo(f"note: ignoring languages on resume; using {', '.join(recorded) or 'none'}")
         langs = recorded
@@ -289,7 +290,7 @@ def main(
         except ValueError as exc:
             raise fail(str(exc)) from exc
         typer.echo(f"creating {dest} [{', '.join(langs) or 'any language'}]")
-        author_name = gitops.author_from_git_config()[0] or owner
+        author_name = gitops.author_from_git_config()[0] or user
         scaffold.render(dest, {
             "project_name": name,
             "package_name": names.package_name(name),
@@ -297,6 +298,7 @@ def main(
             # Only the name: an email would be published in the repo.
             "author_name": author_name,
             "github_owner": owner,
+            "github_org": org,
             "private": private,
             "py_lib": lib,
             "project_license": (project_license or ProjectLicense.NONE).value,
@@ -305,7 +307,7 @@ def main(
         gitops.init(dest)
         # A fresh host or CI runner may have no git identity configured anywhere;
         # fall back to the authenticated GitHub user so `git commit` never fails on that.
-        gitops.ensure_identity(dest, author_name, f"{owner}@users.noreply.github.com")
+        gitops.ensure_identity(dest, author_name, f"{user}@users.noreply.github.com")
         # Written before the smoke test so an interrupted first run can still resume.
         gitops.write_marker(dest, {
             "schema": 1,
@@ -318,13 +320,18 @@ def main(
             "created_by": f"makeghrepo {_version()}",
         })  # fmt: skip
 
+    publication_head = None
     if not resume or not gitops.has_commits(dest):  # earlier check/commit failed
         try:
             scaffold.smoke_test(dest, langs, typer.echo)
-            gitops.commit_all(dest, "setup")
-        except (RuntimeError, git.GitCommandError) as exc:
+            publication_head = gitops.commit_all(dest, "setup")
+            gitops.require_bootstrap_head(dest, publication_head)
+        except RuntimeError as exc:  # includes gitops.GitError
             raise fail(
-                f"{exc}\nNothing was published. Fix it, then re-run the same command."
+                f"{exc}\nThis invocation stopped before its GitHub creation/push steps.\n"
+                f"Earlier lookup {'found a repository' if on_github else 'found no repository'} "
+                f"at https://github.com/{repo}; this is not a publication history check.\n"
+                f"Local project retained at {dest}. Fix it, then re-run the same command."
             ) from exc
 
     try:
@@ -340,15 +347,47 @@ def main(
         else:
             private = want_private
     except github.GhError as exc:
-        raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
+        raise fail(
+            f"{exc}\nRemote visibility lookup failed; "
+            "creation/push was not attempted by this invocation.\n"
+            f"Inspect https://github.com/{repo} before any cleanup.\n"
+            f"Local project is intact at {dest}; re-run to retry."
+        ) from exc
+
+    # A settings-only retry must not inspect or publish later local work. An
+    # unpublished resume, however, must test the actual committed snapshot again.
+    # Check before creating/configuring anything and retain all partial state.
+    try:
+        if on_github:
+            gitops.ensure_origin(dest, repo)
+        pushed = on_github and gitops.remote_has_main(dest)
+    except RuntimeError as exc:
+        raise fail(
+            f"{exc}\nCould not check remote main; refusing to push. "
+            f"Inspect https://github.com/{repo}.\n"
+            f"Local project is intact at {dest}; re-run to retry."
+        ) from exc
+
+    if not pushed:
+        try:
+            if publication_head is None:
+                publication_head = gitops.bootstrap_head(dest)
+                scaffold.smoke_test(dest, langs, typer.echo)
+            gitops.require_bootstrap_head(dest, publication_head)
+        except RuntimeError as exc:
+            raise fail(
+                f"{exc}\nBootstrap snapshot validation failed; this invocation did not "
+                "attempt GitHub creation, configuration or push.\n"
+                f"Local project is intact at {dest}; fix it and re-run."
+            ) from exc
 
     try:
-        configuration = github.prepare_configuration(owner, private)
+        configuration = github.prepare_configuration(owner, private, org=org)
     except github.GhError as exc:
         recovery = (
-            "No GitHub repository was created."
+            "This invocation did not attempt GitHub creation or settings changes."
             if not on_github
-            else "No GitHub settings were changed."
+            else "This invocation did not attempt GitHub settings changes."
         )
         raise fail(
             f"GitHub configuration preflight failed: {exc}\n{recovery} "
@@ -359,21 +398,32 @@ def main(
         try:
             github.create_repo(repo, dest, name, private)
         except github.GhError as exc:
-            raise fail(f"{exc}\nLocal project is intact; re-run to retry.") from exc
+            raise fail(
+                f"{exc}\nRemote creation was attempted; remote creation may have completed.\n"
+                f"Inspect https://github.com/{repo} before any cleanup.\n"
+                f"Local project is intact at {dest}; re-run to retry."
+            ) from exc
 
-    # Bootstrap only: a configuration rerun must never publish subsequent local work.
+    # Validate gh's freshly added origin too, including effective push URLs and
+    # insteadOf rewrites. Creation does not establish the push destination.
     try:
-        if on_github:
-            gitops.ensure_origin(dest, repo)
-        pushed = on_github and gitops.remote_has_main(dest)
-    except (RuntimeError, git.GitCommandError) as exc:
+        gitops.ensure_origin(dest, repo)
+    except RuntimeError as exc:
         raise fail(
-            f"{exc}\nCould not check remote main; refusing to push. "
-            "Local project is intact; re-run to retry."
+            f"{exc}\nOrigin validation failed; refusing configuration and push. "
+            f"Inspect https://github.com/{repo}.\n"
+            f"Local project is intact at {dest}; re-run to retry."
         ) from exc
-    push = None if pushed else lambda: gitops.push_main(dest)
+
+    def publish_bootstrap() -> None:
+        gitops.validate_origin(dest, repo)
+        if publication_head is None:
+            raise RuntimeError("no selected bootstrap snapshot")
+        gitops.push_main(dest, publication_head)
+
+    push = None if pushed else publish_bootstrap
     failed = github.configure_all(
-        repo, private=private, configuration=configuration, push=push, log=typer.echo
+        repo, private=private, configuration=configuration, push=push, log=typer.echo, org=org
     )
     typer.echo(f"\nhttps://github.com/{repo}\ncd {dest}")
     if failed:

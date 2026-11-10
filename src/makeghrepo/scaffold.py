@@ -53,18 +53,37 @@ REQUIRED_TOOLS = {lang.id: lang.checks[0][0] for lang in LANGS.values() if lang.
 SETUP_LEN = {lang.id: lang.setup_len for lang in LANGS.values() if lang.setup_len}
 
 
-# Local checks run third-party code; keep it away from gh's token, the keyring and the ssh agent.
+# Remove known inherited credential channels before running third-party checks.
+# This is not OS isolation: package code still has the current user's file and
+# process access. Keep authenticated gh operations outside this environment.
 _SCRUBBED_PREFIXES = ("GH_", "GITHUB_")
-_SCRUBBED_NAMES = {"DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS"}
+_SCRUBBED_NAMES = {
+    "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS",
+    "UV_GITHUB_TOKEN", "UV_ENV_FILE", "UV_PROJECT", "UV_NO_PROJECT",
+    "UV_WORKING_DIR", "UV_PROJECT_ENVIRONMENT", "UV_ISOLATED",
+}  # fmt: skip
 
 
 def check_env() -> dict[str, str]:
-    """The environment local checks run in: the user's, minus credential channels."""
-    return {
+    """Filter check credentials and inherited uv project-selection overrides.
+
+    A forwarded UV_ENV_FILE can reload stripped credentials in a later uv run.
+    uv's project/working-directory/environment overrides can instead redirect
+    lock or sync to unrelated files, including an existing Python environment.
+    UV_NO_PROJECT bypasses project discovery for uv run and can select an
+    unrelated active VIRTUAL_ENV even after sync created the daughter's .venv.
+    UV_ISOLATED similarly bypasses the synced project environment for uv run.
+    Drop those controls and explicitly disable dotenv loading, without changing
+    the parent's environment used by gh. Normal uv workspace/config discovery
+    and unrelated tool settings remain in effect; this is not a sandbox.
+    """
+    env = {
         key: value
         for key, value in os.environ.items()
         if not key.startswith(_SCRUBBED_PREFIXES) and key not in _SCRUBBED_NAMES
     }
+    env["UV_NO_ENV_FILE"] = "1"
+    return env
 
 
 def _probe_ok(probe: tuple[str, ...], env: dict[str, str]) -> bool:

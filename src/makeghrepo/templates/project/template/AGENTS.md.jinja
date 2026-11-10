@@ -2,7 +2,11 @@
 
 - Agents must work on a branch and open a PR (`gh pr create --fill`); never push directly to `main` or use the owner's bypass, even when authenticated as the owner.
 [% if not private %]
+[% if github_org %]
+- The `ci` check must pass for every change. This organization repository has no direct-push exception for anyone.
+[% else %]
 - The `ci` check must pass for agent-authored work. Only the human owner's own work may use the direct-push exception.
+[% endif %]
 [% else %]
 - GitHub Actions is disabled for this private repo; run the checks below locally before opening a PR.
 [% endif %]

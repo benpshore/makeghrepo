@@ -31,6 +31,7 @@ def calls(monkeypatch):
     recorded.fail_on = ()
 
     recorded.private = False
+    recorded.owner = {"type": "User", "login": "me", "id": 123}
     state = {"settings": {}, "rulesets": {}, "labels": {}, "project": False}
     recorded.state = state
 
@@ -43,6 +44,11 @@ def calls(monkeypatch):
             return "X-OAuth-Scopes: repo, workflow, project"
         if args == ("api", "-X", "GET", "user"):
             return '{"login": "me", "id": 123}'
+        if args[:3] == ("api", "-X", "GET") and args[3].startswith("users/"):
+            return next(
+                (v for k, v in recorded.responses.items() if k in joined),
+                json.dumps(recorded.owner),
+            )
         if args[:2] == ("project", "list"):
             return next(
                 (v for k, v in recorded.responses.items() if k in joined),
@@ -58,11 +64,11 @@ def calls(monkeypatch):
             return json.dumps(
                 {
                     "data": {
-                        "user": {
+                        "organization" if recorded.owner["type"] == "Organization" else "user": {
                             "projectV2": {
                                 "title": "r",
                                 "repositories": {
-                                    "nodes": [{"nameWithOwner": "me/r"}]
+                                    "nodes": [{"nameWithOwner": recorded.owner["login"] + "/r"}]
                                     if state["project"]
                                     else [],
                                     "pageInfo": {"hasNextPage": False, "endCursor": None},
@@ -76,18 +82,24 @@ def calls(monkeypatch):
             return next(
                 (v for k, v in recorded.responses.items() if k in joined),
                 json.dumps(
-                    {"data": {"user": {"projectsV2": {"nodes": [{"number": 1, "title": "r"}]}}}}
+                    {
+                        "data": {
+                            "organization"
+                            if recorded.owner["type"] == "Organization"
+                            else "user": {"projectsV2": {"nodes": [{"number": 1, "title": "r"}]}}
+                        }
+                    }
                 ),
             )
         if args[:2] == ("api", "-X"):
             method, path = args[2:4]
-            if path == "repos/me/r":
+            if path == "repos/" + recorded.owner["login"] + "/r":
                 if method == "PATCH":
                     state["settings"] = deepcopy(body)
                 return json.dumps(
                     {
                         "private": recorded.private,
-                        "owner": {"type": "User", "login": "me", "id": 123},
+                        "owner": recorded.owner,
                         "permissions": {"admin": True},
                         "default_branch": "develop",
                         **state["settings"],
@@ -110,7 +122,7 @@ def calls(monkeypatch):
                     name = path.rsplit("/", 1)[1]
                     return json.dumps({"name": name, "color": state["labels"][name]})
                 if path.endswith("vulnerability-alerts"):
-                    return ""
+                    return "HTTP/2.0 204 No Content\r\n\r\n"
                 if path.endswith("automated-security-fixes"):
                     return json.dumps({**state.get(path, {}), "paused": False})
                 return json.dumps(state[path])

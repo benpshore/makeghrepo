@@ -1,0 +1,105 @@
+{
+  "lock_sha256": "15e10645a6976938d8d6e09e303119d053c7d3d8c45d1c0eda985bb71834975b",
+  "manifest": {
+    "build-system": {
+      "build-backend": "hatchling.build",
+      "requires": [
+        "hatchling>=1.32,<2",
+        "uv-dynamic-versioning>=0.14,<1"
+      ]
+    },
+    "dependency-groups": {
+      "dev": [
+        "pytest>=8",
+        "ruff>=0.14"
+      ]
+    },
+    "project": {
+      "authors": [
+        {
+          "name": "<author>"
+        }
+      ],
+      "dependencies": [],
+      "description": "<description>",
+      "dynamic": [
+        "version"
+      ],
+      "name": "makeghrepo-seed",
+      "readme": "README.md",
+      "requires-python": ">=3.14"
+    },
+    "tool": {
+      "hatch": {
+        "build": {
+          "targets": {
+            "wheel": {
+              "packages": [
+                "src/makeghrepo_seed"
+              ]
+            }
+          }
+        },
+        "version": {
+          "source": "uv-dynamic-versioning"
+        }
+      },
+      "pytest": {
+        "ini_options": {
+          "addopts": [
+            "-ra",
+            "--strict-markers"
+          ],
+          "testpaths": [
+            "tests"
+          ]
+        }
+      },
+      "ruff": {
+        "line-length": 100,
+        "lint": {
+          "per-file-ignores": {
+            "tests/**": [
+              "S101"
+            ]
+          },
+          "select": [
+            "E",
+            "F",
+            "W",
+            "I",
+            "B",
+            "UP",
+            "SIM",
+            "RUF",
+            "S"
+          ]
+        }
+      },
+      "uv-dynamic-versioning": {
+        "fallback-version": "0.0.0"
+      }
+    }
+  },
+  "provenance": {
+    "cases": [
+      {
+        "lock_sha256": "39f9b99e69885522766b14206c93dc6adebd6ad2d448a6180f1071d6094d3182",
+        "name": "lunar-panda"
+      },
+      {
+        "lock_sha256": "fb8557453a7ea86dfdf361228344ce64355dc6989aeb20191cbae14c802e7133",
+        "name": "cedar-otter"
+      }
+    ],
+    "index": "https://pypi.org/simple",
+    "manifest_sha256": "77f2071e094381905794b85b3619fb38051aaaba59198cc88b85aa2f440731eb",
+    "python": "3.14.8 (main, Oct  3 2026, 01:04:31) [Clang 22.1.3 ]",
+    "run_id": "37297386456",
+    "seed_sha256": "0e48435af9b2e14febb4c966e1eab4a02c5c584345b48d1c554d31ab74dfc791",
+    "source_commit": "7331ea49ec673fefc635afa676fb8ecf328e6fdd",
+    "template_sha256": "c9c1e895e8b5c99fd262a8d1d384362d16fc58627df9e322f47cbab5b69a4b6d",
+    "uv": "uv 0.12.23 (x86_64-unknown-linux-gnu)"
+  },
+  "schema": 1
+}

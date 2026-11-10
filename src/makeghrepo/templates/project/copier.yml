@@ -25,6 +25,9 @@ description:
 github_owner:
   type: str
   default: ""
+github_org:
+  type: bool
+  default: false
 author_name:
   type: str
   default: ""

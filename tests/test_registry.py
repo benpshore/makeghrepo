@@ -142,8 +142,7 @@ def test_packaged_langs_dir_has_only_registry_files():
 
 
 def test_every_registry_flag_and_group_is_a_copier_flag():
-    """copier.yml still declares each derived boolean; a new token must add its line there
-    (the Rust port derives the same flags from the registry, so both must agree)."""
+    """copier.yml still declares each derived boolean; a new token must add its line there."""
     copier_yml = (files("makeghrepo") / "templates" / "project" / "copier.yml").read_text()
     declared = {
         line.split(":", 1)[0] for line in copier_yml.splitlines() if ": {type: bool" in line

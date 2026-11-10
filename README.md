@@ -4,17 +4,26 @@ One command creates a new, fully configured GitHub repo: public by default, and 
 
 It exists to save keystrokes, and so that AI coding agents can start new repos without broad shell or GitHub admin access.
 
+Experimental work lives in the separate [makeghrepo-beta package](beta/README.md).
+Its first increment adds transactional offline generation and a genuine
+`--dry-run`; installing it as a uv tool does not replace `makeghrepo`. See the
+[numbered platform roadmap](docs/roadmap.md) for the ten-minute working-project
+target, current evidence and remaining scope.
+
 ## Install
 
 ```sh
 uv tool install git+https://github.com/benpshore/makeghrepo
-gh auth refresh -s project,workflow   # once: project boards + pushing workflow files
 ```
+
+makeghrepo uses the token `gh` already has: a classic PAT with `repo`, `workflow`
+(to push workflow files) and `project` (for project boards) scopes. Add a missing
+scope to that PAT at <https://github.com/settings/tokens>.
 
 Update the existing unpinned Git installation with `uv tool upgrade makeghrepo`,
 then check `makeghrepo --version`. Python and Copier remain supported. See
-[installation and updates](docs/install.md) for pinned installs and the separate
-prebuilt Rust command on Apple Silicon and Linux.
+[installation and updates](docs/install.md) for pinned installs and the last
+prebuilt Rust binaries (v0.51.0).
 
 ## Use
 
@@ -25,34 +34,42 @@ makeghrepo quiet-otter python       # one language
 makeghrepo quiet-otter rust docker  # several
 makeghrepo swift                    # first word is a language, so the name is random
 makeghrepo quiet-otter --private
+makeghrepo quiet-otter python --owner my-org  # create it in an organization you belong to
 makeghrepo quiet-otter python --license MIT # explicitly opt in to an MIT license
 makeghrepo quiet-otter python --lib # library layout, no console script (like `uv init --lib`)
 makeghrepo --version
 makeghrepo -h                       # --help also works
-makeghrepo quiet-otter python --dry-run
+makeghrepo quiet-otter python -n    # --dry-run: print the plan, change nothing
 makeghrepo quiet-otter python --render ./preview
 ```
 
 Languages: `python` `rust` `swift` `js` `css` `c` `cpp` `objc` `objcpp` `api` `postgres` `sql` `docker` `shell` `go` `ts` `ruby` `sqlite`. Aliases like `c++`, `objc++`, `rest`, `pg`, `golang`, `typescript` and `rb` also work.
 
+The first positional word is a repository name unless it is reserved by the
+installed language registry. Every later positional must be reserved; an unknown
+word is an error. Flags retain their explicit meanings, including
+`makeghrepo python --lib sqlite api`. Names keep their existing normalization
+(`My Repo` becomes `my-repo`); normalization never selects an action. Piped stdin
+is not a source of commands. Python dispatches the registry's declared actions
+through fixed `match`/`case` branches, then renders with Copier/Jinja.
+
 `--render DIR` previews the packaged template offline, without authentication,
 GitHub requests, local checks, or creating a git repository or resume marker.
 It preserves Copier in the Python installation; Copier may inspect local Git
 metadata when Git is available. The destination must be absent or empty.
-Python and Rust use the same preview defaults: `quiet-otter` when no name is
+Previews use fixed defaults: `quiet-otter` when no name is
 given, owner `someone`, author `Test User`, description `a test project`, and
 year `2026`. For repeatable previews, `--owner`, `--author`, `--description`, and
 `--year` override those values alongside `--render`. `--private` and `--lib`
 work as usual. Preview folders have no resume marker and cannot be published
 by rerunning the bootstrap command against them.
 
-`--dry-run` is separate from `--render`: it prints the planned bootstrap and
-returns without creating or changing files, running commands, or making network
-requests. It reports GitHub identity, repository availability and remote state,
-local resume metadata, and local tool availability as unverified. It cannot be
-combined with `--render`; rendering writes preview files and is not a dry run.
+`--dry-run` (`-n`) is separate from `--render`: it checks the name and languages,
+prints the planned bootstrap and returns without writing files, running commands
+or making network requests. GitHub identity, name availability, remote state and
+resume metadata are reported as unverified. It cannot be combined with `--render`.
 
-If anything fails, fix it and run the same command again. GitHub creation and its repo-scoped settings are separate operations, so a settings failure can leave an empty or partially configured remote. makeghrepo keeps that repository for a retry; it does not delete it as rollback. The Python command re-applies and reads back all required setup before pushing `main`. Every setting is safe to re-apply; see the [publication gate](docs/bootstrap-publication.md) for the required steps and Rust differences.
+If anything fails, inspect the reported target and state, fix the cause, and run the same command again. GitHub creation and its repo-scoped settings are separate operations, so a settings failure can leave an empty or partially configured remote. makeghrepo keeps that repository for a retry; it does not delete it as rollback. The Python command re-applies and reads back all required setup before pushing a fixed `main` snapshot. Lost responses can leave uncertain effects, especially Project creation; see the [publication gate](docs/bootstrap-publication.md) for recovery limits and live-validation gaps. This gate remains an incomplete draft: fresh public-rule acceptance and the initial check/stage concurrency boundary are not verified end to end.
 
 makeghrepo only resumes folders it created itself. It records that, along with the visibility, languages and license you chose, in `.git/makeghrepo.json`, which is never committed. It refuses any other git repo at that path, so an unrelated local project can't be published by accident. A re-run keeps the original visibility, languages and license. `--private` on a repo created public is refused rather than ignored, and makeghrepo never changes an existing repo's visibility.
 
@@ -60,9 +77,21 @@ New projects have **no license by default**, whether public or private: no `LICE
 
 Projects go in `~/code/GitHub/<name>`. Set `MAKEGHREPO_DIR` to use another folder.
 
-No git identity or GitHub auth setup needed beyond `gh auth login`: makeghrepo falls back to a `users.noreply.github.com` commit identity if none is configured, and never touches your global git config.
+`--owner LOGIN` (or `MAKEGHREPO_OWNER`) creates the repository in an organization
+instead of your account. makeghrepo checks the login with the authenticated `gh`
+token first: your own login behaves as if the flag were absent, another user's
+account is refused, and an organization is accepted. Whether that organization lets
+you create a repo of the requested visibility is GitHub's decision at creation time;
+a refusal there stops the run before anything is pushed. The commit identity stays
+yours. Resuming an organization project needs the same `--owner`; the resume marker
+records it and a mismatch is refused. Organization repositories get the PR/CI gate
+**without** an owner bypass — see [owner pushes](docs/owner-pushes.md#organizations).
+
+No git identity or GitHub auth setup needed beyond the token described under Install: makeghrepo falls back to a `users.noreply.github.com` commit identity if none is configured, and never touches your global git config.
 
 Local checks run third-party code: npm packages, pinned `npx`/`uvx` tools, and the new project's own tests. They run with credential *channels* removed from the environment: no `GH_*`/`GITHUB_*` variables, no keyring session, no ssh agent. That is not isolation: a check can still read files under your home directory, including `gh`'s stored token (#113 tracks an OS-level sandbox). Until then, treat a generated project's checks like any code you run by hand. npm installs use `--ignore-scripts`. Checks that can't work on this machine are skipped and left to CI, which runs them on GitHub:
+
+Local checks also remove `UV_GITHUB_TOKEN` and disable uv dotenv loading. They ignore inherited `UV_ENV_FILE`, `UV_PROJECT`, `UV_NO_PROJECT`, `UV_WORKING_DIR`, and `UV_PROJECT_ENVIRONMENT`, and `UV_ISOLATED`. The latter must not make `uv run --no-sync` bypass the synced project environment. In particular, `UV_NO_PROJECT` must not make later `uv run` checks ignore the project and use an unrelated active `VIRTUAL_ENV`. Normal uv workspace and configuration discovery still apply. The parent environment used by `gh` is unchanged. This policy also covers required lockfile commands when other local checks are skipped; it does not sandbox dependency resolution, installation, or builds.
 
 - ObjC/ObjC++ need macOS.
 - Docker needs a daemon that answers `docker info`.
@@ -75,7 +104,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 ## What it does
 
 1. Renders one copier template (`src/makeghrepo/templates/project/`). The shared base is always included; each language you name adds its own files.
-2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). If a check fails, nothing is published.
+2. Runs each language's lint, test and build locally, skipping any tool that isn't installed (CI still runs it). A failed check stops this invocation before its GitHub creation/push steps. The recovery message identifies the target and earlier lookup result; it does not establish whether an earlier attempt published anything. See [effect accounting and recovery](docs/recovery.md).
 3. Runs `git init -b main`, `git add --all`, `git commit -m setup`.
 4. Python preflights payloads, the authenticated account ID, advertised classic-token scopes, and selected Project access before creating the remote.
 5. Creates the GitHub repo empty. Repo settings, Actions permissions, rulesets, labels, Dependabot, and Project links need that repository to exist, so creation and configuration cannot be atomic:
@@ -84,6 +113,7 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
    - public repos: secret scanning, push protection, private vulnerability reporting
    - public personal repos: `protect-main` blocks force-push, deletion, and merge commits for everyone. A separate `require-pr-and-ci` ruleset requires a squash PR (0 approvals) and up-to-date passing `ci` from GitHub Actions, with a bypass for the exact repository owner. Both rulesets are installed before the initial push. The owner's own pushes need neither a PR nor passing CI; agents still use PRs and CI. See [owner pushes and migration](docs/owner-pushes.md) for the credential boundary and existing-repo setup.
    - Python **pushes `main`** only after every required setup operation completes and its effective state passes independent readback
+   - public organization repos (`--owner`): the same two rulesets, but `require-pr-and-ci` has no bypass actor at all, so owners, members and agents all merge through a squash PR with passing `ci`. An organization can give agents their own credentials (a GitHub App or member account), which is the boundary the personal bypass cannot enforce.
    - labels `epic` and `task`, and a Project board linked to the repo
    - notifications set to **Ignore**, and no CODEOWNERS file, so nothing pings you
 
@@ -98,7 +128,9 @@ On a constrained host (no cooling, a minimal CI runner) set `MAKEGHREPO_SKIP_LOC
 - `codeql.yml` (public repos): actions, plus python, js, rust, go, ruby, c-cpp and swift as chosen.
 - `dependabot.yml`: GitHub Actions, plus uv, cargo, gomod, bundler, swift, npm, docker and docker-compose as chosen; weekly and grouped, with a 7-day cooldown.
 - `release.yml`: push a `v*` tag and it publishes a GitHub Release. For Python the version *is* the tag (hatchling + uv-dynamic-versioning, nothing to bump by hand): it checks the tag against the computed version, tests, runs `uv audit` and `uv build`, and attaches `dist/*`. For Rust it checks the tag against `Cargo.toml`, tests, builds a release binary and attaches it with a `SHA256SUMS` file. For Go it tests and attaches static linux amd64 and arm64 binaries with `SHA256SUMS`. For C/C++ (without ObjC) it builds Release, runs ctest and attaches the linux x86_64 binaries with `SHA256SUMS`. For js/ts/css it attaches the `npm pack` tarball.
-- `auto-release.yml` (public Python repos): every merge to `main` waits for that commit's `ci` check, then tags the next minor version and publishes the release. The same design makeghrepo itself uses.
+- `auto-release.yml` (public Python repos): every merge to `main` waits for that commit's `ci` check, then tags the next minor version and publishes the release. Generated projects retain their own release workflow; makeghrepo's repository pipeline is described below.
+
+makeghrepo itself uses one shared automatic/manual release build graph. The exact source commit selects one stable tag version (a retry reuses its existing tag). A read-only build runner verifies the Python wheel/sdist metadata against the selected version. A fresh checkout-free publisher has write authority for its whole job, executes only reviewed workflow code, and independently verifies the downloaded inventories before any publication request. Uploads first form a draft release; a remote digest/size check verifies the complete two-asset set (wheel and sdist) before publication. A failed build or upload leaves no newly public partial release. Recover a failed draft by re-running auto-release on its source or Release on its existing stable tag. Drafts are resolved through `gh release view` and verified using their validated numeric REST ID. Both authorized callers hold the same publication queue while reading every release-list page, comparing published stable versions numerically, and explicitly setting `make_latest=true` only when the candidate is at least as new as their maximum; otherwise they send `false`. Malformed or ambiguous evidence leaves the release as a draft. This ordering guarantee applies to those serialized callers: GitHub documents no conditional release PATCH, so an external publisher outside the queue can race the read/update and must be coordinated separately. Creation dates and the legacy latest policy do not determine this decision. Existing public releases are verified and never overwritten; older incomplete releases require explicit review. No source branch/version-bump commit is pushed.
 
 Main-push CI runs independently for each run; only superseded PR runs are canceled. Auto-releases use GitHub's native `queue: max` to serialize releases without replacing pending runs. The queue holds at most 100 pending runs; overflow runs are canceled. Queue order follows arrival at the concurrency group, not necessarily commit order. Failed CI still blocks that commit's release. These are platform limits on the every-merge release policy; see [GitHub's concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 
@@ -121,17 +153,13 @@ Main-push CI runs independently for each run; only superseded PR runs are cancel
 | docker | `Dockerfile` for your language (non-root, `/data` volume), `compose.yaml` (app service, `appdata` volume), `.dockerignore` | hadolint, `docker build` (CI) |
 | shell | `scripts/hello.sh` | shellcheck |
 
-## Rust build
+## Rust implementation
 
-`rust/` provides an alternative implementation using the same registry and
-templates. Every golden snapshot must match Python byte for byte. Releases attach
-optimized binaries for Linux x86_64, Linux ARM64, and Apple Silicon, each with a
-checksum. Follow [the prebuilt installation steps](docs/install.md#prebuilt-rust-alternative)
-to install it as `makeghrepo-rs`, keeping the uv-managed Python command intact.
+The Rust implementation is parked on the `rust` branch (see #150).
 
-Both commands support `NAME LANG... --render DIR` for offline previews. Rust also
-supports `--snapshot [--combo NAME]` for golden comparisons. CI builds and tests
-Rust; using the prebuilt distribution requires no local compiler.
+Releases up to v0.51.0 still carry its prebuilt binaries; later releases are
+Python-only. Generating Rust *projects* (`makeghrepo NAME rust`) is unchanged. See
+[the native binaries section](docs/install.md#native-rust-binaries-parked).
 
 The Python-only `--dry-run`, explicit `refs/heads/main` ruleset scope, full
 required-setup completion gate, effective-setting readbacks, and missing-origin
@@ -156,7 +184,7 @@ makeghrepo's own CI does all the real verification on GitHub runners; nothing ne
 - **`test`:** ruff, the full pytest suite, and the golden snapshots.
 - **`templates`:** renders every combo in `tests/golden_snapshots.py` and runs the generated project's own local checks on real toolchains. ObjC combos run on macOS.
 - **`actionlint`:** lints makeghrepo's workflows and every generated one.
-- **`distribution`:** clean wheel installs, Git tool upgrades, installed Python/Rust parity, and real local Git bootstrap/retry checks on all three supported native architectures. GitHub responses use a controlled fixture; these checks do not change live settings.
+- **`distribution`:** clean wheel installs, Git tool upgrades, wheel/Git-install render parity, and real local Git bootstrap/retry checks on Linux x86_64, Linux ARM64 and Apple Silicon. GitHub responses use a controlled fixture; these checks do not change live settings.
 - **`ci`:** rolls all of the above up into the one required check.
 
 ### Golden snapshots

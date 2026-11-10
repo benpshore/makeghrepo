@@ -27,6 +27,58 @@ PRIVATE_WRITES = [
 ]
 
 
+@pytest.mark.parametrize("private", [False, True])
+def test_organization_plan_and_readback_keep_owner_identity_without_bypass(calls, private):
+    calls.owner = {"type": "Organization", "login": "acme", "id": 77}
+    calls.private = private
+    plan = github.prepare_configuration("acme", private, org=True)
+    assert plan.org and plan.owner_id == 77
+    assert all(body["bypass_actors"] == [] for body in plan.rulesets)
+    pushed = []
+    assert (
+        github.configure_all(
+            "acme/r",
+            private=private,
+            org=True,
+            configuration=plan,
+            push=lambda: pushed.append(True),
+            log=lambda _: None,
+        )
+        == []
+    )
+    assert pushed == [True]
+    queries = [" ".join(args) for args, _ in calls if args[:2] == ("api", "graphql")]
+    assert queries and all("organization(login: $owner)" in query for query in queries)
+
+
+def test_owner_type_changed_after_preflight_blocks_every_write(calls):
+    calls.owner = {"type": "Organization", "login": "acme", "id": 77}
+    plan = github.prepare_configuration("acme", False, org=True)
+    calls.owner = {"type": "User", "login": "acme", "id": 77}
+    calls.clear()
+    pushed = []
+    failed = github.configure_all(
+        "acme/r",
+        private=False,
+        org=True,
+        configuration=plan,
+        push=lambda: pushed.append(True),
+        log=lambda _: None,
+    )
+    assert failed == ["repository access", "push main"]
+    assert not pushed
+    assert all(args[:3] == ("api", "-X", "GET") for args, _ in calls)
+
+
+def test_organization_plan_cannot_be_reused_as_personal(calls):
+    calls.owner = {"type": "Organization", "login": "acme", "id": 77}
+    plan = github.prepare_configuration("acme", False, org=True)
+    calls.clear()
+    with pytest.raises(github.GhError, match="prepared GitHub settings do not match"):
+        github.configure_all("acme/r", private=False, configuration=plan)
+    assert not calls
+
+
 @pytest.mark.parametrize(
     "private,operation",
     [
@@ -430,3 +482,23 @@ def test_project_link_readback_searches_later_repository_pages(calls, monkeypatc
     monkeypatch.setattr(github, "gh", pages)
     github.verify_project("me/r", 1)
     assert cursors == [None, "cursor=next"]
+
+
+@pytest.mark.parametrize(
+    "response", ["{}", "", "HTTP/2.0 200 OK\r\n\r\n", "HTTP/2.0 204 No Content\r\n\r\n{}"]
+)
+def test_alerts_readback_requires_actual_204_without_body(calls, monkeypatch, response):
+    original = github.gh
+
+    def unexpected(*args, body=None):
+        if args[:4] == ("api", "-X", "GET", "repos/me/r/vulnerability-alerts"):
+            return response
+        return original(*args, body=body)
+
+    monkeypatch.setattr(github, "gh", unexpected)
+    pushed = []
+    failed = github.configure_all(
+        "me/r", private=False, push=lambda: pushed.append(True), log=lambda _: None
+    )
+    assert "dependabot alerts + security fixes readback" in failed
+    assert "push main" in failed and not pushed

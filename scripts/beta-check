@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Installed stable/beta acceptance in disposable uv tool homes, without GitHub writes."""
+
+from __future__ import annotations
+
+import argparse
+import configparser
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def run(*command, env):
+    result = subprocess.run(
+        [str(part) for part in command],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    require(result.returncode == 0, result.stdout + result.stderr)
+    return result.stdout.strip()
+
+
+def tree(path):
+    return {
+        str(p.relative_to(path)): (
+            hashlib.sha256(p.read_bytes()).hexdigest(),
+            p.stat().st_mode & 0o111,
+        )
+        for p in sorted(path.rglob("*"))
+        if p.is_file() and "__pycache__" not in p.parts and p.suffix not in {".pyc", ".pyo"}
+    }
+
+
+def wheel_payload(path):
+    with zipfile.ZipFile(path) as wheel:
+        return {
+            name: hashlib.sha256(wheel.read(name)).hexdigest()
+            for name in wheel.namelist()
+            if name.startswith(("makeghrepo/", "makeghrepo_beta/"))
+        }
+
+
+def verify_beta_metadata(path):
+    with zipfile.ZipFile(path) as wheel:
+        metadata = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
+        require(len(metadata) == 1, "beta wheel must contain exactly one distribution")
+        text = wheel.read(metadata[0]).decode()
+        require("Name: makeghrepo-beta\n" in text, "wrong beta distribution name")
+        require("Requires-Dist: makeghrepo" not in text, "beta must not depend on stable")
+        entrypoints = [n for n in wheel.namelist() if n.endswith(".dist-info/entry_points.txt")]
+        require(len(entrypoints) == 1, "missing beta entrypoint metadata")
+        config = configparser.ConfigParser()
+        config.read_string(wheel.read(entrypoints[0]).decode())
+        require(
+            dict(config["console_scripts"]) == {"makeghrepo-beta": "makeghrepo_beta:main"},
+            "beta must export only its own executable",
+        )
+        require("makeghrepo/registry.py" in wheel.namelist(), "shared registry was not bundled")
+        require(
+            "makeghrepo/templates/project/copier.yml" in wheel.namelist(),
+            "shared templates were not bundled",
+        )
+        require(not any("__pycache__" in n for n in wheel.namelist()), "bytecode leaked into wheel")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--evidence", type=Path, required=True)
+    args = parser.parse_args()
+    evidence = {"schema": 1, "operation": "beta-distribution-acceptance", "stages": []}
+    start = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix="makeghrepo-beta-check-") as temp:
+        root = Path(temp)
+        env = {
+            **{
+                key: value
+                for key, value in os.environ.items()
+                if key not in {"PYTHONPATH", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"}
+            },
+            "UV_TOOL_DIR": str(root / "tools"),
+            "UV_TOOL_BIN_DIR": str(root / "bin"),
+            "UV_PYTHON": sys.executable,
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "MAKEGHREPO_DIR": str(root / "never-created-stable-daughters"),
+        }
+        run("uv", "build", ROOT, "--wheel", "--out-dir", root / "stable", env=env)
+        (stable_wheel,) = (root / "stable").glob("*.whl")
+        run("uv", "build", ROOT / "beta", "--wheel", "--out-dir", root / "beta", env=env)
+        run("uv", "build", ROOT / "beta", "--sdist", "--out-dir", root / "beta", env=env)
+        (beta_wheel,) = (root / "beta").glob("*.whl")
+        (beta_sdist,) = (root / "beta").glob("*.tar.gz")
+        verify_beta_metadata(beta_wheel)
+        # uv extracts the archive away from the checkout: the custom hook must
+        # find bundled _shared sources, not accidentally use this repository.
+        run("uv", "build", beta_sdist, "--wheel", "--out-dir", root / "rebuilt", env=env)
+        (rebuilt,) = (root / "rebuilt").glob("*.whl")
+        verify_beta_metadata(rebuilt)
+        require(wheel_payload(beta_wheel) == wheel_payload(rebuilt), "sdist lost source files")
+        run("uv", "tool", "install", "--python", sys.executable, stable_wheel, env=env)
+        stable = root / "bin" / "makeghrepo"
+        beta = root / "bin" / "makeghrepo-beta"
+        stable_version = run(stable, "--version", env=env)
+        stable_target = stable.resolve()
+        stable_state = tree(root / "tools" / "makeghrepo")
+        run("uv", "tool", "install", "--python", sys.executable, beta_wheel, env=env)
+        require(stable.resolve() == stable_target, "beta replaced stable executable")
+        require(run(stable, "--version", env=env) == stable_version, "stable version changed")
+        require(tree(root / "tools" / "makeghrepo") == stable_state, "stable files changed")
+        require("--dry-run" in run(beta, "--help", env=env), "dry-run missing from installed help")
+        evidence["versions"] = {
+            "stable": stable_version,
+            "beta": run(beta, "--version", env=env),
+        }
+        evidence["artifacts"] = {
+            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in (stable_wheel, beta_wheel, beta_sdist)
+        }
+        cases = (
+            (),
+            ("python", "--lib", "-p"),
+            ("rust", "docker"),
+            ("js", "ts", "css", "api", "--license", "MIT"),
+        )
+        renders = []
+        for index, case in enumerate(cases):
+            dest = root / "rendered" / str(index)
+            command = [beta, "sample", *case, "--render", dest]
+            plan = json.loads(run(*command, "--dry-run", "--json", env=env))
+            require(not dest.exists(), "dry-run created its destination")
+            run(*command, env=env)
+            reference = root / "reference" / str(index)
+            # Stable's private alias has not changed in this beta-only increment.
+            stable_case = ["--private" if part == "-p" else part for part in case]
+            run(stable, "sample", *stable_case, "--render", reference, env=env)
+            require(tree(dest) == tree(reference), "beta/stable render drift")
+            renders.append({"inputs": plan["inputs"], "files": len(tree(dest))})
+        evidence["renders"] = renders
+        # Reinstall from the rebuilt artifact and exercise the named tool upgrade
+        # path. Neither may alter the independent stable tool environment.
+        run("uv", "tool", "install", "--reinstall", rebuilt, env=env)
+        run("uv", "tool", "upgrade", "makeghrepo-beta", env=env)
+        run(beta, "--version", env=env)
+        require(tree(root / "tools" / "makeghrepo") == stable_state, "beta update changed stable")
+        run("uv", "tool", "uninstall", "makeghrepo-beta", env=env)
+        require(not beta.exists(), "beta executable survived uninstall")
+        require(stable.resolve() == stable_target, "uninstall changed stable entrypoint")
+        require(run(stable, "--version", env=env) == stable_version, "stable stopped working")
+        require(tree(root / "tools" / "makeghrepo") == stable_state, "uninstall changed stable")
+        require(not Path(env["MAKEGHREPO_DIR"]).exists(), "render entered bootstrap")
+        evidence["stages"] = [
+            "wheel and sdist metadata",
+            "sdist rebuild parity",
+            "isolated coexistence",
+            "installed dry-run and render parity",
+            "beta reinstall/upgrade",
+            "beta uninstall",
+        ]
+    evidence["seconds"] = round(time.monotonic() - start, 3)
+    args.evidence.parent.mkdir(parents=True, exist_ok=True)
+    args.evidence.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+    print(f"beta acceptance passed; evidence: {args.evidence}")
+
+
+if __name__ == "__main__":
+    main()

@@ -42,6 +42,7 @@ class ConfigurationPlan:
     settings: dict[str, Any]
     rulesets: tuple[dict[str, Any], ...]
     project: bool = True
+    org: bool = False
 
 
 def gh(*args: str, body: Any = None) -> str:
@@ -61,6 +62,14 @@ def api(method: str, path: str, body: Any = None) -> Any:
 
 def current_user() -> str:
     return gh("api", "user", "--jq", ".login").strip()
+
+
+def owner_type(login: str) -> str:
+    """``"User"`` or ``"Organization"`` for an existing login; GhError if there is none."""
+    kind = api("GET", f"users/{login}").get("type")
+    if kind not in ("User", "Organization"):
+        raise GhError(f"{login!r} is neither a GitHub user nor an organization")
+    return str(kind)
 
 
 def repo_exists(full_name: str) -> bool:
@@ -103,12 +112,23 @@ def ruleset_body() -> dict[str, Any]:
     }
 
 
-def review_ruleset_body(owner_id: int) -> dict[str, Any]:
-    """Only the personal repository owner may push without a PR or passing CI."""
+def review_ruleset_body(owner_id: int | None) -> dict[str, Any]:
+    """Squash PR plus passing ``ci`` for everyone except a personal repository's owner.
+
+    ``owner_id`` is the verified numeric ID of a personal owner, or ``None`` for an
+    organization repository, where nobody bypasses the gate. The personal exception
+    exists because one account cannot separate the human from their agents;
+    an organization can (member accounts, a GitHub App), so it needs no exception.
+    """
+    bypass: list[dict[str, Any]] = (
+        []
+        if owner_id is None
+        else [{"actor_type": "User", "actor_id": owner_id, "bypass_mode": "always"}]
+    )
     return {
         **ruleset_body(),
         "name": REVIEW_RULESET_NAME,
-        "bypass_actors": [{"actor_type": "User", "actor_id": owner_id, "bypass_mode": "always"}],
+        "bypass_actors": bypass,
         "rules": [
             {
                 "type": "pull_request",
@@ -145,7 +165,7 @@ def _with_main_scope(body: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _ruleset_bodies(owner_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+def _ruleset_bodies(owner_id: int | None) -> tuple[dict[str, Any], dict[str, Any]]:
     history, review = ruleset_body(), review_ruleset_body(owner_id)
     return _with_main_scope(history), _with_main_scope(review)
 
@@ -163,19 +183,18 @@ def _scope_matches(saved: Any, desired: dict[str, Any]) -> bool:
 
 
 def prepare_configuration(
-    owner_login: str, private: bool, *, project: bool = True
+    owner_login: str, private: bool, *, project: bool = True, org: bool = False
 ) -> ConfigurationPlan:
     """Prepare and validate payloads before creating the GitHub repository.
 
-    Public rulesets need the personal account ID as a bypass actor. Fetch and
-    validate it now so identity or serialization errors cannot strand a newly
-    created, unprotected repository. The later repo-scoped call verifies that
-    the created repo has this same owner before installing those rules.
+    Resolve the selected owner before preparing policy. Organization rulesets
+    never receive a personal bypass. Repo-specific administrative access still
+    needs a readback after creation; public owner metadata does not prove it.
     """
-    if type(private) is not bool or type(project) is not bool:
-        raise GhError("visibility and project selection must be booleans")
+    if type(private) is not bool or type(project) is not bool or type(org) is not bool:
+        raise GhError("visibility, project selection and owner kind must be booleans")
     try:
-        user = api("GET", "user")
+        user = api("GET", f"users/{owner_login}" if org else "user")
     except (GhError, ValueError) as exc:
         raise GhError(f"could not verify the repository owner before creation: {exc}") from exc
     candidate = user.get("id") if isinstance(user, dict) else None
@@ -186,12 +205,14 @@ def prepare_configuration(
         or not 0 < candidate < 2**64
         or not isinstance(login, str)
         or login.casefold() != owner_login.casefold()
+        or (org and user.get("type") != "Organization")
+        or (not org and user.get("type", "User") != "User")
     ):
-        raise GhError("owner push bypass requires a verified matching personal account ID")
+        raise GhError("configuration requires a verified matching owner ID and account type")
     owner_id = candidate
     rulesets: tuple[dict[str, Any], ...] = ()
     if not private:
-        rulesets = _ruleset_bodies(owner_id)
+        rulesets = _ruleset_bodies(None if org else owner_id)
 
     # Inspect advertised classic OAuth scopes without reading or changing tokens.
     # Fine-grained/App tokens do not advertise this header: their repo-specific
@@ -230,20 +251,19 @@ def prepare_configuration(
         json.dumps({"settings": settings, "rulesets": rulesets, "labels": LABELS}, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise GhError("could not prepare GitHub settings before repository creation") from exc
-    return ConfigurationPlan(owner_login, owner_id, private, settings, rulesets, project)
+    return ConfigurationPlan(owner_login, owner_id, private, settings, rulesets, project, org)
 
 
 def configure_ruleset(
     repo: str, configuration: ConfigurationPlan | None = None
 ) -> tuple[dict[str, Any], ...]:
-    # The repository exists now; confirm its owner is a personal account before
-    # installing a bypass. The CLI also compares it with the precreation plan.
+    # Confirm the actual owner and any precreation identity before policy writes.
     owner = api("GET", f"repos/{repo}")["owner"]
     owner_id = owner.get("id")
     repo_owner = repo.split("/", 1)[0]
     owner_login = owner.get("login")
     if (
-        owner.get("type") != "User"
+        owner.get("type") not in ("User", "Organization")
         or not isinstance(owner_id, int)
         or isinstance(owner_id, bool)
         or not 0 < owner_id < 2**64
@@ -255,15 +275,18 @@ def configure_ruleset(
                 owner_id != configuration.owner_id
                 or owner.get("login", "").casefold() != configuration.owner.casefold()
                 or configuration.private
+                or (owner.get("type") == "Organization") != configuration.org
             )
         )
     ):
-        raise GhError("owner push bypass requires a personal repository with a verified owner ID")
+        raise GhError(
+            "rulesets require a repository with a verified owner ID and matching account type"
+        )
 
     bodies = (
         deepcopy(configuration.rulesets)
         if configuration is not None
-        else list(_ruleset_bodies(owner_id))
+        else list(_ruleset_bodies(None if owner.get("type") == "Organization" else owner_id))
     )
     existing = []
     page = 1
@@ -399,7 +422,6 @@ def verify_rulesets(repo: str, bodies: tuple[dict[str, Any], ...]) -> None:
                 {
                     "dismiss_stale_reviews_on_push": True,
                     "required_review_thread_resolution": True,
-                    "allowed_merge_methods": ["squash"],
                 },
                 "required PR gate",
             )
@@ -416,7 +438,11 @@ def verify_repository(repo: str, configuration: ConfigurationPlan, *, settings: 
         saved,
         {
             "private": configuration.private,
-            "owner": {"login": configuration.owner, "id": configuration.owner_id, "type": "User"},
+            "owner": {
+                "login": configuration.owner,
+                "id": configuration.owner_id,
+                "type": "Organization" if configuration.org else "User",
+            },
             "permissions": {"admin": True},
         },
         "repository identity, visibility and admin access",
@@ -432,7 +458,7 @@ def verify_repository(repo: str, configuration: ConfigurationPlan, *, settings: 
 
 FIND_PROJECT_QUERY = """
 query($owner: String!, $title: String!) {
-  user(login: $owner) {
+  %s(login: $owner) {
     projectsV2(first: 100, query: $title) {
       nodes { number title }
     }
@@ -441,16 +467,18 @@ query($owner: String!, $title: String!) {
 """
 
 
-def _find_project_by_title(owner: str, title: str) -> int:
+def _find_project_by_title(owner: str, title: str, *, org: bool = False) -> int:
     """GraphQL text search: cheap, but a substring match, and capped at one page.
 
     If the page comes back full (100) with no exact title match, an existing
     project could be sitting on a second page — fall back to the old full
     scan rather than risk creating a duplicate board.
     """
-    listing = gh("api", "graphql", "-f", f"query={FIND_PROJECT_QUERY}", "-f", f"owner={owner}",
+    kind = "organization" if org else "user"  # GraphQL has no owner-agnostic lookup
+    query = FIND_PROJECT_QUERY % kind
+    listing = gh("api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}",
                  "-f", f"title={title}")  # fmt: skip
-    nodes = json.loads(listing)["data"]["user"]["projectsV2"]["nodes"]
+    nodes = json.loads(listing)["data"][kind]["projectsV2"]["nodes"]
     number = next((p["number"] for p in nodes if p["title"] == title), 0)
     if number or len(nodes) < 100:
         return number
@@ -464,10 +492,10 @@ def _find_project_by_title(owner: str, title: str) -> int:
     return number
 
 
-def configure_project(repo: str) -> int:
+def configure_project(repo: str, *, org: bool = False) -> int:
     """Link the repo to a same-named project, creating one if it doesn't exist."""
     owner, title = repo.split("/")
-    number = _find_project_by_title(owner, title)
+    number = _find_project_by_title(owner, title, org=org)
     if not number:
         created = gh("project", "create", "--owner", owner, "--title", title, "--format", "json")
         number = json.loads(created)["number"]
@@ -477,7 +505,7 @@ def configure_project(repo: str) -> int:
 
 PROJECT_LINK_QUERY = """
 query($owner: String!, $number: Int!, $cursor: String) {
-  user(login: $owner) {
+  %s(login: $owner) {
     projectV2(number: $number) {
       title
       repositories(first: 100, after: $cursor) {
@@ -490,8 +518,9 @@ query($owner: String!, $number: Int!, $cursor: String) {
 """
 
 
-def verify_project(repo: str, number: int) -> None:
+def verify_project(repo: str, number: int, *, org: bool = False) -> None:
     owner, title = repo.split("/")
+    kind = "organization" if org else "user"
     cursor = None
     seen = set()
     while True:
@@ -499,7 +528,7 @@ def verify_project(repo: str, number: int) -> None:
             "api",
             "graphql",
             "-f",
-            f"query={PROJECT_LINK_QUERY}",
+            f"query={PROJECT_LINK_QUERY % kind}",
             "-f",
             f"owner={owner}",
             "-F",
@@ -507,7 +536,7 @@ def verify_project(repo: str, number: int) -> None:
         ]
         if cursor is not None:
             args += ["-f", f"cursor={cursor}"]
-        board = json.loads(gh(*args))["data"]["user"]["projectV2"]
+        board = json.loads(gh(*args))["data"][kind]["projectV2"]
         _require(board, {"title": title}, "project title")
         repos = board["repositories"]
         if any(node["nameWithOwner"].casefold() == repo.casefold() for node in repos["nodes"]):
@@ -565,6 +594,7 @@ def configure_all(
     project: bool = True,
     push: Callable[[], object] | None = None,
     log: Callable[[str], None] = print,
+    org: bool = False,
 ) -> list[str]:
     """Apply every selected step, read back effective state, then publish main.
 
@@ -575,10 +605,13 @@ def configure_all(
     the sole advisory setting, as documented for the existing Free-plan policy.
     """
     if configuration is None:
-        configuration = prepare_configuration(repo.split("/", 1)[0], private, project=project)
+        configuration = prepare_configuration(
+            repo.split("/", 1)[0], private, project=project, org=org
+        )
     if (
         configuration.private != private
         or configuration.project != project
+        or configuration.org != org
         or configuration.owner.casefold() != repo.split("/", 1)[0].casefold()
     ):
         raise GhError("prepared GitHub settings do not match owner, visibility or selected options")
@@ -659,7 +692,11 @@ def configure_all(
 
     def verify_dependabot() -> None:
         # Alerts return 204 if enabled, and 404 (gh failure) if disabled.
-        api("GET", alerts)
+        response = gh("api", "-X", "GET", alerts, "--include").replace("\r\n", "\n")
+        headers, separator, body = response.partition("\n\n")
+        status = headers.split("\n", 1)[0]
+        if not separator or not re.fullmatch(r"HTTP/\S+ 204(?: [^\n]*)?", status) or body.strip():
+            raise GhError("vulnerability-alerts readback did not confirm HTTP 204 with no body")
         _require(api("GET", fixes), {"enabled": True, "paused": False}, "Dependabot fixes")
 
     def verify_labels() -> None:
@@ -711,9 +748,11 @@ def configure_all(
 
         def link_project() -> None:
             nonlocal project_number
-            project_number = configure_project(repo)
+            project_number = configure_project(repo, org=org)
 
-        fanout.append(("project board", link_project, lambda: verify_project(repo, project_number)))
+        fanout.append(
+            ("project board", link_project, lambda: verify_project(repo, project_number, org=org))
+        )
 
     with ThreadPoolExecutor(max_workers=min(4, len(fanout))) as pool:
         futures = [pool.submit(run, write) for _, write, _ in fanout]
