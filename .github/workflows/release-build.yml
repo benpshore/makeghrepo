@@ -27,9 +27,23 @@ jobs:
       VERSION: ${{ inputs.version }}
       SOURCE: ${{ inputs.sha }}
     steps:
+      # A reusable workflow inherits its caller's cache context. Never let an
+      # input select different code to execute in that context, even with a
+      # read-only repository token. Tag and retry callers keep their exact SHA.
+      - name: Validate the caller's release source
+        id: validate-source
+        shell: bash
+        env:
+          CALLER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE" =~ ^[a-f0-9]{40}$ || "$SOURCE" != "$CALLER_SHA" ]]; then
+            echo "::error::release source must equal the caller commit" >&2
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/uv

@@ -376,9 +376,10 @@ class ReleaseInventoryTests(unittest.TestCase):
         for name in ("python",):
             self.assertEqual(jobs[name]["permissions"], {"contents": "read"})
             self.assertNotIn("GH_TOKEN", jobs[name].get("env", {}))
-            checkout = jobs[name]["steps"][0]
+            guard, checkout = jobs[name]["steps"][:2]
+            self.assertEqual(guard["id"], "validate-source")
             self.assertFalse(checkout["with"]["persist-credentials"])
-            self.assertEqual(checkout["with"]["ref"], "${{ inputs.sha }}")
+            self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
         steps = jobs["publish"]["steps"]
         self.assertFalse(any("checkout@" in step.get("uses", "") for step in steps))
         self.assertNotIn("GH_TOKEN", jobs["publish"]["env"])
