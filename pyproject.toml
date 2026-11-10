@@ -54,4 +54,4 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers"]
-markers = ["slow: renders a project and runs uv lock/sync/lint/test inside it (needs network)"]
+markers = ["slow: native generated-project checks (toolchains may require network)"]

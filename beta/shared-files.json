@@ -24,6 +24,7 @@
     "langs/swift.toml",
     "langs/ts.toml",
     "names.py",
+    "project_state.py",
     "registry.py",
     "scaffold.py",
     "templates/project/_checks.jinja",

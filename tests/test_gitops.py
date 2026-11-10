@@ -110,7 +110,7 @@ def test_remote_main_distinguishes_empty_published_and_unreachable(tmp_path):
 
     (dest / "ready.txt").write_text("ready")
     gitops.commit_all(dest)
-    gitops.push_main(dest)
+    gitops.push_main(dest, gitops.bootstrap_head(dest))
     assert gitops.remote_has_main(dest) is True
 
     gitcli.git(dest, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
@@ -131,7 +131,7 @@ def test_missing_git_raises_a_clean_git_error(tmp_path, monkeypatch):
 
 def test_failed_git_reports_exit_status_and_stderr(tmp_path):
     with pytest.raises(gitops.GitError, match=r"exited with \d+: .+") as caught:
-        gitops.push_main(tmp_path)  # not a repo
+        gitops.remote_main(tmp_path)  # not a repo
     assert caught.value.returncode not in (None, 0)
     assert caught.value.stderr
 

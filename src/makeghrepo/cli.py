@@ -96,8 +96,17 @@ def _dry_run(
     typer.echo(f"License requested: {(project_license or ProjectLicense.NONE).value}")
     typer.echo(f"Python library layout: {'yes' if lib else 'no'}")
     typer.echo(
-        "Plan: look up the GitHub account, render the project (or resume it), run local "
-        "checks, commit, create the GitHub repository, apply settings, then push main."
+        "Plan: look up the GitHub account and remote state, then render the project or "
+        "load its recorded resume. For a fresh or uncommitted project, run dependency "
+        "setup, commit a clean main snapshot, then run local validation. An unpublished "
+        "committed resume validates its existing clean snapshot again. Preflight GitHub "
+        "setup, create the remote if needed, apply and read back every required setting, "
+        "then publish the selected snapshot. A settings-only resume does not commit or "
+        "republish later work."
+    )
+    typer.echo(
+        "If validation fails, the local commit is retained. Review and commit intended "
+        "fixes before retrying."
     )
     typer.echo(
         "Unverified: GitHub identity/authentication, the owner's existence and type, "
@@ -212,7 +221,7 @@ def main(
 
     # Help, version and offline rendering must work on a machine without git or
     # GitHub credentials, so these are imported only once a real run starts.
-    from makeghrepo import github, gitops
+    from makeghrepo import github, gitops, project_state
 
     base_dir = Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")).expanduser().resolve()
     try:
@@ -318,20 +327,43 @@ def main(
             "license": (project_license or ProjectLicense.NONE).value,
             "created_by": f"makeghrepo {_version()}",
         })  # fmt: skip
-
-    if not resume or not gitops.has_commits(dest):  # earlier check/commit failed
         try:
-            scaffold.smoke_test(dest, langs, typer.echo)
-            gitops.commit_all(dest, "setup")
+            with project_state.ProjectState(
+                dest / ".git" / project_state.FILENAME, repo, org
+            ) as state:
+                state.initialize()
+        except (OSError, project_state.ProjectStateError) as exc:
+            raise fail(
+                f"Could not establish Project recovery state: {exc}. "
+                "This invocation stopped before GitHub creation, configuration or push. "
+                f"Local project retained at {dest}."
+            ) from exc
+
+    publication_head = None
+    if not resume or not gitops.has_commits(dest):  # earlier check/commit failed
+
+        def select_snapshot() -> None:
+            nonlocal publication_head
+            publication_head = gitops.commit_all(dest, "setup")
+            gitops.require_bootstrap_head(dest, publication_head)
+
+        try:
+            # Setup must finish first so generated lockfiles enter the snapshot.
+            # Never stage again after checks: a late edit must not become tested
+            # merely because smoke_test returned successfully.
+            scaffold.smoke_test(dest, langs, typer.echo, before_validation=select_snapshot)
+            if publication_head is None:
+                raise RuntimeError("no selected bootstrap snapshot")
+            gitops.require_bootstrap_head(dest, publication_head)
         except RuntimeError as exc:  # includes gitops.GitError
             raise fail(
                 f"{exc}\nThis invocation stopped before its GitHub creation/push steps.\n"
                 f"Earlier lookup {'found a repository' if on_github else 'found no repository'} "
                 f"at https://github.com/{repo}; this is not a publication history check.\n"
-                f"Local project retained at {dest}. Fix it, then re-run the same command."
+                f"Local project retained at {dest}. Fix it, commit any edits on main, "
+                "then re-run the same command."
             ) from exc
 
-    creation_attempted = False
     try:
         if on_github:
             actual_private = github.is_private(repo)
@@ -344,35 +376,92 @@ def main(
             private = actual_private
         else:
             private = want_private
-            creation_attempted = True
-            github.create_repo(repo, dest, name, private)
     except github.GhError as exc:
-        effect = (
-            "Remote creation was attempted; remote creation may have completed."
-            if creation_attempted
-            else (
-                "Remote visibility lookup failed; "
-                "creation/push was not attempted by this invocation."
-            )
-        )
         raise fail(
-            f"{exc}\n{effect}\n"
+            f"{exc}\nRemote visibility lookup failed; "
+            "creation/push was not attempted by this invocation.\n"
             f"Inspect https://github.com/{repo} before any cleanup.\n"
             f"Local project is intact at {dest}; re-run to retry."
         ) from exc
 
-    # Bootstrap only: a configuration rerun must never publish subsequent local work.
+    # A settings-only retry must not inspect or publish later local work. An
+    # unpublished resume, however, must test the actual committed snapshot again.
+    # Check before creating/configuring anything and retain all partial state.
     try:
+        if on_github:
+            gitops.ensure_origin(dest, repo)
         pushed = on_github and gitops.remote_has_main(dest)
-    except gitops.GitError as exc:
+    except RuntimeError as exc:
         raise fail(
             f"{exc}\nCould not check remote main; refusing to push. "
             f"Inspect https://github.com/{repo}.\n"
             f"Local project is intact at {dest}; re-run to retry."
         ) from exc
-    push = None if pushed else lambda: gitops.push_main(dest)
-    failed = github.configure_all(repo, private=private, push=push, log=typer.echo, org=org)
+
+    if not pushed:
+        try:
+            if publication_head is None:
+                publication_head = gitops.bootstrap_head(dest)
+                scaffold.smoke_test(dest, langs, typer.echo)
+            gitops.require_bootstrap_head(dest, publication_head)
+        except RuntimeError as exc:
+            raise fail(
+                f"{exc}\nBootstrap snapshot validation failed; this invocation did not "
+                "attempt GitHub creation, configuration or push.\n"
+                f"Local project is intact at {dest}; fix it and re-run."
+            ) from exc
+
+    try:
+        configuration = github.prepare_configuration(owner, private, org=org)
+    except github.GhError as exc:
+        recovery = (
+            "This invocation did not attempt GitHub creation or settings changes."
+            if not on_github
+            else "This invocation did not attempt GitHub settings changes."
+        )
+        raise fail(
+            f"GitHub configuration preflight failed: {exc}\n{recovery} "
+            "Local project is intact; fix the issue and re-run."
+        ) from exc
+
+    if not on_github:
+        try:
+            github.create_repo(repo, dest, name, private)
+        except github.GhError as exc:
+            raise fail(
+                f"{exc}\nRemote creation was attempted; remote creation may have completed.\n"
+                f"Inspect https://github.com/{repo} before any cleanup.\n"
+                f"Local project is intact at {dest}; re-run to retry."
+            ) from exc
+
+    # Validate gh's freshly added origin too, including effective push URLs and
+    # insteadOf rewrites. Creation does not establish the push destination.
+    try:
+        gitops.ensure_origin(dest, repo)
+    except RuntimeError as exc:
+        raise fail(
+            f"{exc}\nOrigin validation failed; refusing configuration and push. "
+            f"Inspect https://github.com/{repo}.\n"
+            f"Local project is intact at {dest}; re-run to retry."
+        ) from exc
+
+    def publish_bootstrap() -> None:
+        gitops.validate_origin(dest, repo)
+        if publication_head is None:
+            raise RuntimeError("no selected bootstrap snapshot")
+        gitops.push_main(dest, publication_head)
+
+    push = None if pushed else publish_bootstrap
+    failed = github.configure_all(
+        repo, private=private, configuration=configuration, push=push, log=typer.echo, org=org,
+        project_state_path=dest / ".git" / project_state.FILENAME,
+    )  # fmt: skip
     typer.echo(f"\nhttps://github.com/{repo}\ncd {dest}")
     if failed:
+        if not on_github:
+            typer.echo(
+                "The GitHub repository was created but setup did not finish. "
+                "It remains available for retry; makeghrepo does not delete it."
+            )
         typer.echo(f"{len(failed)} step(s) failed. Fix, then re-run: makeghrepo {name}")
         raise typer.Exit(2)

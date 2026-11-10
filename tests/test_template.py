@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from makeghrepo import github, scaffold
+from makeghrepo import github, gitops, scaffold
 
 ALL = list(scaffold.LANGUAGES)
 COMBOS = [[], ["python"], ["rust", "docker"], ["swift", "python"], ["js", "css", "api"],
@@ -210,7 +210,7 @@ def test_smoke_skips_missing_tools(tmp_path, monkeypatch):
     monkeypatch.setattr(scaffold.shutil, "which", lambda _: None)
     lines = []
     scaffold.smoke_test(tmp_path, ["rust", "swift"], lines.append)
-    assert all("skip" in line for line in lines) and len(lines) == 5
+    assert all("skip" in line for line in lines) and len(lines) == 6
 
 
 def test_skip_local_checks_still_makes_lockfiles(tmp_path, monkeypatch):
@@ -305,7 +305,7 @@ def test_chain_language_keeps_its_own_command_order(tmp_path, monkeypatch):
     calls = _fake_run(monkeypatch)
     scaffold.smoke_test(tmp_path, ["rust", "python"], lambda _: None)
     rust_calls = [c for c in calls if c[0] == "cargo"]
-    assert rust_calls == list(scaffold.CHECKS["rust"])
+    assert rust_calls == [*scaffold.LANGS["rust"].prepare, *scaffold.CHECKS["rust"]]
 
 
 def test_setup_completes_before_any_pooled_command(tmp_path, monkeypatch):
@@ -439,3 +439,152 @@ def test_sql_with_postgres_still_lints_the_db_dir(tmp_path, monkeypatch):
     calls = _fake_run(monkeypatch)
     scaffold.smoke_test(tmp_path, ["postgres", "sql"], lambda _: None)
     assert any(c[:2] == ("uvx", "sqlfluff==4.3.0") and c[-1] == "db" for c in calls)
+
+
+@pytest.mark.parametrize("languages", [[], ["python"], ["rust"], ["c", "cpp"]])
+def test_snapshot_callback_separates_setup_from_validation(tmp_path, monkeypatch, languages):
+    calls = _fake_run(monkeypatch)
+    at_snapshot = []
+    scaffold.smoke_test(
+        tmp_path,
+        languages,
+        lambda _: None,
+        before_validation=lambda: at_snapshot.append(list(calls)),
+    )
+    expected_setup = list(
+        dict.fromkeys(
+            cmd
+            for lang in languages
+            for cmd in (
+                *scaffold.LANGS[lang].prepare,
+                *scaffold.CHECKS[lang][: scaffold.SETUP_LEN.get(lang, 0)],
+            )
+        )
+    )
+    assert at_snapshot == [expected_setup]
+
+
+def test_setup_failure_never_selects_snapshot_or_runs_checks(tmp_path, monkeypatch):
+    calls = _fake_run(monkeypatch, lambda cmd: 1 if cmd == ("cargo", "generate-lockfile") else 0)
+    with pytest.raises(RuntimeError, match="cargo generate-lockfile"):
+        scaffold.smoke_test(
+            tmp_path,
+            ["rust"],
+            lambda _: None,
+            before_validation=lambda: pytest.fail("snapshot selected after failed setup"),
+        )
+    assert calls == [("cargo", "generate-lockfile")]
+
+
+def test_snapshot_failure_never_starts_validation(tmp_path, monkeypatch):
+    calls = _fake_run(monkeypatch)
+
+    def failed_snapshot():
+        raise RuntimeError("snapshot failed")
+
+    with pytest.raises(RuntimeError, match="snapshot failed"):
+        scaffold.smoke_test(tmp_path, ["rust"], lambda _: None, before_validation=failed_snapshot)
+    assert calls == [("cargo", "generate-lockfile")]
+
+
+@pytest.mark.parametrize("mode", ["missing-tools", "skip-checks"])
+def test_snapshot_callback_runs_once_when_all_checks_skip(tmp_path, monkeypatch, mode):
+    calls = _fake_run(monkeypatch)
+    if mode == "missing-tools":
+        monkeypatch.setattr(scaffold.shutil, "which", lambda _: None)
+    else:
+        monkeypatch.setenv("MAKEGHREPO_SKIP_LOCAL_CHECKS", "1")
+    snapshots = []
+    lines = []
+    scaffold.smoke_test(
+        tmp_path,
+        ["rust"],
+        lines.append,
+        before_validation=lambda: snapshots.append("selected"),
+    )
+    assert snapshots == ["selected"] and not calls
+    assert len(lines) == 4 and all("skip" in line for line in lines)
+
+
+def test_existing_cargo_lock_is_not_regenerated_before_validation(tmp_path, monkeypatch):
+    lock = tmp_path / "Cargo.lock"
+    lock.write_text("existing resolved dependencies")
+    calls = _fake_run(monkeypatch)
+    snapshots = []
+    scaffold.smoke_test(
+        tmp_path,
+        ["rust"],
+        lambda _: None,
+        before_validation=lambda: snapshots.append(lock.read_text()),
+    )
+    assert snapshots == ["existing resolved dependencies"]
+    assert calls == list(scaffold.CHECKS["rust"])
+    assert lock.read_text() == "existing resolved dependencies"
+
+
+@pytest.mark.parametrize("null_device", ["/dev/null", "nul"])
+def test_go_build_uses_host_null_device_and_all_packages(tmp_path, monkeypatch, null_device):
+    calls = _fake_run(monkeypatch)
+    monkeypatch.setattr(scaffold.os, "devnull", null_device)
+    lines = []
+    scaffold.smoke_test(tmp_path, ["go"], lines.append)
+    assert calls == [
+        ("go", "vet", "./..."),
+        ("go", "test", "./..."),
+        ("go", "build", "-o", null_device, "./..."),
+    ]
+    assert lines[-1] == f"  $ go build -o {null_device} ./..."
+
+
+@pytest.fixture(scope="module")
+def native_go_cache(tmp_path_factory):
+    return tmp_path_factory.mktemp("native-go-cache")
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(os.environ.get("CI") is None, reason="native Go acceptance runs in CI")
+@pytest.mark.parametrize("layout", ["main", "library", "mixed", "multiple-main", "invalid-library"])
+def test_native_go_build_preserves_all_package_semantics_and_clean_snapshot(
+    tmp_path, monkeypatch, native_go_cache, layout
+):
+    """Use real Go in CI; stubs cannot establish null-device build semantics."""
+    assert scaffold.shutil.which("go"), "CI must provide the generated project's Go toolchain"
+    dest = render(tmp_path, ["go"])
+    if layout == "library":
+        (dest / "main.go").write_text("package example\nfunc Answer() int { return 42 }\n")
+        (dest / "main_test.go").unlink()
+    elif layout in {"mixed", "invalid-library"}:
+        unused = dest / "unused"
+        unused.mkdir()
+        value = '"not an int"' if layout == "invalid-library" else "42"
+        (unused / "answer.go").write_text(
+            f"package unused\nfunc Answer() int {{ return {value} }}\n"
+        )
+    elif layout == "multiple-main":
+        second = dest / "cmd" / "second"
+        second.mkdir(parents=True)
+        (second / "main.go").write_text("package main\nfunc main() {}\n")
+
+    # Exercise this build itself, so vet/test cannot hide missing build coverage.
+    monkeypatch.setitem(scaffold.CHECKS, "go", (scaffold.CHECKS["go"][-1],))
+    monkeypatch.delenv("MAKEGHREPO_SKIP_LOCAL_CHECKS", raising=False)
+    for key, value in {
+        "GOTOOLCHAIN": "local",
+        "GOENV": "off",
+        "GOFLAGS": "",
+        "GOWORK": "off",
+        "GOPROXY": "off",
+        "GOSUMDB": "off",
+        "GOCACHE": str(native_go_cache),
+    }.items():
+        monkeypatch.setenv(key, value)
+    gitops.init(dest)
+    selected = gitops.commit_all(dest)
+    if layout == "invalid-library":
+        with pytest.raises(RuntimeError, match="failed: go build"):
+            scaffold.smoke_test(dest, ["go"], lambda _: None)
+    else:
+        scaffold.smoke_test(dest, ["go"], lambda _: None)
+    gitops.require_bootstrap_head(dest, selected)
+    assert not (dest / "quiet-otter").exists()
+    assert not (dest / "quiet-otter.exe").exists()

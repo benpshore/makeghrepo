@@ -100,10 +100,12 @@ Both installed tools must pass help/version checks and render matching file name
 bytes, and executable bits for eight representative public/private and
 licensed/unlicensed projects.
 
-The installed wheel also runs five real-Git bootstrap and retry scenarios against a
-controlled GitHub fixture, recording the resulting settings, rulesets and push
-behavior. These tests use local bare remotes and never call GitHub or change live
-policy.
+The installed candidate Python wheel runs seventeen real-Git bootstrap/retry
+scenarios against a controlled GitHub fixture, including required-setup, readback
+and partial-creation failures. Published older releases retain five common cases.
+All scenarios use local bare remotes and never call GitHub or change live policy.
+The Rust implementation remains parked on its separate branch. See the
+[publication contract](bootstrap-publication.md) for the evidence boundary.
 
 The workflow's optional `release` input runs the same installation/render checks
 against a published stable tag's wheel instead, verifying its version before

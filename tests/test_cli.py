@@ -15,6 +15,11 @@ from makeghrepo.cli import app
 runner = CliRunner()
 
 
+def successful_checks(*args, before_validation=None):
+    if before_validation is not None:
+        before_validation()
+
+
 @pytest.fixture
 def gh(tmp_path, monkeypatch):
     """Fake GitHub: records calls; repos in `existing` already exist."""
@@ -31,6 +36,9 @@ def gh(tmp_path, monkeypatch):
     monkeypatch.setattr(github, "repo_exists", lambda r: r in state["existing"])
     monkeypatch.setattr(github, "is_private", lambda r: False)
     monkeypatch.setattr(github, "create_repo", lambda *a: state["calls"].append(("create", *a)))
+    monkeypatch.setattr(
+        github, "prepare_configuration", lambda owner, private, **kwargs: (owner, private)
+    )
     monkeypatch.setattr(gitops, "remote_has_main", lambda _: False)
 
     def owner_type(login):
@@ -41,12 +49,13 @@ def gh(tmp_path, monkeypatch):
 
     monkeypatch.setattr(github, "owner_type", owner_type)
 
-    def configure_all(repo, *, private, push, log, org=False):
+    def configure_all(repo, *, private, configuration, push, log, org=False, project_state_path):
+        assert project_state_path == tmp_path / repo.split("/")[1] / ".git/makeghrepo-project.json"
         state["calls"].append(("configure", repo, private, push is not None, org))
         return state["failed"]
 
     monkeypatch.setattr(github, "configure_all", configure_all)
-    monkeypatch.setattr(scaffold, "smoke_test", lambda *a: None)  # covered in test_template
+    monkeypatch.setattr(scaffold, "smoke_test", successful_checks)  # covered in test_template
     return state
 
 
@@ -95,6 +104,7 @@ def forbid_effects(monkeypatch):
         "owner_type",
         "repo_exists",
         "is_private",
+        "prepare_configuration",
         "create_repo",
     ):
         monkeypatch.setattr(github, name, forbidden)
@@ -126,6 +136,14 @@ def test_dry_run_shows_plan_without_effects(tmp_path, gh, forbid_effects, dry_fl
     assert "Visibility requested: private" in result.output
     assert "License requested: MIT" in result.output
     assert "Python library layout: yes" in result.output
+    assert "run dependency setup, commit a clean main snapshot, then run local validation" in (
+        result.output
+    )
+    assert "An unpublished committed resume validates its existing clean snapshot again" in (
+        result.output
+    )
+    assert "A settings-only resume does not commit or republish later work" in result.output
+    assert "If validation fails, the local commit is retained" in result.output
     assert "no network requests were made" in result.output
     assert "Unverified:" in result.output
     assert list(tmp_path.iterdir()) == []
@@ -186,6 +204,43 @@ def test_name_and_languages(tmp_path, gh):
     assert "pyproject.toml" in tracked and "src/main.cpp" in tracked
     assert gh["calls"][0][:3] == ("create", "me/my-repo", tmp_path / "my-repo")
     assert gh["calls"][1] == ("configure", "me/my-repo", False, True, False)
+
+
+def test_configuration_is_prepared_before_remote_creation(tmp_path, gh, monkeypatch):
+    events = []
+
+    def prepare(owner, private, **kwargs):
+        events.append("prepare")
+        return object()
+
+    monkeypatch.setattr(github, "prepare_configuration", prepare)
+    monkeypatch.setattr(github, "create_repo", lambda *args: events.append("create"))
+    monkeypatch.setattr(
+        github,
+        "configure_all",
+        lambda *args, **kwargs: events.append("configure") or [],
+    )
+
+    result = runner.invoke(app, ["ordered", "python"])
+
+    assert result.exit_code == 0, result.output
+    assert events == ["prepare", "create", "configure"]
+
+
+def test_configuration_preflight_failure_does_not_create_remote(tmp_path, gh, monkeypatch):
+    def fail_preflight(*args, **kwargs):
+        raise github.GhError("invalid owner identity")
+
+    monkeypatch.setattr(github, "prepare_configuration", fail_preflight)
+
+    result = runner.invoke(app, ["no-remote", "python"])
+
+    assert result.exit_code == 1
+    assert "This invocation did not attempt GitHub creation" in result.output
+    assert "Local project is intact" in result.output
+    assert gh["calls"] == []
+    assert gitops.read_marker(tmp_path / "no-remote") is not None
+    assert gitcli.out(tmp_path / "no-remote", "rev-list", "--count", "HEAD") == "1"
 
 
 def test_no_args_random_name_any_language(tmp_path, gh):
@@ -307,10 +362,55 @@ def test_unsupported_license_is_rejected_before_github(tmp_path, monkeypatch):
     assert not (tmp_path / "licensing").exists()
 
 
+@pytest.mark.parametrize("dry_flag", ["--dry-run", "-n"])
+def test_bootstrap_dry_run_shows_plan_without_effects(tmp_path, gh, forbid_effects, dry_flag):
+    result = runner.invoke(
+        app,
+        ["My Project", "python", "c++", "--private", "--license", "MIT", dry_flag],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Project: my-project" in result.output
+    assert "Languages: python, cpp" in result.output
+    assert f"Destination: {tmp_path / 'my-project'}" in result.output
+    assert "Visibility requested: private" in result.output
+    assert "License requested: MIT" in result.output
+    assert "no files or directories were written" in result.output
+    assert "no network requests were made" in result.output
+    assert "Unverified:" in result.output
+    assert list(tmp_path.iterdir()) == []
+    assert gh["calls"] == []
+
+
+@pytest.mark.parametrize("dry_flag", ["--dry-run", "-n"])
+@pytest.mark.parametrize(
+    "args, message",
+    [
+        (["project", "cobol"], "unknown language/tool word 'cobol'"),
+        (["project", "--render", "preview"], "cannot be combined"),
+    ],
+)
+def test_bootstrap_dry_run_rejects_invalid_requests_without_effects(
+    tmp_path, gh, forbid_effects, args, message, dry_flag
+):
+    result = runner.invoke(app, [*args, dry_flag])
+
+    assert result.exit_code == 1
+    assert message in result.output
+    assert list(tmp_path.iterdir()) == []
+    assert gh["calls"] == []
+
+
 @pytest.mark.parametrize("choice", ["none", "MIT"])
 @pytest.mark.parametrize("explicit", [False, True])
-def test_resume_preserves_license_files_and_recorded_choice(tmp_path, gh, choice, explicit):
+def test_resume_preserves_license_files_and_recorded_choice(
+    tmp_path, gh, monkeypatch, choice, explicit
+):
     assert runner.invoke(app, ["licensing", "--license", choice]).exit_code == 0
+    # This is a settings-only resume. An unpublished dirty snapshot must instead
+    # stop without overwriting the custom license or publishing unchecked bytes.
+    gh["existing"].add("me/licensing")
+    monkeypatch.setattr(gitops, "remote_has_main", lambda _: True)
     dest = tmp_path / "licensing"
     license_path = dest / "LICENSE"
     license_path.write_text("Custom terms added after bootstrap.\n")
@@ -474,8 +574,21 @@ def test_failed_steps_exit_2_with_rerun_hint(tmp_path, gh):
     assert "re-run: makeghrepo partial" in result.output
 
 
+def test_postcreation_settings_failure_keeps_remote_for_retry(tmp_path, gh):
+    gh["failed"] = ["ruleset 'protect-main'", "push main"]
+
+    result = runner.invoke(app, ["settings-failed", "python"])
+
+    assert result.exit_code == 2
+    assert gh["calls"][0][0] == "create"
+    assert gh["calls"][1][0] == "configure"
+    assert "repository was created but setup did not finish" in result.output
+    assert "does not delete it" in result.output
+    assert "re-run: makeghrepo settings-failed" in result.output
+
+
 def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):
-    def broken(*a):
+    def broken(*a, **kwargs):
         raise RuntimeError("ruff failed")
 
     monkeypatch.setattr(scaffold, "smoke_test", broken)
@@ -483,7 +596,7 @@ def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):
     assert result.exit_code == 1 and "re-run the same command" in result.output
     assert gh["calls"] == []  # nothing published
 
-    monkeypatch.setattr(scaffold, "smoke_test", lambda *a: None)  # user fixed it
+    monkeypatch.setattr(scaffold, "smoke_test", successful_checks)  # user fixed it
     result = runner.invoke(app, ["fixme", "python"])
     assert result.exit_code == 0, result.output
     assert gitcli.out(tmp_path / "fixme", "log", "--format=%s").splitlines() == ["setup"]
@@ -494,7 +607,7 @@ def test_failed_check_then_rerun_finishes_the_commit(tmp_path, gh, monkeypatch):
 def test_check_failure_reports_observed_effects_and_exact_target(
     tmp_path, gh, monkeypatch, remote_exists
 ):
-    def broken(*args):
+    def broken(*args, **kwargs):
         raise RuntimeError("native extension failed: missing ruby.h")
 
     monkeypatch.setattr(scaffold, "smoke_test", broken)
@@ -620,7 +733,7 @@ def test_private_flag_on_a_public_github_repo_is_refused(tmp_path, gh):
 def test_resume_uses_the_marker_languages(tmp_path, gh, monkeypatch):
     seen = []
 
-    def broken(dest, langs, log):
+    def broken(dest, langs, log, **kwargs):
         seen.append(list(langs))
         raise RuntimeError("check failed")
 

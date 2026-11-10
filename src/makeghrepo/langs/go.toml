@@ -10,7 +10,7 @@ marker = "go.mod"
 checks = [
   ["go", "vet", "./..."],
   ["go", "test", "./..."],
-  ["go", "build", "./..."],
+  ["go", "build", "-o", "{devnull}", "./..."],
 ]
 setup_len = 0
 required_tool = false
