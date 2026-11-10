@@ -87,6 +87,64 @@ def test_submodule_gitlink_blocks_snapshot_and_publication(local_remote):
     assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0
 
 
+@pytest.mark.parametrize("custom_ref_base", [False, True])
+def test_replacement_commit_blocks_snapshot_and_publication(
+    local_remote, monkeypatch, custom_ref_base
+):
+    dest, remote = local_remote
+    selected = gitops.bootstrap_head(dest)
+    if custom_ref_base:
+        monkeypatch.setenv("GIT_REPLACE_REF_BASE", "refs/bootstrap-review/")
+    (dest / "first.txt").write_text("replacement check input")
+    gitcli.git(dest, "add", "first.txt")
+    tree = gitcli.out(dest, "write-tree")
+    replacement = gitcli.out(dest, "commit-tree", tree, "-m", "replacement")
+    gitcli.git(dest, "replace", selected, replacement)
+    # Status and HEAD alone cannot detect that local Git interprets a different
+    # tree than the original objects a push transfers to the remote.
+    assert gitcli.out(dest, "status", "--porcelain") == ""
+    assert gitcli.out(dest, "rev-parse", "HEAD") == selected
+    with pytest.raises(RuntimeError, match="Git replacement objects"):
+        gitops.bootstrap_head(dest)
+    with pytest.raises(RuntimeError, match="Git replacement objects"):
+        gitops.push_main(dest, selected)
+    assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0
+    assert gitcli.out(dest, "replace", "-l") == selected  # no automatic deletion
+
+
+@pytest.mark.parametrize("disabled", ["environment", "config"])
+def test_disabled_replacements_are_conservatively_refused(local_remote, monkeypatch, disabled):
+    dest, remote = local_remote
+    selected = gitops.bootstrap_head(dest)
+    tree = gitcli.out(dest, "rev-parse", "HEAD^{tree}")
+    replacement = gitcli.out(dest, "commit-tree", tree, "-m", "same-tree replacement")
+    gitcli.git(dest, "replace", selected, replacement)
+    if disabled == "environment":
+        monkeypatch.setenv("GIT_NO_REPLACE_OBJECTS", "1")
+    else:
+        gitcli.git(dest, "config", "core.useReplaceRefs", "false")
+    with pytest.raises(RuntimeError, match="Git replacement objects"):
+        gitops.push_main(dest, selected)
+    assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0
+    assert gitcli.out(dest, "replace", "-l") == selected
+
+
+def test_replacement_lookup_failure_stops_before_publication(local_remote, monkeypatch):
+    dest, remote = local_remote
+    selected = gitops.bootstrap_head(dest)
+    original = gitops._git
+
+    def unavailable(*args, **kwargs):
+        if args == ("replace", "-l"):
+            raise gitops.GitError(args, 128, "controlled replacement lookup failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(gitops, "_git", unavailable)
+    with pytest.raises(gitops.GitError, match="replacement lookup failure"):
+        gitops.push_main(dest, selected)
+    assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0
+
+
 def test_late_commit_after_local_check_cannot_replace_frozen_push_source(local_remote, monkeypatch):
     dest, remote = local_remote
     sha = gitops.bootstrap_head(dest)
@@ -399,6 +457,51 @@ def test_initial_validation_failure_retains_commit_and_rechecks_it_on_resume(boo
     assert state["smoke"] == [selected, selected]
     assert gitcli.out(remote, "rev-parse", "main") == selected
     assert gitcli.out(dest, "rev-list", "--count", "HEAD") == "1"
+
+
+@pytest.mark.parametrize("recovery", ["replacement", "staged-only", "ordinary-commit"])
+def test_unpublished_retry_never_checks_replacement_and_publishes_original(
+    bootstrap, monkeypatch, recovery
+):
+    state, dest, remote = bootstrap
+    checked = []
+
+    def smoke(path, *args, before_validation=None):
+        if before_validation is not None:
+            before_validation()
+        contents = (path / "source.txt").read_text()
+        checked.append(contents)
+        if contents != "passes validation":
+            raise RuntimeError("original source fails validation")
+
+    monkeypatch.setattr(scaffold, "smoke_test", smoke)
+    first = runner.invoke(app, ["r"])
+    assert first.exit_code == 1, first.output
+    assert not state["created"]
+    original = gitcli.out(dest, "rev-parse", "HEAD")
+    (dest / "source.txt").write_text("passes validation")
+    gitcli.git(dest, "add", "source.txt")
+    if recovery == "replacement":
+        tree = gitcli.out(dest, "write-tree")
+        replacement = gitcli.out(dest, "commit-tree", tree, "-m", "replacement")
+        gitcli.git(dest, "replace", original, replacement)
+        assert gitcli.out(dest, "status", "--porcelain") == ""
+    elif recovery == "ordinary-commit":
+        gitops.commit_all(dest, "repair validation failure")
+    result = runner.invoke(app, ["r"])
+    if recovery == "ordinary-commit":
+        assert result.exit_code == 0, result.output
+        assert checked == ["source", "passes validation"]
+        assert gitcli.out(remote, "show", "main:source.txt") == checked[-1]
+        assert gitcli.out(remote, "rev-parse", "main") != original
+    else:
+        assert result.exit_code == 1, result.output
+        assert checked == ["source"]
+        assert not state["created"] and state["configured"] == 0
+        assert gitcli.git(remote, "rev-parse", "--verify", "main", check=False).returncode != 0
+        if recovery == "replacement":
+            assert "Git replacement objects" in result.output
+            assert gitcli.out(dest, "replace", "-l") == original
 
 
 @pytest.mark.parametrize("stage", [False, True])

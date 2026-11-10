@@ -102,6 +102,10 @@ index and untracked files. Tracked files with `assume-unchanged` or `skip-worktr
 index flags are refused because those flags can hide modified check inputs from
 Git status. Initial publication also rejects tracked Git submodules: the generated
 scaffold has none, and parent status cannot establish nested check-input integrity.
+Git replacement refs in the effective namespace (including an inherited
+`GIT_REPLACE_REF_BASE`) are refused, even if replacement lookup is disabled. They
+can make local `HEAD` and clean status describe different objects from those a push
+transfers. The gate does not remove refs or change Git configuration automatically.
 It reruns checks against a frozen commit and refuses any
 observed branch, ref or worktree drift. Fresh creation completes setup first,
 including generated lockfiles, then commits and selects a clean `main` snapshot

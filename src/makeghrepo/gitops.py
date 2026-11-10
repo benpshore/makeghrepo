@@ -145,6 +145,11 @@ def bootstrap_head(path: Path) -> str:
     branch = _git("symbolic-ref", "--quiet", "HEAD", cwd=path, check=False)
     if branch.returncode or branch.stdout.strip() != "refs/heads/main":
         raise RuntimeError("bootstrap publication requires main to be checked out")
+    # Replacements can make HEAD/status describe a different tree from the
+    # original objects a push transfers. Ask Git for the effective namespace
+    # (including GIT_REPLACE_REF_BASE), without changing config or refs.
+    if _git("replace", "-l", cwd=path).stdout:
+        raise RuntimeError("bootstrap publication does not support Git replacement objects")
     head = _git("rev-parse", "--verify", "refs/heads/main^{commit}", cwd=path).stdout.strip()
     # Git status trusts these index flags and can otherwise hide modified check
     # inputs. Do not silently change the user's flags to make the snapshot pass.
