@@ -1,9 +1,10 @@
 # Python initial-publication gate
 
-**Incomplete draft, not a verified live bootstrap fix.** The repair has three
+**Incomplete draft, not a verified live bootstrap fix.** The repair has two
 remaining limits: strict no-bypass organization rules may block the initial push;
-fresh GitHub Actions-bound check setup has not been accepted by a live test; and
-uncertain Project creation can duplicate a board after a stale read.
+and fresh GitHub Actions-bound check setup has not been accepted by a live test.
+Project creation has bounded local recovery, described below, rather than a
+provider-wide exactly-once guarantee.
 No test result below resolves those limits or authorizes a protection bypass.
 
 The initial `main` push is a separate final operation. It is never submitted to
@@ -56,12 +57,35 @@ partially configured remote is the recovery resource, not an atomic transaction.
 ## Partial state and retries
 
 Independent writes can finish even when another step fails. Their state is retained
-and checked on retry. Found project boards and rulesets are reused. A known incomplete
-project listing cannot establish absence and therefore cannot create another board.
-A lost Project-create response followed by a temporarily stale empty search is a
-remaining duplicate-board risk: no durable operation ID or provider idempotency key
-is recorded. Inspect an uncertain creation before rerunning; these fixtures do not
-prove exactly-once Project creation.
+and checked on retry. Found project boards and rulesets are reused. Incomplete or
+ambiguous Project listings refuse selection or creation.
+
+Fresh local initialization writes `.git/makeghrepo-project.json` before remote
+creation. An exclusive sibling `.lock` file spans Project lookup, creation,
+identity persistence and linking. Before the create request, the journal records
+an attempted effect using atomic replacement and file fsync, plus directory fsync
+where supported. A valid returned Project number is saved before linking. Every
+known number is looked up directly under its recorded owner and verified by title
+before any link; a deleted, renamed or unreadable board never triggers replacement
+creation.
+
+A lost or malformed create response leaves attempted state. Retry may reconcile a
+unique, visible same-title Project, but an empty/stale search cannot authorize
+another create. A missing, invalid, mismatched or symlinked journal also cannot
+authorize creation. Older workspaces without a journal may reuse a verified
+existing board; they cannot infer that no previous create occurred. Deleting the
+journal does not re-arm creation. Library callers without persistent state can
+reuse an existing verified board, but cannot create one.
+
+Keep the journal with the local workspace. After interruption, inspect the named
+Project owner and title and ensure no invocation is still running before removing
+only a stale lock. Retain the journal. If no intended Project exists after manual
+inspection, explicitly create that board and retry once its unique title is
+visible; this version has no automatic reset of uncertain creation state.
+The lock coordinates only cooperating invocations using that same state path.
+Separate workspaces or external actors can still race, and GitHub supplies no
+idempotency key here. These fixtures do not establish provider-wide exactly-once
+creation, live GitHub acceptance, or universal power-loss/filesystem durability.
 Python reads back the replacement review gate **before** removing the legacy PR/CI
 rules, preserving the old protections if a successful write did not take effect.
 Customized or conflicting partial rulesets still require manual review.
@@ -147,7 +171,7 @@ executables and an invalid unimported library; they remain unverified until CI
 runs. No native Cargo, Swift or Go acceptance is claimed here.
 `tests/test_owner_push.py` covers partial migration and retained legacy protection.
 
-`scripts/bootstrap-check --python-executable PATH PATH` runs 17 installed-command
+`scripts/bootstrap-check --python-executable PATH PATH` runs 18 installed-command
 scenarios against disposable local bare remotes. Current candidate distribution CI
 uses the expanded Python cases. Older release checks retain their original common
 cases; the new contract is not retroactively imposed on published binaries.

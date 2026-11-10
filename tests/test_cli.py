@@ -49,7 +49,8 @@ def gh(tmp_path, monkeypatch):
 
     monkeypatch.setattr(github, "owner_type", owner_type)
 
-    def configure_all(repo, *, private, configuration, push, log, org=False):
+    def configure_all(repo, *, private, configuration, push, log, org=False, project_state_path):
+        assert project_state_path == tmp_path / repo.split("/")[1] / ".git/makeghrepo-project.json"
         state["calls"].append(("configure", repo, private, push is not None, org))
         return state["failed"]
 

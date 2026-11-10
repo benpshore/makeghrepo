@@ -439,7 +439,7 @@ def test_project_retry_refuses_truncated_listing_instead_of_creating_duplicate(c
             "data": {
                 "user": {
                     "projectsV2": {
-                        "nodes": [{"number": i, "title": f"other-{i}"} for i in range(100)],
+                        "nodes": [{"number": i, "title": f"other-{i}"} for i in range(1, 101)],
                     }
                 }
             }
@@ -447,7 +447,7 @@ def test_project_retry_refuses_truncated_listing_instead_of_creating_duplicate(c
     )
     calls.responses["project list"] = json.dumps(
         {
-            "projects": [{"number": i, "title": f"other-{i}"} for i in range(1000)],
+            "projects": [{"number": i, "title": f"other-{i}"} for i in range(1, 1001)],
             "totalCount": 1001,
         }
     )

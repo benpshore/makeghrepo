@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from makeghrepo import github
+from makeghrepo import github, project_state
 
 
 @pytest.fixture
@@ -143,16 +143,16 @@ def _graphql_projects(*nodes: dict, kind: str = "user") -> str:
 def test_project_reuses_existing_board(calls):
     calls.responses["graphql"] = _graphql_projects({"number": 7, "title": "r"})
     github.configure_project("me/r")
-    assert [a[1] for a, _ in calls] == ["graphql", "link"]
-    assert calls[1][0][2] == "7"
+    assert [a[1] for a, _ in calls] == ["graphql", "graphql", "link"]
+    assert calls[-1][0][2] == "7"
 
 
 def test_project_reuses_existing_closed_board(calls):
     """The query() filter returns closed projects too — no separate flag needed."""
     calls.responses["graphql"] = _graphql_projects({"number": 9, "title": "r", "closed": True})
     github.configure_project("me/r")
-    assert [a[1] for a, _ in calls] == ["graphql", "link"]
-    assert calls[1][0][2] == "9"
+    assert [a[1] for a, _ in calls] == ["graphql", "graphql", "link"]
+    assert calls[-1][0][2] == "9"
 
 
 def test_project_exact_title_match_among_text_search_hits(calls):
@@ -161,32 +161,35 @@ def test_project_exact_title_match_among_text_search_hits(calls):
         {"number": 4, "title": "r-old"}, {"number": 7, "title": "r"}
     )
     github.configure_project("me/r")
-    assert calls[1][0][2] == "7"
+    assert calls[-1][0][2] == "7"
 
 
 def test_project_falls_back_to_full_scan_when_search_page_is_full(calls):
     """A full page of 100 non-matches doesn't prove the board doesn't exist — it could
     be on a second page. Fall back to the old full scan rather than duplicate it."""
     calls.responses["graphql"] = _graphql_projects(
-        *({"number": i, "title": f"other-{i}"} for i in range(100))
+        *({"number": i, "title": f"other-{i}"} for i in range(1, 101))
     )
     calls.responses["project list"] = json.dumps({"projects": [{"number": 42, "title": "r"}]})
     github.configure_project("me/r")
-    assert [a[1] for a, _ in calls] == ["graphql", "list", "link"]
-    assert calls[2][0][2] == "42"
+    assert [a[1] for a, _ in calls] == ["graphql", "list", "graphql", "link"]
+    assert calls[-1][0][2] == "42"
 
 
-def test_project_created_when_missing(calls):
+def test_project_created_when_missing(calls, tmp_path):
     calls.responses["graphql"] = _graphql_projects()
     calls.responses["project create"] = '{"number": 3}'
-    github.configure_project("me/r")
-    assert [a[1] for a, _ in calls] == ["graphql", "create", "link"]
+    with project_state.ProjectState(tmp_path / "project.json", "me/r", False) as state:
+        state.initialize()
+    github.configure_project("me/r", state_path=tmp_path / "project.json")
+    assert [a[1] for a, _ in calls] == ["graphql", "create", "graphql", "link"]
 
 
 def test_organization_project_is_looked_up_on_the_organization(calls):
+    calls.owner = {"type": "Organization", "login": "acme", "id": 77}
     calls.responses["graphql"] = _graphql_projects({"number": 5, "title": "r"}, kind="organization")
     github.configure_project("acme/r", org=True)
-    (query_args, _), (link_args, _) = calls
+    (query_args, _), _, (link_args, _) = calls
     assert "organization(login: $owner)" in " ".join(query_args)
     assert "user(login" not in " ".join(query_args)
     assert "owner=acme" in query_args
@@ -197,7 +200,7 @@ def test_organization_project_is_looked_up_on_the_organization(calls):
 def test_personal_project_is_looked_up_on_the_user(calls):
     calls.responses["graphql"] = _graphql_projects({"number": 5, "title": "r"})
     github.configure_project("me/r")
-    (query_args, _), _ = calls
+    (query_args, _), _, _ = calls
     assert "user(login: $owner)" in " ".join(query_args)
 
 
@@ -359,10 +362,17 @@ def test_push_skipped_entirely_when_actions_cannot_be_disabled(calls):
     assert not pushed  # the push callable itself must never run
 
 
-def test_public_repo_leaves_actions_alone(calls):
+def test_public_repo_leaves_actions_alone(calls, tmp_path):
     calls.responses.update({"graphql": _graphql_projects()})
     calls.responses["project create"] = '{"number": 1}'
-    github.configure_all("me/r", private=False, log=lambda _: None)
+    with project_state.ProjectState(tmp_path / "project.json", "me/r", False) as state:
+        state.initialize()
+    assert (
+        github.configure_all(
+            "me/r", private=False, log=lambda _: None, project_state_path=tmp_path / "project.json"
+        )
+        == []
+    )
     assert "repos/me/r/actions/permissions" not in _paths(calls)
 
 

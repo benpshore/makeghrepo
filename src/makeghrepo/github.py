@@ -1,7 +1,7 @@
 """GitHub setup via the ``gh`` CLI (which owns auth; we never touch tokens).
 
-Every step is idempotent, so ``makeghrepo NAME`` can be re-run
-after a partial failure.
+Required state is read back before publication. Project creation additionally
+uses a retained local intent so uncertain outcomes cannot authorize a blind retry.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from makeghrepo.project_state import ProjectState
 
 RULESET_NAME = "protect-main"
 REVIEW_RULESET_NAME = "require-pr-and-ci"
@@ -470,37 +472,90 @@ query($owner: String!, $title: String!) {
 def _find_project_by_title(owner: str, title: str, *, org: bool = False) -> int:
     """GraphQL text search: cheap, but a substring match, and capped at one page.
 
-    If the page comes back full (100) with no exact title match, an existing
-    project could be sitting on a second page — fall back to the old full
-    scan rather than risk creating a duplicate board.
+    A full page cannot establish absence or uniqueness: fall back to a complete
+    scan before selecting or creating a board.
     """
     kind = "organization" if org else "user"  # GraphQL has no owner-agnostic lookup
     query = FIND_PROJECT_QUERY % kind
     listing = gh("api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}",
                  "-f", f"title={title}")  # fmt: skip
     nodes = json.loads(listing)["data"][kind]["projectsV2"]["nodes"]
-    number = next((p["number"] for p in nodes if p["title"] == title), 0)
-    if number or len(nodes) < 100:
+    number = _unique_project_number(nodes, title)
+    if len(nodes) < 100:
         return number
     full = gh("project", "list", "--owner", owner, "--closed", "--limit", "1000",
               "--format", "json")  # fmt: skip
     listing = json.loads(full)
     projects = listing["projects"]
-    number = next((p["number"] for p in projects if p["title"] == title), 0)
-    if not number and (len(projects) >= 1000 or listing.get("totalCount", 0) > len(projects)):
-        raise GhError("project listing is incomplete; refusing to create a duplicate board")
+    number = _unique_project_number(projects, title)
+    count = listing.get("totalCount", len(projects))
+    if type(count) is not int or count < len(projects):
+        raise GhError("malformed Project listing count; refusing selection or creation")
+    if len(projects) >= 1000 or count > len(projects):
+        raise GhError("project listing is incomplete; refusing ambiguous selection or creation")
     return number
 
 
-def configure_project(repo: str, *, org: bool = False) -> int:
-    """Link the repo to a same-named project, creating one if it doesn't exist."""
+def _unique_project_number(projects: Any, title: str) -> int:
+    if not isinstance(projects, list) or any(
+        not isinstance(board, dict)
+        or not isinstance(board.get("title"), str)
+        or type(board.get("number")) is not int
+        or board["number"] <= 0
+        for board in projects
+    ):
+        raise GhError("malformed Project listing; refusing selection or creation")
+    matches = [board["number"] for board in projects if board["title"] == title]
+    if len(matches) > 1:
+        raise GhError("multiple exact-title Projects found; inspect them before retrying")
+    return matches[0] if matches else 0
+
+
+def configure_project(repo: str, *, org: bool = False, state_path: Path | None = None) -> int:
+    """Link a verified Project; persist intent before any new creation.
+
+    Unknown create outcomes must never be interpreted as absence. Recovery uses
+    the same retained journal and serializes cooperating local invocations.
+    """
     owner, title = repo.split("/")
-    number = _find_project_by_title(owner, title, org=org)
-    if not number:
-        created = gh("project", "create", "--owner", owner, "--title", title, "--format", "json")
-        number = json.loads(created)["number"]
-    gh("project", "link", str(number), "--owner", owner, "--repo", repo)
-    return number
+
+    def configure(state: ProjectState | None) -> int:
+        number = state.number if state is not None else None
+        if number is None:
+            number = _find_project_by_title(owner, title, org=org)
+            if not number:
+                if state is None:
+                    raise GhError("Project creation requires persistent local recovery state")
+                if state.attempted:
+                    raise GhError(
+                        f"Prior Project creation for {repo} remains uncertain; an empty search "
+                        f"does not prove absence. No new board was created. Inspect {state.path} "
+                        "and the owner's Projects before retrying."
+                    )
+                state.save()  # durable intent must precede the external effect
+                try:
+                    created = gh(
+                        "project", "create", "--owner", owner,
+                        "--title", title, "--format", "json",
+                    )  # fmt: skip
+                    number = json.loads(created)["number"]
+                    if type(number) is not int or number <= 0:
+                        raise ValueError("invalid Project number")
+                except Exception as exc:
+                    raise GhError(
+                        f"Project creation for {repo} was attempted; its outcome is uncertain. "
+                        f"Recovery intent is retained at {state.path}. Inspect before retrying."
+                    ) from exc
+            if state is not None:
+                state.save(number)  # retain the known identity even if link/readback fails
+        _verify_project_identity(repo, number, org=org)
+        gh("project", "link", str(number), "--owner", owner, "--repo", repo)
+        return number
+
+    if state_path is None:
+        return configure(None)
+    with ProjectState(state_path, repo, org) as state:
+        return configure(state)
 
 
 PROJECT_LINK_QUERY = """
@@ -516,6 +571,26 @@ query($owner: String!, $number: Int!, $cursor: String) {
   }
 }
 """
+
+
+def _verify_project_identity(repo: str, number: int, *, org: bool = False) -> None:
+    owner, title = repo.split("/")
+    kind = "organization" if org else "user"
+    query = f"query($owner: String!, $number: Int!) {{ {kind}(login: $owner) {{ "
+    query += "projectV2(number: $number) { title } } }"
+    board = json.loads(
+        gh(
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-F",
+            f"number={number}",
+        )
+    )["data"][kind]["projectV2"]
+    _require(board, {"title": title}, "Project identity before linking")
 
 
 def verify_project(repo: str, number: int, *, org: bool = False) -> None:
@@ -595,6 +670,7 @@ def configure_all(
     push: Callable[[], object] | None = None,
     log: Callable[[str], None] = print,
     org: bool = False,
+    project_state_path: Path | None = None,
 ) -> list[str]:
     """Apply every selected step, read back effective state, then publish main.
 
@@ -748,7 +824,7 @@ def configure_all(
 
         def link_project() -> None:
             nonlocal project_number
-            project_number = configure_project(repo, org=org)
+            project_number = configure_project(repo, org=org, state_path=project_state_path)
 
         fanout.append(
             ("project board", link_project, lambda: verify_project(repo, project_number, org=org))

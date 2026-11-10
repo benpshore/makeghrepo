@@ -221,7 +221,7 @@ def main(
 
     # Help, version and offline rendering must work on a machine without git or
     # GitHub credentials, so these are imported only once a real run starts.
-    from makeghrepo import github, gitops
+    from makeghrepo import github, gitops, project_state
 
     base_dir = Path(os.environ.get("MAKEGHREPO_DIR", "~/code/GitHub")).expanduser().resolve()
     try:
@@ -327,6 +327,17 @@ def main(
             "license": (project_license or ProjectLicense.NONE).value,
             "created_by": f"makeghrepo {_version()}",
         })  # fmt: skip
+        try:
+            with project_state.ProjectState(
+                dest / ".git" / project_state.FILENAME, repo, org
+            ) as state:
+                state.initialize()
+        except (OSError, project_state.ProjectStateError) as exc:
+            raise fail(
+                f"Could not establish Project recovery state: {exc}. "
+                "This invocation stopped before GitHub creation, configuration or push. "
+                f"Local project retained at {dest}."
+            ) from exc
 
     publication_head = None
     if not resume or not gitops.has_commits(dest):  # earlier check/commit failed
@@ -442,8 +453,9 @@ def main(
 
     push = None if pushed else publish_bootstrap
     failed = github.configure_all(
-        repo, private=private, configuration=configuration, push=push, log=typer.echo, org=org
-    )
+        repo, private=private, configuration=configuration, push=push, log=typer.echo, org=org,
+        project_state_path=dest / ".git" / project_state.FILENAME,
+    )  # fmt: skip
     typer.echo(f"\nhttps://github.com/{repo}\ncd {dest}")
     if failed:
         if not on_github:

@@ -82,7 +82,10 @@ def gh_fixture(args):
                 return 0, "X-OAuth-Scopes: repo, workflow"
             return 0, "X-OAuth-Scopes: repo, workflow, project"
         if args[:2] == ["project", "list"]:
-            return 0, json.dumps({"projects": state.get("projects", [])})
+            projects = (
+                [] if state.get("failure") == "project-search-stale" else state.get("projects", [])
+            )
+            return 0, json.dumps({"projects": projects})
         if args[:2] == ["api", "user"]:
             return 0, OWNER
         if args[:2] == ["repo", "view"]:
@@ -137,16 +140,23 @@ def gh_fixture(args):
                     "data": {
                         "user": {
                             "projectsV2": {
-                                "nodes": state.get("projects", []),
+                                "nodes": []
+                                if state.get("failure") == "project-search-stale"
+                                else state.get("projects", []),
                             }
                         }
                     }
                 }
             )
         if args[:2] == ["project", "create"]:
-            project = {"number": 1, "title": state["repo"].split("/")[1]}
+            project = {
+                "number": len(state.get("projects", [])) + 1,
+                "title": state["repo"].split("/")[1],
+            }
             state.setdefault("projects", []).append(project)
             record(state, "project-create")
+            if state.get("failure") == "project-create-uncertain":
+                return 1, "controlled lost Project-create response after creating board"
             return 0, json.dumps(project)
         if args[:2] == ["project", "link"]:
             record(state, "project-link")
@@ -373,6 +383,13 @@ def scenario(executable, private, failure, python_gate=False):
         if (python_gate and failure) or failure in {"settings", "actions"}:
             assert not any(e["kind"] == "push" for e in state["events"])
         if failure:
+            if failure == "project-create-uncertain":
+                state["failure"] = "project-search-stale"
+                (root / "state.json").write_text(json.dumps(state))
+                command(args, env=env, expected=2)
+                state = read_state(root)
+                assert sum(e["kind"] == "project-create" for e in state["events"]) == 1
+                assert not any(e["kind"] == "push" for e in state["events"])
             state["failure"] = None
             (root / "state.json").write_text(json.dumps(state))
             command(args, env=env)
@@ -453,6 +470,7 @@ def main():
                     "subscription",
                     "project",
                     "project-readback",
+                    "project-create-uncertain",
                 )
             ] + [(True, "settings"), (True, "actions-readback")]
         results = [

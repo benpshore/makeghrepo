@@ -57,6 +57,13 @@ that clean `main` commit again. Review and commit intended fixes before retrying
 makeghrepo does not silently stage later edits into its checked snapshot. See the
 [publication gate](bootstrap-publication.md) for drift checks and their limits.
 
+Project creation also has a bounded write-ahead journal inside the local `.git`
+directory. Retried uncertain creation never treats an empty search as permission
+to create another board. Preserve that journal and inspect any stale lock rather
+than resetting uncertain state; see the publication gate for manual recovery.
+This is integrated into the stable CLI, not a general remote-effect journal or a
+cross-workspace exactly-once guarantee.
+
 ## Live execution journal (next increment)
 
 Before a mutating operation, persist an intent entry with a unique invocation ID,
